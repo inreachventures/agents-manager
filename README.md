@@ -2,154 +2,52 @@
 
 **One ticket. Every repo it touches. One Claude Code conversation, kept on the rails.**
 
-Every agent tool today models a *session*: one agent, one repo, one branch. `wm` models a *task*: one ticket,
-N repos, one conversation, N PRs and one definition of done.
+Other agent tools model a *session*: one agent, one repo, one branch. `wm` models a *task*: one ticket, N repos,
+one conversation, N PRs and one definition of done.
 
-Run `wm new` and describe the task, by voice or text. Claude names it, writes a brief, and asks `wm` to attach the
-repos it needs. `wm` gives each repo an isolated git worktree on a branch named after the ticket. Claude then works
-across all of them in a single conversation, inside guardrails that keep it out of your main checkouts. One terminal
-dashboard shows every task, which ones are waiting on you, and what each repo needs next, from "needs push" to
-"ready to merge". When the PRs are merged, `wm archive` cleans up without losing work.
+- 🎙️ **Describe the task by voice or text.** Claude writes the brief and picks the repos it needs.
+- 🌳 **An isolated git worktree per repo**, on a branch named after the ticket. Your main checkouts stay clean.
+- 🛡️ **Strong guardrails.** No edits in your main checkouts, no branch switching, and **no agent writing over
+  another's branch**.
+- 🔄 **Live git status integration.** Git, PR and CI state for every repo, plus commits behind `main`, refreshed in
+  the background.
+- 🚦 **One dashboard for every task.** Who is waiting on you, and **what each repo needs next**, from "needs push"
+  to "ready to merge".
+- 🧹 **Archive that never loses work.** It refuses while anything is uncommitted or unpushed.
+- 💻 **The real `claude` CLI on your subscription.** Local and terminal-native: no API keys, no cloud, no daemon.
 
-It runs the real `claude` CLI on your Claude subscription. Everything is local and terminal-native: no API keys, no
-cloud, no daemon.
+![The wm dashboard: ten workstreams with their status, and the git, PR and CI state of every repo](assets/dashboard.png)
 
-```text
- 3 workstreams   ⚠ 1 need you   ◐ 1 your turn   origin checked 2m ago
+## Quick start
 
-⚠  PROJ-313 dark mode toggle   waiting: permission (Bash)                  3m   acme-api   ↑ needs push (2)
-                                                                                acme-web   ● ready to merge
-●  PROJ-320 search fix         working                                     1m   acme-web   ✗ CI failing · 4 behind base
-◐  PROJ-301 csv export         your turn · merged, CI green → x archive   22m   acme-api   ✓ merged
-                                                                                acme-web   ✓ merged
+Requires macOS, git, tmux, Claude Code, and optionally `gh` for PR and CI status.
+
+```sh
+brew install tmux
+git clone https://github.com/morenobonaventura/agents-manager.git ~/code/agents-manager && cd ~/code/agents-manager
+python3.12 -m venv .venv && .venv/bin/pip install -e .   # or: uv tool install -e .
+ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm               # Claude sessions call `wm` during intake
+wm doctor                                                # checks tools, PATH and Claude folder trust
+
+wm new
 ```
 
-## The problem
+`wm new` drops you into a Claude session. Describe the task:
 
-Your agent tools think in repos. Your tickets don't.
+> "This is PROJ-313. Add a dark mode toggle: acme-api needs to store the preference and the web UI needs the
+> toggle. Done when both are merged."
 
-A ticket like "add a dark mode toggle" needs a new setting in `acme-api` and a toggle in `acme-web`. With today's
-tools that turns into:
+Claude names the workstream (`PROJ-313 dark mode toggle`), writes `TASK.md`, attaches `acme-api` and `acme-web` as
+worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits for your **"go"**. Then get on with other
+work:
 
-- **Two conversations that don't know about each other.** You explain the task twice and carry the API contract from
-  one to the other by hand.
-- **Worktrees by hand, in every repo.** Each one needs a branch, named consistently, created from a fresh `main`.
-  Nobody cleans them up afterwards.
-- **An agent that wanders.** It `cd`s into your main checkout and edits it there, runs `git checkout main`, or
-  creates a worktree of its own.
-- **No answer to "is PROJ-313 done?"** You check two PRs, two CI runs, and whether either branch has fallen behind
-  `main`.
-- **Cleanup that loses work.** A worktree gets deleted with an unpushed commit still in it, or a squash-merged branch
-  looks "unpushed" forever and nobody dares to delete it.
-
-### Why the existing tools don't solve it
-
-Running agents in parallel is a solved problem. Claude Code's own agent view (`claude agents`, `claude --bg`) keeps
-sessions alive, shows which ones need input and notifies you, and many managers do the same. But they all organise
-work around sessions, and a session is one repo:
-
-- **Claude Code itself.** `--add-dir` lets one conversation see several repos, but it edits your main checkouts
-  directly. `--worktree` isolates only the repo you launched from. Multi-repo threads exist only in the cloud
-  (Projects, in beta).
-- **Parallel-agent managers** (Claude Squad, Conductor, workmux, Emdash, Vibe Kanban and others) give each session
-  one worktree of one repo. Agent Deck and Agent of Empires can put several repos' worktrees under one session, but
-  neither has a way for the agent to add a repo it turns out to need, neither shows PR or CI state per repo, and
-  their guardrails are containers.
-- **IDE agent managers** (Cursor's Agents Window, Codex in the ChatGPT app, Antigravity, Copilot) allow several
-  folders in one conversation, but worktrees across those folders are patchy or undocumented, and none of them runs
-  on your Claude subscription.
-- **Coding agents** such as opencode, Aider, Goose and Cline are what runs *inside* a session. Aider works on one
-  repo at a time, and opencode closed multi-directory support as not planned.
-
-You can glue a task together yourself from `--add-dir`, hand-made worktrees, deny rules and a notes file. `wm` is
-that glue, done once, with guarantees.
-
-## The idea: a workstream
-
-A workstream is one task. It has a key (`PROJ-313`, or `WS-7` without a ticket), a 3-word name, a folder, one git
-worktree per repo, and exactly one Claude Code conversation running at the folder's root:
-
-```text
-~/workstreams/PROJ-313/          ← Claude's working directory
-    CLAUDE.md                    ← generated by wm: identity, repos, branches, rules
-    TASK.md                      ← the brief Claude writes at intake: goal, done-when, decisions
-    .claude/settings.json        ← generated: status hooks, guard hooks, deny rules
-    acme-api/                    ← git worktree on proj-313-dark-mode-toggle
-    acme-web/                    ← git worktree on proj-313-dark-mode-toggle
+```sh
+C-b h                  # dashboard: every workstream, its status, git state and PRs
+C-b n                  # jump to the next session waiting on you
+C-b d                  # detach; sessions keep running
+wm                     # reopen the dashboard from any terminal
+wm archive PROJ-313    # when the PRs are merged: safety check, stop the session, remove the worktrees
 ```
-
-One rule shapes the design: **the agent asks, `wm` builds.** Claude never creates worktrees, switches branches or
-deletes anything. When it needs another repo it runs `wm add-repo`, and `wm` creates the worktree and the branch.
-The structure stays correct because only `wm` ever makes it.
-
-## What you get
-
-### One ticket, one conversation, every repo
-
-- **Voice-first intake.** Plain `wm new` asks for nothing up front. Describe the task and Claude picks a 3-word
-  name, records the ticket, writes `TASK.md` (goal, done-when, out of scope, decisions), attaches the repos, reads it
-  all back and waits for your "go". Repo names are fuzzy-matched, so a dictated "acme ML pipeline" finds
-  `acme-ml-pipeline`.
-- **Repos join mid-task.** When Claude finds it needs another repo, it attaches it with `wm add-repo`. In testing it
-  did this on its own.
-- **A brief that outlives the context window.** The generated `CLAUDE.md` and your `TASK.md` are reloaded after
-  context compaction and on resume. Every session start also injects the live branch, git and PR state of every
-  repo.
-
-### Guardrails that redirect instead of block
-
-- **Structure comes from `wm`, not from Claude.** Worktrees and branches only come from `wm new` and `wm add-repo`,
-  so every worktree lives in the workstream folder and every new branch carries the ID (`proj-313-…`). A branch
-  that is checked out elsewhere is refused, and continuing one that doesn't carry the ID takes
-  `--allow-foreign-branch`.
-- **Your main checkouts are off-limits.** A `PreToolUse` guard hook plus deny rules in the workstream's
-  `settings.json` block:
-  - edits outside the workstream folder
-  - `cd` or git writes in `~/code/<repo>`
-  - `git worktree`, `git switch`, `git checkout <branch>` and `git clone`
-  - Claude's own worktree tools, including subagents with worktree isolation
-- **Blocks say what to do instead**, so Claude corrects itself rather than stalling: *"acme-mobile is not attached to
-  workstream PROJ-313. If this task needs it, first run `wm add-repo PROJ-313 acme-mobile` (creates the worktree
-  ~/workstreams/PROJ-313/acme-mobile and the branch), then work there."*
-- **Drift is caught after every command.** If a worktree changed branch, a stray worktree or clone appeared, or a
-  repo went missing, Claude is told to restore it and the dashboard shows `⚠ drift`.
-
-### Know what every repo needs next
-
-- **One state per repo.** The Git column combines git and `gh` into the next step: `✎ uncommitted`, `↑ needs push`,
-  `needs PR`, `✗ CI failing`, `⚠ conflicts`, `changes requested`, `awaiting review`, `● ready to merge`,
-  `✓ merged`, plus problems like a missing worktree or a rebase left half-done. Once a PR is merged, the leftover
-  "unpushed" and "behind" counts of a squash merge are ignored.
-- **Knows when `main` moved.** Each repo's base branch is fetched in the background (at most every 5 minutes, on
-  `p`, and when a session starts). The dashboard shows "N behind base" until the branch is merged, and Claude is told
-  how far behind it is.
-- **Rebase the whole task on request.** `b` in the dashboard (or `wm rebase PROJ-313`) shows a plan, then rebases
-  every branch of the workstream that is behind its base. Branches already on origin are force-pushed with a lease,
-  so commits someone else pushed meanwhile are never overwritten. If a rebase conflicts, `wm` aborts it (nothing
-  changes) and hands the conflict to the workstream's Claude session, resuming it if needed. Nothing is rebased
-  without you asking, and never while Claude is mid-task.
-
-### A lifecycle for the whole task
-
-- **Archive that won't lose work.** `wm archive` stops the session, removes every worktree and deletes the merged
-  branches. It refuses while any repo has uncommitted changes, unpushed commits, or commits made after its PR was
-  merged, unless you pass `--force`. It only deletes branches that are merged or have no commits of their own. The
-  brief and the conversation are kept.
-- **Unarchive.** `wm unarchive PROJ-313 --open` recreates the worktrees on the same branches and resumes the same
-  conversation.
-- **Adopt work in progress.** Started something in a normal checkout? `wm add-repo … --adopt` moves the branch and
-  your uncommitted changes into the workstream, and puts everything back if any step fails
-  ([details](#picking-up-work-that-isnt-in-a-worktree-yet)).
-
-### And the basics, built in
-
-- **Sessions outlive your terminal.** They run in `wm`'s own tmux server, so closing every window stops nothing.
-  `enter` or `wm open PROJ-313` jumps into a session, and after a reboot `r` resumes the same conversation.
-- **"Needs you" at a glance.** Claude Code hooks, not screen scraping, feed live status to the dashboard and the
-  tmux status line (`⚠ 2 need you`). A macOS notification fires when a session you aren't looking at gets blocked or
-  finishes. `C-b n` jumps to the next one waiting.
-- **Your normal Claude Code.** Sessions run the interactive `claude` CLI with your subscription and your usual
-  permission mode.
 
 ## How wm compares
 
@@ -181,99 +79,63 @@ tools move fast; if a cell is wrong, please open an issue.
 9. Starting from an existing branch; uncommitted changes aren't carried over.
 10. A macOS app built around Claude Code, not a terminal tool.
 
-GitKraken's Kepler also has multi-repo tasks, issue-named branches and delete guards, in a proprietary desktop app.
-
 **wm doesn't replace Claude Code's agent view.** Agent view is a great way to watch plain sessions. `wm` adds the
 layer Claude Code leaves to you: what a session is for, which repos it may touch, and when the task is done.
 
-## Quick start
+## How it works
 
-```sh
-# 1. Install (macOS; needs git, Claude Code, and optionally gh for PR status)
-brew install tmux
-git clone https://github.com/morenobonaventura/agents-manager.git ~/code/agents-manager && cd ~/code/agents-manager
-python3.12 -m venv .venv && .venv/bin/pip install -e .
-ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm
-wm doctor                      # checks tools, PATH and Claude folder trust
+A workstream is one task: a key (`PROJ-313`, or `WS-7` without a ticket), a 3-word name, and a folder holding one
+git worktree per repo and exactly one Claude Code conversation at its root:
 
-# 2. Start a workstream
-wm new
+```text
+~/workstreams/PROJ-313/          ← Claude's working directory
+    CLAUDE.md                    ← generated by wm: identity, repos, branches, rules
+    TASK.md                      ← the brief Claude writes at intake: goal, done-when, decisions
+    .claude/settings.json        ← generated: status hooks, guard hooks, deny rules
+    acme-api/                    ← git worktree on proj-313-dark-mode-toggle
+    acme-web/                    ← git worktree on proj-313-dark-mode-toggle
 ```
 
-`wm new` drops you into a Claude session. Describe the task, by voice or text:
+**The agent asks, `wm` builds.** Claude never creates worktrees, switches branches or deletes anything. When it
+needs another repo it runs `wm add-repo`, and `wm` creates the worktree and the branch.
 
-> "This is PROJ-313. Add a dark mode toggle: acme-api needs to store the preference and the web UI needs the
-> toggle. Done when both are merged."
+- **Voice-first intake.** Claude names the task, writes `TASK.md` and attaches the repos, fuzzy-matching dictated
+  names.
+- **Survives compaction.** `CLAUDE.md` and `TASK.md` reload after compaction and on resume, with live git and PR
+  state.
+- **Guardrails that redirect.** Edits outside the workstream, git writes in `~/code/<repo>`, `git switch`,
+  `checkout`, `worktree` and `clone` are blocked **with a "do this instead" message**. Drift is caught after every
+  command.
+- **The next step for each repo.** `✎ uncommitted`, `↑ needs push`, `needs PR`, `✗ CI failing`,
+  `● ready to merge`, `✓ merged`, plus "N behind base".
+- **Rebase the whole task.** Every branch behind its base, force-pushed with a lease. **Conflicts go back to
+  Claude.**
+- **Archive that won't lose work.** **Refuses on uncommitted, unpushed or post-merge commits.** `wm unarchive`
+  brings it all back.
+- **Adopt work in progress.** `--adopt` moves a branch and its uncommitted changes from a normal checkout into the
+  workstream, and **rolls back if any step fails**.
+- **Outlives your terminal.** Sessions run in `wm`'s own tmux server, with "needs you" status and macOS
+  notifications.
 
-Claude names the workstream (`PROJ-313 dark mode toggle`), writes `TASK.md`, attaches `acme-api` and `acme-web` as
-worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits. Say **"go"**.
-
-```sh
-# 3. Get on with other work; come back when it needs you
-C-b h                          # dashboard: every workstream, its status, git state and PRs
-C-b n                          # jump to the next session waiting on you
-C-b d                          # detach; sessions keep running
-wm                             # reopen the dashboard from any terminal
-
-# 4. When the PRs are merged
-wm archive PROJ-313            # safety check, then stop the session and remove the worktrees
-```
-
-## Install
-
-Requires macOS, git, tmux (`brew install tmux`), Claude Code, and optionally `gh` for PR and CI status.
-
-```sh
-python3.12 -m venv .venv && .venv/bin/pip install -e .
-ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm     # Claude sessions call `wm` during intake
-wm doctor
-```
-
-(`uv tool install -e .` works too.)
-
-## Use
+## Commands
 
 ```sh
 wm                 # dashboard (inside the manager's own tmux server)
 wm new             # new workstream → you land in Claude; describe the task by voice/text, name the repos
 wm new PROJ-313 -n "dark mode toggle" -r web -r api -t "task text"   # skip most of intake
-wm ls              # list with git + PR state (--fetch to refresh origin first)
+wm ls              # list with git + PR state (--fetch to refresh origin first, --all to include archived)
 wm open PROJ-313   # jump into a session (resumes it if stopped)
 wm add-repo WS-7 acme-mobile           # attach another repo mid-work (Claude does this itself when asked)
-wm add-repo WS-7 acme-mobile --adopt   # bring in work in progress from ~/code/acme-mobile (see below)
+wm add-repo WS-7 acme-mobile --adopt   # bring in work in progress from ~/code/acme-mobile
 wm rebase PROJ-313 # rebase branches that are behind their base; force-push (with lease) the ones on origin
 wm archive PROJ-313                    # safety report, then stop session + remove worktrees
-wm ls --all        # include archived workstreams
 wm unarchive PROJ-313 --open           # recreate the worktrees on the same branches and resume the conversation
 ```
-
-Keys inside tmux: `C-b h` dashboard · `C-b n` next workstream that needs you · `C-b d` detach.
 
 Dashboard: `enter` open · `n` new · `a` add repo · `r` resume · `b` rebase · `x` archive · `p` refresh PRs ·
 `v` archived view (`u` restore) · `q` exit (sessions keep running).
 
-### Picking up work that isn't in a worktree yet
-
-If you started something in a normal checkout (`~/code/<repo>` on a feature branch, and/or uncommitted changes),
-`--adopt` moves it into the workstream. It shows the plan first and asks before doing anything:
-
-1. Stash the uncommitted and untracked changes in that checkout. Ignored files such as `.env` stay where they are.
-2. Free the branch there: the main checkout switches back to the default branch; another worktree (`--from <path>`)
-   gets a detached HEAD.
-3. Create the workstream worktree on that branch, apply the changes, and drop the temporary stash.
-
-If you had uncommitted changes directly on `main`, it creates the workstream branch (`proj-313-…`) from your current
-commit and moves the changes onto it. An adopted branch keeps its name, even without the ticket ID, so upstreams and
-open PRs keep working. If any step fails, the checkout is put back exactly as it was. It refuses while a merge or
-rebase is in progress, on a detached HEAD, or when the branch already belongs to another workstream.
-
-It works for Claude too: during intake, say "continue the work I have in web". Claude runs
-`wm add-repo <key> web --adopt`, shows you the plan, and reruns it with `--yes` once you agree. It also works at
-creation: `wm new PROJ-313 -n "dark mode toggle" -r web -r api --adopt`.
-
-### Configuration
-
-Optional, in `~/.agents-manager/config.toml`:
+Optional config in `~/.agents-manager/config.toml`:
 
 ```toml
 code_roots = ["~/code"]            # where your repos live; their checkouts are protected
@@ -282,22 +144,20 @@ workstreams_dir = "~/workstreams"  # where workstream folders are created
 
 ## Limits
 
-- **macOS only for now.** Notifications use `osascript` and mouse copy uses `pbcopy`.
-- **Claude Code only.** Status and guardrails are built on Claude Code hooks.
+- **macOS and Claude Code only.** Notifications use `osascript`; status and guardrails are built on Claude Code hooks.
 - **The shell-command check is best-effort.** A command written to get around it can slip past; drift detection
-  catches the result, not the attempt. There's no OS-level sandbox yet. Everything else follows your normal Claude
-  Code permission mode.
-- **Repo-level Claude settings don't apply inside a workstream.** Each repo's `CLAUDE.md` is still loaded, but its
-  `.claude/settings.json` and `.mcp.json` are not, because Claude Code only reads those from the working directory.
+  catches the result, not the attempt. There's no OS-level sandbox yet.
+- **Repo-level Claude settings don't apply.** Each repo's `CLAUDE.md` is loaded, but its `.claude/settings.json` and
+  `.mcp.json` are not, because Claude Code only reads those from the working directory.
 - **No diff viewer.** Review in your editor or on the PR. PR and CI state needs `gh` and GitHub.
 
 ## Disclaimer
 
 **Use at your own risk.** This software is provided as is, without warranty of any kind (see `LICENSE`). `wm` runs
 git commands that create and remove worktrees, delete branches, stash changes, rebase and force-push (with lease),
-and it starts Claude Code sessions that change your code. The safety checks described above reduce the risk of
-losing work, but they are not a guarantee. The authors are not responsible for any data loss or other damage
-resulting from its use. Keep your work committed and pushed, and keep backups.
+and it starts Claude Code sessions that change your code. The safety checks reduce the risk of losing work, but they
+are not a guarantee. The authors are not responsible for any data loss or other damage resulting from its use. Keep
+your work committed and pushed, and keep backups.
 
 ## Develop
 
@@ -306,8 +166,4 @@ resulting from its use. Keep your work committed and pushed, and keep backups.
 .venv/bin/ruff check src tests
 ```
 
-`DESIGN.md` explains the reasoning behind each design decision.
-
-## License
-
-MIT, see `LICENSE`.
+`DESIGN.md` explains the reasoning behind each design decision. MIT licensed, see `LICENSE`.
