@@ -95,8 +95,8 @@ def refresh(conn, ws_key: str) -> None:
             state = "none" if pr is None else pr["state"].lower()
             if state == "merged":
                 old = previous.get(link.repo)
-                if old and old.state == "merged" and old.number == pr["number"] and old.checks in ("pass", "fail"):
-                    checks = old.checks  # base-branch CI already finished; don't ask again
+                if old and old.state == "merged" and old.number == pr["number"] and old.checks == "pass":
+                    checks = old.checks  # base-branch CI passed; don't ask again (a failed run can be re-run green)
                 else:
                     try:
                         checks = merge_commit_checks(Path(link.worktree_path), pr)

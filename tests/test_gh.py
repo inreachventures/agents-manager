@@ -64,3 +64,22 @@ def test_describe_and_row_state():
     assert row("pass", "pending").base_ci == "pending"
     assert row("pending", "fail").base_ci == "fail"
     assert row(None).base_ci is None
+
+
+def test_refresh_rechecks_failed_base_ci(env, monkeypatch):
+    """A failed merge-commit run can be re-run green: only a pass is final."""
+    conn = db.connect()
+    db.insert_workstream(conn, db.Workstream("WS-1", None, None, "s", "/w", "stopped", None, 0, 0, None))
+    db.insert_repo(conn, db.RepoLink("WS-1", "r", "/r", ".", "b", "origin/main", True, 0))
+    monkeypatch.setattr(gh, "available", lambda: True)
+    monkeypatch.setattr(gh, "fetch_pr", lambda *a: {**PR, "url": "u"})
+    runs = {"check-runs": {"check_runs": [{"status": "completed", "conclusion": "failure"}]}}
+    calls = fake_gh(monkeypatch, runs)
+
+    gh.refresh(conn, "WS-1")
+    assert db.get_prs(conn, "WS-1")["r"].checks == "fail"
+    runs["check-runs"] = {"check_runs": [{"status": "completed", "conclusion": "success"}]}  # re-run went green
+    gh.refresh(conn, "WS-1")
+    assert db.get_prs(conn, "WS-1")["r"].checks == "pass" and len(calls) == 2
+    gh.refresh(conn, "WS-1")  # pass is final: not asked again
+    assert db.get_prs(conn, "WS-1")["r"].checks == "pass" and len(calls) == 2
