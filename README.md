@@ -29,25 +29,17 @@ python3.12 -m venv .venv && .venv/bin/pip install -e .   # or: uv tool install -
 ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm               # Claude sessions call `wm` during intake
 wm doctor                                                # checks tools, PATH and Claude folder trust
 
-wm new
+wm                                                       # opens the dashboard
 ```
 
-`wm new` drops you into a Claude session. Describe the task:
+Press `n` in the dashboard and describe the task in the Claude session that opens:
 
 > "This is PROJ-313. Add a dark mode toggle: acme-api needs to store the preference and the web UI needs the
 > toggle. Done when both are merged."
 
 Claude names the workstream (`PROJ-313 dark mode toggle`), writes `TASK.md`, attaches `acme-api` and `acme-web` as
-worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits for your **"go"**. Then get on with other
-work:
-
-```sh
-C-b h                  # dashboard: every workstream, its status, git state and PRs
-C-b n                  # jump to the next session waiting on you
-C-b d                  # detach; sessions keep running
-wm                     # reopen the dashboard from any terminal
-wm archive PROJ-313    # when the PRs are merged: safety check, stop the session, remove the worktrees
-```
+worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits for your **"go"**. Then press `C-b h` to go
+back to the dashboard and get on with other work. When the PRs are merged, press `x` to archive.
 
 ## How wm compares
 
@@ -110,30 +102,41 @@ needs another repo it runs `wm add-repo`, and `wm` creates the worktree and the 
   `● ready to merge`, `✓ merged`, plus "N behind base".
 - **Rebase the whole task.** Every branch behind its base, force-pushed with a lease. **Conflicts go back to
   Claude.**
-- **Archive that won't lose work.** **Refuses on uncommitted, unpushed or post-merge commits.** `wm unarchive`
-  brings it all back.
-- **Adopt work in progress.** `--adopt` moves a branch and its uncommitted changes from a normal checkout into the
+- **Archive that won't lose work.** **Refuses on uncommitted, unpushed or post-merge commits.** Restoring brings
+  back the worktrees and the conversation.
+- **Adopt work in progress.** Claude can move a branch and its uncommitted changes from a normal checkout into the
   workstream, and **rolls back if any step fails**.
 - **Outlives your terminal.** Sessions run in `wm`'s own tmux server, with "needs you" status and macOS
   notifications.
 
-## Commands
+## Usage
 
-```sh
-wm                 # dashboard (inside the manager's own tmux server)
-wm new             # new workstream → you land in Claude; describe the task by voice/text, name the repos
-wm new PROJ-313 -n "dark mode toggle" -r web -r api -t "task text"   # skip most of intake
-wm ls              # list with git + PR state (--fetch to refresh origin first, --all to include archived)
-wm open PROJ-313   # jump into a session (resumes it if stopped)
-wm add-repo WS-7 acme-mobile           # attach another repo mid-work (Claude does this itself when asked)
-wm add-repo WS-7 acme-mobile --adopt   # bring in work in progress from ~/code/acme-mobile
-wm rebase PROJ-313 # rebase branches that are behind their base; force-push (with lease) the ones on origin
-wm archive PROJ-313                    # safety report, then stop session + remove worktrees
-wm unarchive PROJ-313 --open           # recreate the worktrees on the same branches and resume the conversation
-```
+You only need two places: the dashboard (run `wm`) and the Claude sessions it opens.
 
-Dashboard: `enter` open · `n` new · `a` add repo · `r` resume · `b` rebase · `x` archive · `p` refresh PRs ·
-`v` archived view (`u` restore) · `q` exit (sessions keep running).
+**From the dashboard:**
+
+| Key | What it does |
+|---|---|
+| `n` | New workstream: a Claude session opens and you describe the task |
+| `enter` | Jump into the selected workstream's Claude session |
+| `a` | Attach another repo to the selected workstream |
+| `r` | Resume a stopped session, in the same conversation (after a reboot, say) |
+| `b` | Rebase every branch of the task that is behind its base; conflicts go to Claude |
+| `x` | Archive: safety check, then stop the session and remove the worktrees |
+| `v` | Show archived workstreams; `u` restores one with its worktrees and conversation |
+| `p` | Refresh git, PR and CI state now |
+| `q` | Leave the dashboard; sessions keep running |
+
+Anywhere in `wm`'s tmux: `C-b h` back to the dashboard · `C-b n` next session waiting on you · `C-b d` detach.
+
+**From the chat:** ask Claude, and it runs `wm` for you.
+
+- *"We also need acme-mobile."* Claude attaches the repo.
+- *"Continue the work I have in web."* Claude moves your branch and uncommitted changes from `~/code/web` into the
+  workstream, after showing you the plan.
+
+Whichever way a repo joins, `wm` guarantees it **lives as a worktree inside the workstream folder**, on the task's
+branch, **listed in the task's `CLAUDE.md` and covered by its guardrails**.
 
 Optional config in `~/.agents-manager/config.toml`:
 
