@@ -24,7 +24,7 @@ Requires macOS, git, tmux, Claude Code, and optionally `gh` for PR and CI status
 
 ```sh
 brew install tmux
-git clone https://github.com/morenobonaventura/agents-manager.git ~/code/agents-manager && cd ~/code/agents-manager
+git clone https://github.com/inreachventures/agents-manager.git ~/code/agents-manager && cd ~/code/agents-manager
 python3.12 -m venv .venv && .venv/bin/pip install -e .   # or: uv tool install -e .
 ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm               # Claude sessions call `wm` during intake
 wm doctor                                                # checks tools, PATH and Claude folder trust
