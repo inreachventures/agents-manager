@@ -56,25 +56,25 @@ back to the dashboard and get on with other work. When the PRs are merged, press
 | Sessions outlive the terminal, with "needs you" status | ✅ | ✅ | ✅ | ✅ | ◐ | ◐ | ✅ |
 | Real `claude` CLI on your subscription, in your terminal | ✅ | ✅ | ✅ | ✅ | ◐ ¹⁰ | ✅ | ✅ |
 
-✅ yes · ◐ partly · ❌ not in the project's docs. Checked against each project's public docs on 2 October 2026
-(Herdr on 6 October). These tools move fast; if a cell is wrong, please open an issue.
+<sub>✅ yes · ◐ partly · ❌ not in the project's docs. Checked against each project's public docs on 2 October 2026
+(Herdr on 6 October). These tools move fast; if a cell is wrong, please open an issue.</sub>
 
-1. `--add-dir` shares other repos without isolating them; `--worktree` covers only the repo you launch from;
-   multi-repo threads exist in cloud Projects (beta).
-2. `/add-dir` gives access to another folder, without a worktree or a branch.
-3. Cloud Projects only.
-4. Deny rules and hooks to build your own policy; `--worktree` sessions can't write to the main checkout.
-5. Container sandboxes.
-6. A PR badge for the current branch of one repo.
-7. One repo per workspace.
-8. One repo at a time: `claude rm` refuses unpushed commits.
-9. Starting from an existing branch; uncommitted changes aren't carried over.
-10. A macOS app built around Claude Code, not a terminal tool.
-11. The agent can run `herdr worktree create`, but the worktree opens as a separate workspace, outside its
-    conversation.
-12. Branch and ahead/behind counts in the sidebar; no PR or CI state.
-13. `herdr worktree remove` needs `--force` when Git refuses a dirty checkout; no unpushed-commit check and no
-    unarchive.
+<sub>¹ `--add-dir` shares other repos without isolating them; `--worktree` covers only the repo you launch from;
+multi-repo threads exist in cloud Projects (beta).<br>
+² `/add-dir` gives access to another folder, without a worktree or a branch.<br>
+³ Cloud Projects only.<br>
+⁴ Deny rules and hooks to build your own policy; `--worktree` sessions can't write to the main checkout.<br>
+⁵ Container sandboxes.<br>
+⁶ A PR badge for the current branch of one repo.<br>
+⁷ One repo per workspace.<br>
+⁸ One repo at a time: `claude rm` refuses unpushed commits.<br>
+⁹ Starting from an existing branch; uncommitted changes aren't carried over.<br>
+¹⁰ A macOS app built around Claude Code, not a terminal tool.<br>
+¹¹ The agent can run `herdr worktree create`, but the worktree opens as a separate workspace, outside its
+conversation.<br>
+¹² Branch and ahead/behind counts in the sidebar; no PR or CI state.<br>
+¹³ `herdr worktree remove` needs `--force` when Git refuses a dirty checkout; no unpushed-commit check and no
+unarchive.</sub>
 
 **wm doesn't replace Claude Code's agent view.** Agent view is a great way to watch plain sessions. `wm` adds the
 layer Claude Code leaves to you: what a session is for, which repos it may touch, and when the task is done.
