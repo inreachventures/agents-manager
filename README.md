@@ -93,6 +93,8 @@ needs another repo it runs `wm add-repo`, and `wm` creates the worktree and the 
 
 - **Voice-first intake.** Claude names the task, writes `TASK.md` and attaches the repos, fuzzy-matching dictated
   names.
+- **One memory for all tasks.** What Claude learns about how you work is saved once and loaded in every
+  workstream; facts about a single task stay in its `TASK.md`.
 - **Survives compaction.** `CLAUDE.md` and `TASK.md` reload after compaction and on resume, with live git and PR
   state.
 - **Guardrails that redirect.** Edits outside the workstream, git writes in `~/code/<repo>`, `git switch`,

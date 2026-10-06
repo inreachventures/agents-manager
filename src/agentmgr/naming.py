@@ -49,6 +49,11 @@ def branch_carries_id(branch: str, key: str, ticket: str | None) -> bool:
     return any(ident.lower() in b for ident in (ticket, key) if ident)
 
 
+def claude_slug(path) -> str:
+    """How Claude Code names a project folder under ~/.claude/projects (and in its temp dir)."""
+    return re.sub(r"[^A-Za-z0-9]", "-", str(path))
+
+
 def symlink_name(key: str, ticket: str | None, name: str | None) -> str | None:
     """Convenience symlink name, e.g. PROJ-313-dark-mode-toggle. None if nothing to add to the key."""
     if not name and not ticket:

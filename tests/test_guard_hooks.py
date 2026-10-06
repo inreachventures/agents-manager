@@ -26,6 +26,17 @@ def test_file_tools(ctx, tmp_path):
     assert "generated" in guard.check_file_tool("Edit", {"file_path": "CLAUDE.md"}, ctx)
 
 
+def test_shared_memory_and_scratchpad_are_writable(ctx, tmp_path):
+    memory, scratch = tmp_path / "home" / "memory", tmp_path / "scratch"
+    ctx.writable = [memory, scratch]
+    assert guard.check_file_tool("Write", {"file_path": str(memory / "MEMORY.md")}, ctx) is None
+    assert guard.check_file_tool("Write", {"file_path": str(scratch / "s1" / "scratchpad" / "x.py")}, ctx) is None
+    assert "outside" in guard.check_file_tool("Write", {"file_path": str(memory / ".." / "config.toml")}, ctx)
+    memory.mkdir(parents=True)
+    (memory / "code").symlink_to(tmp_path / "code")
+    assert "outside" in guard.check_file_tool("Edit", {"file_path": str(memory / "code" / "a.py")}, ctx)
+
+
 @pytest.mark.parametrize("cmd", [
     "git worktree add ../x",
     "cd acme-web && git switch main",
@@ -83,6 +94,10 @@ def test_hook_status_and_guard(env, monkeypatch, capsys):
                    "tool_input": {"file_path": str(env.code / "acme-web" / "README.md")}})
     decision = json.loads(out)["hookSpecificOutput"]
     assert decision["permissionDecision"] == "deny"
+    for allowed in (env.root / "home" / "memory" / "MEMORY.md",
+                    hooks.scratch_dir(ws) / ws.session_id / "scratchpad" / "check.py"):
+        assert run_hook(monkeypatch, capsys, "PreToolUse", {**base, "tool_name": "Write",
+                        "tool_input": {"file_path": str(allowed)}}) == ""
 
     run_hook(monkeypatch, capsys, "Notification", {**base, "notification_type": "permission_prompt",
                                                    "message": "Claude needs permission to use Bash"})

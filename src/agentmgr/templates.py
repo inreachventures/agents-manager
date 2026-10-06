@@ -27,7 +27,7 @@ name: {name}
 (append at meaningful milestones: what changed, where, why)"""
 
 
-def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
+def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str], memory_dir: Path,
               pending_repos: list[str] | None = None) -> str:
     key = ws.key
     title = " · ".join(p for p in (key, ws.ticket if ws.ticket != key else None, ws.name) if p)
@@ -87,8 +87,8 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         "",
         "## Rules",
         "",
-        f"- Only modify files inside the repo subfolders above and {TASK_FILE}. The original checkouts are",
-        "  read-only reference.",
+        f"- Only modify files inside the repo subfolders above and {TASK_FILE} (plus your memory folder and your",
+        "  scratchpad). The original checkouts are read-only reference.",
         "- Never create, remove or move git worktrees, and never switch branches in these worktrees.",
         "  Guard hooks enforce this; if a command is blocked, read the reason and adjust.",
         "  To look at another branch use `git show <branch>:<path>` or `git diff <branch>`.",
@@ -98,6 +98,16 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         f"- Commit in each repo separately; mention {ident} in commit messages.",
         f"- Open PRs with `gh pr create` from inside the worktree when asked; include {ident} in the title.",
         f"- Append to \"Decisions & progress\" in {TASK_FILE} at meaningful milestones.",
+        "",
+        "## Memory",
+        "",
+        f"Your memory folder, {memory_dir}, is shared by every workstream:",
+        "what you save there shows up in all of them. Save there only what applies to any task: how the user",
+        "likes to work, feedback on your behaviour, useful references.",
+        f"- Facts about this task (decisions, findings, state) go in {TASK_FILE} under \"Decisions & progress\".",
+        "- Facts about one repo (commands, conventions, gotchas) belong in that repo's CLAUDE.md in its worktree;",
+        "  it gets committed, so propose the change to the user first.",
+        "- Don't save \"project\"-type memories about this workstream: every other workstream would load them.",
         "",
         "## Done means",
         "",
@@ -120,10 +130,11 @@ HOOK_EVENTS = {
 }
 
 
-def allowed_tools(ws: Workstream) -> list[str]:
+def allowed_tools(ws: Workstream, memory_dir: Path) -> list[str]:
     """Pre-approved tools, passed with --allowedTools rather than written to settings.json: project-level
     allow rules make Claude Code re-ask for folder trust on every new workstream folder."""
-    return [f"Bash(wm set {ws.key} *)", f"Bash(wm add-repo {ws.key} *)", f"Edit(./{TASK_FILE})"]
+    return [f"Bash(wm set {ws.key} *)", f"Bash(wm add-repo {ws.key} *)", f"Edit(./{TASK_FILE})",
+            f"Edit(//{str(memory_dir).strip('/')}/**)"]
 
 
 def settings_json(ws: Workstream, wm: str, code_roots: list[str]) -> str:
@@ -146,7 +157,7 @@ def settings_json(ws: Workstream, wm: str, code_roots: list[str]) -> str:
 
 
 def write(ws: Workstream, repos: list[RepoLink], available_repos: list[str], wm: str,
-          code_roots: list[str], pending_repos: list[str] | None = None) -> None:
-    (ws.path / "CLAUDE.md").write_text(claude_md(ws, repos, available_repos, pending_repos))
+          code_roots: list[str], memory_dir: Path, pending_repos: list[str] | None = None) -> None:
+    (ws.path / "CLAUDE.md").write_text(claude_md(ws, repos, available_repos, memory_dir, pending_repos))
     (ws.path / ".claude").mkdir(exist_ok=True)
     (ws.path / ".claude" / "settings.json").write_text(settings_json(ws, wm, code_roots))

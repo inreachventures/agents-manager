@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import os
 import shlex
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 FILE_TOOLS = {"Edit": "file_path", "Write": "file_path", "MultiEdit": "file_path", "NotebookEdit": "notebook_path"}
@@ -23,6 +23,7 @@ class Context:
     cwd: Path  # Bash working directory at the time of the call
     code_roots: list[Path]
     branches: dict[str, str]  # worktree folder name -> expected branch
+    writable: list[Path] = field(default_factory=list)  # also editable: shared memory, session scratchpad
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -66,6 +67,9 @@ def check_file_tool(tool: str, tool_input: dict, ctx: Context) -> str | None:
         return None
     path = _abs(raw, ctx.cwd)
     if not _within(path, ctx.folder):
+        # resolved, so a symlink inside these folders can't lead elsewhere
+        if any(_within(path.resolve(), d.resolve()) for d in ctx.writable):
+            return None
         return f"Blocked: {path} is outside workstream {ctx.ws_key}. " + redirect(path, ctx)
     rel = path.relative_to(ctx.folder).as_posix()
     if rel in MANAGER_FILES:
