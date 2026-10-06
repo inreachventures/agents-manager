@@ -27,6 +27,22 @@ def test_new_without_arguments_starts_intake(env):
     assert new().key == "WS-2"
 
 
+def test_memory_is_shared_across_workstreams(env, monkeypatch):
+    memory = env.root / "home" / "memory"
+    ws = new()
+    assert f"## Memory\n\nYour memory folder, {memory}, is shared by every workstream" in (
+        ws.path / "CLAUDE.md").read_text()
+    cmd = ws_mod.claude_command(ws, resume=False)
+    assert json.loads(cmd[cmd.index("--settings") + 1]) == {"autoMemoryDirectory": str(memory)}
+    assert f"Edit(/{memory}/**)" in cmd[cmd.index("--allowedTools") + 1].split(",")
+    # resuming regenerates CLAUDE.md, so older workstreams get template changes
+    (ws.path / "CLAUDE.md").write_text("stale\n")
+    monkeypatch.setattr(ws_mod, "session_alive", lambda ws: False)
+    monkeypatch.setattr(ws_mod, "start_session", lambda ws, **kw: None)
+    ws_mod.resume(ws.key)
+    assert "## Memory" in (ws.path / "CLAUDE.md").read_text()
+
+
 def test_add_repo_requires_name(env):
     ws = new()
     with pytest.raises(WorkstreamError, match="no name yet"):

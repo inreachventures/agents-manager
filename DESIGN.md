@@ -217,6 +217,7 @@ name: dark mode toggle
 | `CLAUDE.md` (generated) | Identity, intake procedure, available repos, attached repos/branches, rules, `@TASK.md` | Loaded every session, re-applied after compaction and on resume |
 | `TASK.md` | Goal, done-when, decisions | The brief; written during intake, living afterwards |
 | `.claude/settings.json` (generated) | Permissions, guard + status hooks | Enforcement, not persuasion |
+| Shared memory (`~/.agents-manager/memory/`) | How the user likes to work, feedback, references: anything that applies to every task | Claude's auto memory is per folder, so per workstream by default; `wm` passes `--settings '{"autoMemoryDirectory": …}'` so every workstream shares one. `CLAUDE.md` says what belongs there (task facts go in `TASK.md`, repo facts in the repo's `CLAUDE.md`) |
 | `SessionStart` hook output | *Live* state: branch, dirty/ahead/behind, PR per repo | Fresh on every start/resume |
 
 **Generated `CLAUDE.md`** (sketch):
@@ -263,7 +264,7 @@ Layered, from strongest to weakest:
 | Constraint | Guaranteed by | Strength |
 |---|---|---|
 | Worktree exists, folder + branch carry the ID | Manager creates them; Claude isn't asked to | **Guaranteed** |
-| No edits outside the workstream folder (Edit/Write/NotebookEdit tools) | `permissions.deny: ["Edit(~/code/**)"]` + guard hook rejects any `file_path` outside the folder | **Enforced** |
+| No edits outside the workstream folder (Edit/Write/NotebookEdit tools) | `permissions.deny: ["Edit(~/code/**)"]` + guard hook rejects any `file_path` outside the folder, except the shared memory folder and Claude's scratchpad for this workstream (symlinks resolved) | **Enforced** |
 | No Claude-created worktrees | `permissions.deny: ["EnterWorktree"]`; guard hook denies subagents launched with worktree isolation | **Enforced** |
 | No `git worktree …`, `git checkout/switch <branch>`, `cd`/`git -C` into `~/code/<repo>` via Bash | Guard hook on `Bash` parses the command, denies with a reason Claude can act on | **Best-effort** (Bash can always be obfuscated) |
 | Worktrees still on their branch, no new worktrees in the repos | `PostToolUse` check after every Bash call: compares `git branch --show-current` and `git worktree list` with the DB; on drift, tells Claude to revert and flags `⚠ drift` in the dashboard | **Detected** within one tool call |

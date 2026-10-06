@@ -27,6 +27,11 @@ class Config:
         return self.home / "state.db"
 
     @property
+    def memory_dir(self) -> Path:
+        """Claude's auto memory, shared by every workstream session."""
+        return self.home / "memory"
+
+    @property
     def tmux_conf(self) -> Path:
         return self.home / "tmux.conf"
 

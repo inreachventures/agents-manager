@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 import time
 import uuid
@@ -58,6 +59,7 @@ def regenerate(conn, ws: db.Workstream, cfg: Config | None = None, pending_repos
         [r.name for r in repos.discover(cfg)],
         tmux.wm_executable(),
         [str(r) for r in cfg.code_roots],
+        cfg.memory_dir,
         pending_repos,
     )
     _update_symlink(ws, cfg)
@@ -421,7 +423,9 @@ def claude_command(ws: db.Workstream, *, resume: bool, initial_prompt: str | Non
     cmd = [cfg.claude_cmd]
     cmd += ["--resume", ws.session_id] if resume else ["--session-id", ws.session_id]
     cmd += ["--name", ws.label]
-    cmd += ["--allowedTools", ",".join(templates.allowed_tools(ws))]
+    cmd += ["--allowedTools", ",".join(templates.allowed_tools(ws, cfg.memory_dir))]
+    # one memory for all workstreams (the default is per folder, so per workstream)
+    cmd += ["--settings", json.dumps({"autoMemoryDirectory": str(cfg.memory_dir)})]
     if initial_prompt:
         cmd.append(initial_prompt)
     return cmd
@@ -443,10 +447,7 @@ def session_alive(ws: db.Workstream) -> bool:
 
 
 def transcript_exists(ws: db.Workstream) -> bool:
-    import re
-
-    encoded = re.sub(r"[^A-Za-z0-9]", "-", str(ws.path))
-    return (Path.home() / ".claude" / "projects" / encoded / f"{ws.session_id}.jsonl").exists()
+    return (Path.home() / ".claude" / "projects" / naming.claude_slug(ws.path) / f"{ws.session_id}.jsonl").exists()
 
 
 def resume(key: str, initial_prompt: str | None = None) -> db.Workstream:
@@ -454,6 +455,7 @@ def resume(key: str, initial_prompt: str | None = None) -> db.Workstream:
     ws = require(conn, key)
     if session_alive(ws):
         return ws
+    regenerate(conn, ws)  # pick up template changes made since the workstream was created
     # a session that never got a first message has no transcript; start it fresh with the same id
     start_session(ws, initial_prompt=initial_prompt, resume=transcript_exists(ws))
     db.set_status(conn, ws.key, db.YOUR_TURN, "resumed")

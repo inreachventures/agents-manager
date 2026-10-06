@@ -6,10 +6,11 @@ Must be fast and must never break the session: any unexpected error exits 0 sile
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 
-from . import db, fetcher, gh, gitops, guard, notify, tmux
+from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
 from .config import get_config
 
 PROMPT_OPTION = "@wm_prompt"  # shown in the pane's top border by tmux.conf
@@ -44,14 +45,21 @@ def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None)
             notify.notify(ws.label, msg)
 
 
+def scratch_dir(ws: db.Workstream) -> Path:
+    """Claude Code's temp folder for this workstream; each session's scratchpad lives inside it."""
+    return Path("/tmp") / f"claude-{os.getuid()}" / naming.claude_slug(ws.path)
+
+
 def _context(conn, ws: db.Workstream, payload: dict) -> guard.Context:
+    cfg = get_config()
     cwd = Path(payload.get("cwd") or ws.folder).resolve()
     return guard.Context(
         ws_key=ws.key,
         folder=ws.path.resolve(),
         cwd=cwd,
-        code_roots=list(get_config().code_roots),
+        code_roots=list(cfg.code_roots),
         branches={Path(r.worktree_path).name: r.branch for r in db.list_repos(conn, ws.key)},
+        writable=[cfg.memory_dir, scratch_dir(ws)],
     )
 
 
