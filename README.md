@@ -43,21 +43,21 @@ back to the dashboard and get on with other work. When the PRs are merged, press
 
 ## How wm compares
 
-| | **wm** | Claude Code, built in | Agent Deck | Agent of Empires | Conductor | Claude Squad |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|
-| One ticket across several repos: a worktree per repo, one conversation | ✅ | ◐ ¹ | ✅ | ✅ | ❌ | ❌ |
-| The agent attaches repos itself mid-task, the manager creates worktree and branch | ✅ | ◐ ² | ❌ | ❌ | ❌ | ❌ |
-| A task brief written at intake that survives compaction and resume | ✅ | ◐ ³ | ❌ | ❌ | ❌ | ❌ |
-| Guardrails: no edits in your main checkouts, no branch switches, "do this instead" messages, drift detection | ✅ | ◐ ⁴ | ◐ ⁵ | ◐ ⁵ | ❌ | ❌ |
-| What each repo needs next, from git + PR + CI, plus commits behind base | ✅ | ◐ ⁶ | ❌ | ❌ | ✅ ⁷ | ❌ |
-| Rebase every repo of the task on request, conflicts handed back to the agent | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ |
-| Archive that refuses to lose work, unarchive into the same conversation | ✅ | ◐ ⁸ | ◐ | ◐ | ◐ | ❌ |
-| Adopt work in progress (branch and uncommitted changes) from a normal checkout | ✅ | ❌ | ◐ | ◐ ⁹ | ◐ ⁹ | ❌ |
-| Sessions outlive the terminal, with "needs you" status | ✅ | ✅ | ✅ | ✅ | ◐ | ◐ |
-| Real `claude` CLI on your subscription, in your terminal | ✅ | ✅ | ✅ | ✅ | ◐ ¹⁰ | ✅ |
+| | **wm** | Claude Code, built in | Agent Deck | Agent of Empires | Conductor | Claude Squad | Herdr |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| One ticket across several repos: a worktree per repo, one conversation | ✅ | ◐ ¹ | ✅ | ✅ | ❌ | ❌ | ❌ |
+| The agent attaches repos itself mid-task, the manager creates worktree and branch | ✅ | ◐ ² | ❌ | ❌ | ❌ | ❌ | ◐ ¹¹ |
+| A task brief written at intake that survives compaction and resume | ✅ | ◐ ³ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Guardrails: no edits in your main checkouts, no branch switches, "do this instead" messages, drift detection | ✅ | ◐ ⁴ | ◐ ⁵ | ◐ ⁵ | ❌ | ❌ | ❌ |
+| What each repo needs next, from git + PR + CI, plus commits behind base | ✅ | ◐ ⁶ | ❌ | ❌ | ✅ ⁷ | ❌ | ◐ ¹² |
+| Rebase every repo of the task on request, conflicts handed back to the agent | ✅ | ❌ | ❌ | ❌ | ❌ | ❌ | ❌ |
+| Archive that refuses to lose work, unarchive into the same conversation | ✅ | ◐ ⁸ | ◐ | ◐ | ◐ | ❌ | ◐ ¹³ |
+| Adopt work in progress (branch and uncommitted changes) from a normal checkout | ✅ | ❌ | ◐ | ◐ ⁹ | ◐ ⁹ | ❌ | ◐ ⁹ |
+| Sessions outlive the terminal, with "needs you" status | ✅ | ✅ | ✅ | ✅ | ◐ | ◐ | ✅ |
+| Real `claude` CLI on your subscription, in your terminal | ✅ | ✅ | ✅ | ✅ | ◐ ¹⁰ | ✅ | ✅ |
 
-✅ yes · ◐ partly · ❌ not in the project's docs. Checked against each project's public docs on 2 October 2026. These
-tools move fast; if a cell is wrong, please open an issue.
+✅ yes · ◐ partly · ❌ not in the project's docs. Checked against each project's public docs on 2 October 2026
+(Herdr on 6 October). These tools move fast; if a cell is wrong, please open an issue.
 
 1. `--add-dir` shares other repos without isolating them; `--worktree` covers only the repo you launch from;
    multi-repo threads exist in cloud Projects (beta).
@@ -70,9 +70,18 @@ tools move fast; if a cell is wrong, please open an issue.
 8. One repo at a time: `claude rm` refuses unpushed commits.
 9. Starting from an existing branch; uncommitted changes aren't carried over.
 10. A macOS app built around Claude Code, not a terminal tool.
+11. The agent can run `herdr worktree create`, but the worktree opens as a separate workspace, outside its
+    conversation.
+12. Branch and ahead/behind counts in the sidebar; no PR or CI state.
+13. `herdr worktree remove` needs `--force` when Git refuses a dirty checkout; no unpushed-commit check and no
+    unarchive.
 
 **wm doesn't replace Claude Code's agent view.** Agent view is a great way to watch plain sessions. `wm` adds the
 layer Claude Code leaves to you: what a session is for, which repos it may touch, and when the task is done.
+
+**Herdr runs agents; wm runs tasks.** [Herdr](https://herdr.dev/) is a terminal runtime for over 20 agent CLIs on
+macOS, Linux and Windows, including machines over SSH, where `wm` is Claude Code and macOS only. It has no task,
+brief or guardrails, and its own docs say it pairs with a worktree manager.
 
 ## How it works
 
