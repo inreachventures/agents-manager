@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import os
 import shlex
 import shutil
@@ -87,6 +88,10 @@ def set_session_option(name: str, option: str, value: str) -> None:
         run("set-option", "-t", f"{target(name)}:", option, value, check=False)  # bare "=name" is rejected here
 
 
+def session_option(name: str, option: str) -> str:
+    return run("show-options", "-v", "-q", "-t", f"{target(name)}:", option, check=False).stdout.strip()
+
+
 def send_text(name: str, text: str) -> None:
     """Type `text` into the session's active pane and press Enter, as if you had typed a message to Claude."""
     pane = f"{target(name)}:"
@@ -125,8 +130,23 @@ def switch_client(name: str, client: str | None = None) -> None:
     run(*args, "-t", target(name))
 
 
+def code_version() -> str:
+    """Fingerprint of wm's code on disk, to spot a dashboard still running an older version."""
+    pkg = Path(__file__).parent
+    digest = hashlib.sha1()
+    for f in sorted(f for f in pkg.rglob("*") if f.is_file() and "__pycache__" not in f.parts):
+        digest.update(f.relative_to(pkg).as_posix().encode() + b"\0" + f.read_bytes())
+    return digest.hexdigest()[:12]
+
+
 def ensure_home(command: list[str]) -> None:
-    """The dashboard session. Re-created if its process exited."""
+    """The dashboard session. Re-created if its process exited, restarted if it runs older code and no terminal is
+    showing it (`q` only detaches, so reopening would otherwise bring back the old dashboard)."""
+    version = code_version()
     if not has_session(HOME_SESSION):
         new_session(HOME_SESSION, Path.home(), command)
+        set_session_option(HOME_SESSION, "@wm_code", version)
+    elif session_option(HOME_SESSION, "@wm_code") != version and not clients(HOME_SESSION):
+        run("respawn-pane", "-k", "-t", f"{target(HOME_SESSION)}:", "-c", str(Path.home()), shlex.join(command))
+        set_session_option(HOME_SESSION, "@wm_code", version)
     run("set-option", "-w", "-t", f"{target(HOME_SESSION)}:", "pane-border-status", "off", check=False)

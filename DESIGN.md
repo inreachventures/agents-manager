@@ -67,6 +67,8 @@ One entry point: `wm` (name TBD).
   ```
   Sorted: needs-you first, then working, your-turn, stopped.
   Keys: `enter` open session · `n` new · `a` add repo · `r` resume · `b` rebase · `x` archive · `p` refresh PRs · `q` detach.
+  `q` leaves the dashboard running in its tmux session; `wm` reopens it, restarting it first if wm's code changed
+  since it started and no other terminal is showing it (the session's `@wm_code` option holds its code fingerprint).
 - Inside a session: `C-b h` returns to the dashboard; `C-b n` jumps to the next session that needs you
   (tmux prefix keys, because Claude Code already uses many Ctrl keys, e.g. `C-g` opens the editor). Status line always shows the workstream name and `⚠ N need you`.
 - Scriptable commands, same functionality: `wm new`, `wm ls`, `wm open <ws>`, `wm add-repo`, `wm archive`,
