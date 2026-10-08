@@ -322,11 +322,11 @@ merging repo-level Claude settings, PR creation by the manager, remote/cloud.
 4. **Collision badge**: `git merge-tree --write-tree` between active branches of the same repo (informational).
 5. launchd / login auto-start, other terminals (iTerm2 `-CC`, Ghostty).
 6. **Several PRs per repo** (stacks, re-cut branches). Only the PR whose head is the workstream branch is tracked
-   (`prs` holds one row per workstream and repo), so PRs opened from other branches are invisible: WS-4 showed
-   `PR #737 closed` while #739 and #742, from `ws-4-…` branches, brought the work into master. `gitops.in_base` already
-   fixes the Git column once everything has landed; this would fix the PR column and show a stack while it is open.
-   Sketch: also list PRs whose head branch starts with `<ticket-or-key>-` (or whose title has the ident), store them
-   by number, show the stack in the PR column (e.g. `#739 merged · #742 open ✓`), and take the repo's state from the
+   (`prs` holds one row per workstream and repo), so PRs opened from other branches are invisible: PROJ-313 shows
+   `PR #412 closed` while #415 and #418, from other `proj-313-…` branches, brought the work into main. `gitops.in_base`
+   already fixes the Git column once everything has landed; this would fix the PR column and show a stack while it is
+   open. Sketch: also list PRs whose head branch starts with `<ticket-or-key>-` (or whose title has the ident), store
+   them by number, show the stack in the PR column (e.g. `#415 merged · #418 open ✓`), and take the repo's state from the
    open one closest to the base. Open questions: have the brief ask Claude to name stack branches
    `<workstream-branch>-<suffix>` so matching is exact; which of `git_state`'s rules apply to a PR whose head isn't the
    worktree's HEAD (e.g. local work vs that PR's checks).
