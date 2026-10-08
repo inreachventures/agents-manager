@@ -32,6 +32,9 @@ def pr(state="open", checks=None, draft=False, review=None, mergeable=None, merg
     (st(), pr("merged", "n/a"), {}, "merged · CI unknown", "yellow"),
     (st(unpushed=3, behind=4), pr("merged", "pass"), {}, "✓ merged", "bold green"),
     (st(), pr("merged", None), {}, "✓ merged", "bold green"),
+    # the branch's changes reached main some other way, e.g. the last PR of a stack, opened from another branch
+    (st(unpushed=3, behind=4), pr("closed"), {"in_base": True}, "✓ already in main", "bold green"),
+    (st(dirty=2), None, {"in_base": True}, "already in main · 2 uncommitted", "yellow"),
     (st(), pr("closed"), {}, "PR closed, not merged", "grey50"),
     # local work beats the open PR's state
     (st(dirty=3), pr(checks="fail"), {}, "✎ 3 uncommitted", "yellow"),
@@ -91,8 +94,8 @@ def test_lifecycle_and_squash_merge(env, monkeypatch):
     sh(other, "git", "commit", "-q", "-m", "PROJ-3 work (#5)")
     sh(other, "git", "push", "-q", "origin", "HEAD:main", ":proj-3-squash-me")
     sh(wt, "git", "fetch", "-q", "--prune", "origin")
-    # not known to be merged yet, and the remote branch is gone: the commit only exists locally
-    assert _row(ws.key).repos[0].git == "↑ needs push (1) · 1 behind base"
+    # the PR isn't known to be merged yet, but git already sees its changes in main
+    assert _row(ws.key).repos[0].git == "✓ already in main"
 
     _set_pr(ws.key, "acme-web", "merged", head)
     row = _row(ws.key)
@@ -107,6 +110,58 @@ def test_lifecycle_and_squash_merge(env, monkeypatch):
     with pytest.raises(WorkstreamError, match="1 commit\\(s\\) made after PR #5 was merged"):
         ws_mod.archive(ws.key, delete_branches=True)
     assert gitops.branch_exists(env.code / "acme-web", "proj-3-squash-me")
+
+
+def test_landed_from_another_branch(env, monkeypatch):
+    """A stack: the workstream branch's own PR is closed, a later PR from another branch brings everything to main."""
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-6", name="stack me", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    for name in ("f.txt", "g.txt"):
+        (wt / name).write_text(name)
+        sh(wt, "git", "add", ".")
+        sh(wt, "git", "commit", "-q", "-m", f"PROJ-6 {name}")
+    sh(wt, "git", "push", "-q", "origin", "HEAD", "HEAD:proj-6-stack-top")
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "PROJ-6 local only")
+    _set_pr(ws.key, "acme-web", "closed", sh(wt, "git", "rev-parse", "HEAD~"))
+    assert _row(ws.key).repos[0].git == "PR closed, not merged"
+    assert ws_mod.rebase_plan(ws.key)[1][0].skip == "up to date with origin/main"
+
+    # main moves on, then the top of the stack is squash-merged
+    other = env.root / "other"
+    sh(env.root, "git", "clone", "-q", str(env.origins / "acme-web.git"), str(other))
+    (other / "h.txt").write_text("h")
+    sh(other, "git", "add", ".")
+    sh(other, "git", "commit", "-q", "-m", "someone else")
+    sh(other, "git", "merge", "-q", "--squash", "origin/proj-6-stack-top")
+    sh(other, "git", "commit", "-q", "-m", "PROJ-6 stack top (#7)")
+    sh(other, "git", "push", "-q", "origin", "HEAD:main")
+    sh(wt, "git", "fetch", "-q", "origin")
+
+    row = _row(ws.key)
+    assert row.repos[0].git == "✓ already in main" and row.repos[0].behind == 0
+    assert row.all_merged and row.base_ci is None  # the closed PR's own checks aren't the base branch's CI
+    assert ws_mod.rebase_plan(ws.key)[1][0].skip == "its changes are already in origin/main"
+    _, [report] = ws_mod.cleanup_report(ws.key, refresh_prs=False)
+    assert report.merged and not report.blockers  # local-only commits and the closed PR's head don't block
+    ws_mod.archive(ws.key)
+    assert not gitops.branch_exists(env.code / "acme-web", "proj-6-stack-me")
+
+
+def test_conflicting_branch_is_not_in_base(env):
+    ws = ws_mod.new(launch=False, ticket="PROJ-8", name="clash", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    (wt / "README.md").write_text("mine")
+    sh(wt, "git", "commit", "-q", "-am", "PROJ-8 mine")
+    other = env.root / "other"
+    sh(env.root, "git", "clone", "-q", str(env.origins / "acme-web.git"), str(other))
+    (other / "README.md").write_text("theirs")
+    sh(other, "git", "commit", "-q", "-am", "theirs")
+    sh(other, "git", "push", "-q", "origin", "HEAD:main")
+    sh(wt, "git", "fetch", "-q", "origin")
+    assert not gitops.in_base(wt, "origin/main")
+    sh(wt, "git", "reset", "-q", "--hard", "origin/main")
+    assert gitops.in_base(wt, "origin/main")  # nothing of its own: trivially in base
 
 
 def test_old_database_gets_new_pr_columns(env):

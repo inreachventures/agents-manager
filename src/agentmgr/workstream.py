@@ -516,6 +516,8 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
             skip = f"{st.dirty} uncommitted change(s)"
         elif not_pulled:
             skip = f"{not_pulled} commit(s) on {remote} that aren't local"
+        elif st.ahead_of_base and gitops.in_base(wt, link.base):
+            skip = f"its changes are already in {link.base}"
         else:
             skip = None
         pushed_at = gitops.git(wt, "rev-parse", remote) if pushed and not skip else None
@@ -573,7 +575,7 @@ def _ask_claude_to_rebase(ws: db.Workstream, conflicts: list[tuple[db.RepoLink, 
 class RepoReport:
     link: db.RepoLink
     status: gitops.Status | None
-    merged: bool
+    merged: bool  # PR merged, or the branch's changes are already in base
     pr: db.PR | None
     blockers: list[str]
     after_pr: int = 0  # local commits made after the merged PR's head
@@ -599,10 +601,9 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
         except gitops.GitError:
             pass
         st = gitops.status(wt, link.base)
-        merged = (pr is not None and pr.state == "merged") or (
-            st.ahead_of_base > 0 and gitops.is_merged(Path(link.repo_path), link.branch, link.base)
-        )
-        after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if merged and pr and pr.head_sha else 0
+        pr_merged = pr is not None and pr.state == "merged"
+        merged = pr_merged or (st.ahead_of_base > 0 and gitops.in_base(wt, link.base))
+        after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
         blockers = []
         if st.dirty:
             blockers.append(f"{st.dirty} uncommitted change(s)")

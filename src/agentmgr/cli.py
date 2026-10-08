@@ -189,7 +189,7 @@ def archive(
     ws, reports = _run(svc.cleanup_report, ws.key)
     typer.echo(f"{ws.label}:")
     for r in reports:
-        state, _ = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr)
+        state, _ = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.merged)
         typer.echo(f"  {r.link.repo:<28} {r.link.branch:<40} {state} · {gh.describe(r.pr)}")
         for b in r.blockers:
             typer.secho(f"    ✗ {b}", fg="red")

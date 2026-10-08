@@ -16,7 +16,7 @@ class RepoRow:
     state: str  # what this repo needs next (see git_state); empty when git status wasn't read
     pr: str
     pr_url: str | None
-    merged: bool
+    merged: bool  # PR merged, or the branch's changes are already in base
     base_ci: str | None = None  # merged PR: CI of the merge commit on the base branch (pass/fail/pending/None)
     behind: int = 0  # commits on base the branch doesn't have; 0 once merged, where it no longer matters
     style: str = ""  # rich style for `state`
@@ -82,9 +82,10 @@ BLUE = "dodger_blue1"  # waiting on someone else (CI, reviewers)
 
 
 def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
-              operation: str | None = None, after_pr: int = 0) -> tuple[str, str]:
-    """What this repo needs next, as (label, rich style). First match wins: broken, merged, closed, local work
-    (which makes the PR's own checks stale), then the open PR. `after_pr`: local commits after a merged PR's head."""
+              operation: str | None = None, after_pr: int = 0, in_base: bool = False) -> tuple[str, str]:
+    """What this repo needs next, as (label, rich style). First match wins: broken, merged, already in base, closed,
+    local work (which makes the PR's own checks stale), then the open PR. `after_pr`: local commits after a merged
+    PR's head. `in_base`: the branch's changes reached base some other way (see gitops.in_base)."""
     base = link.base.removeprefix("origin/")
     if st is None:
         return "⚠ worktree missing", "bold red"
@@ -103,6 +104,10 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
             "pending": (f"… merged · CI running on {base}", BLUE),
             "n/a": ("merged · CI unknown", "yellow"),
         }.get(pr.checks, ("✓ merged", "bold green"))
+    if in_base:
+        if st.dirty:
+            return f"already in {base} · {st.dirty} uncommitted", "yellow"
+        return f"✓ already in {base}", "bold green"
     if state == "closed":
         return "PR closed, not merged", "grey50"
     if st.dirty:
@@ -147,23 +152,25 @@ def load(include_archived: bool = False, git_status: bool = True) -> list[Row]:
         row = Row(ws, status, text, intake)
         for link in links:
             pr = prs.get(link.repo)
-            merged = bool(pr and pr.state == "merged")
-            state, style, behind, untouched = "", "", 0, False
+            pr_merged = bool(pr and pr.state == "merged")
+            merged, state, style, behind, untouched = pr_merged, "", "", 0, False
             if git_status and ws.status != db.ARCHIVED:
                 wt = Path(link.worktree_path)
                 try:
                     st = gitops.status(wt, link.base)
                     operation = gitops.operation_in_progress(wt)
-                    after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if merged and pr.head_sha else 0
+                    after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
+                    in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
                 except gitops.GitError:
-                    st, operation, after_pr = None, None, 0
-                state, style = git_state(link, st, pr, operation, after_pr)
+                    st, operation, after_pr, in_base = None, None, 0, False
+                state, style = git_state(link, st, pr, operation, after_pr, in_base)
+                merged = pr_merged or in_base  # in_base: e.g. landed by the last PR of a stack, from another branch
                 if st:
                     behind = 0 if merged else st.behind_base
                     untouched = not (st.dirty or st.ahead_of_base) and not (pr and pr.state in ("open", "merged"))
             f = fetches.get(link.repo_path)
             row.repos.append(RepoRow(link, state, gh.describe(pr), pr.url if pr else None, merged,
-                                     pr.checks if merged else None, behind, style, untouched,
+                                     pr.checks if pr_merged else None, behind, style, untouched,
                                      f["ok_at"] if f else None, f["error"] if f else None))
         rows.append(row)
     rows.sort(key=lambda r: (SORT.get(r.status, 9), -r.ws.status_at))

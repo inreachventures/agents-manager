@@ -136,11 +136,16 @@ show "PR: n/a" instead of failing. MVP doesn't create PRs; Claude does that via 
 
 The Git column shows one state per repo, from git plus the cached PR (`view.git_state`, first match wins):
 broken (worktree missing, wrong branch, rebase/merge in progress) → merged (leftover uncommitted work or commits after
-the PR head, CI on the base branch failing/running, else `✓ merged`) → PR closed → local work (uncommitted, needs push,
-no changes yet, needs PR) → open PR (draft, CI failing, conflicts, changes requested, CI running, needs update from
-base, awaiting review, blocked by branch rules, else `● ready to merge`). Local work beats the open PR's state because
-the PR's checks are then about an older commit. Squash merges leave the branch "unpushed" and "behind", so those counts
-are ignored once the PR is merged.
+the PR head, CI on the base branch failing/running, else `✓ merged`) → already in base → PR closed → local work
+(uncommitted, needs push, no changes yet, needs PR) → open PR (draft, CI failing, conflicts, changes requested, CI
+running, needs update from base, awaiting review, blocked by branch rules, else `● ready to merge`). Local work beats
+the open PR's state because the PR's checks are then about an older commit. Squash merges leave the branch "unpushed"
+and "behind", so those counts are ignored once the PR is merged.
+
+Only the PR whose head is the workstream branch is tracked, but work often reaches base through other branches: the
+last PR of a stack, a re-cut branch, a cherry-pick. So git decides too: if merging the branch into base would change
+nothing (`git merge-tree --write-tree base HEAD` equals base's tree, `gitops.in_base`), the repo is `✓ already in base`
+whatever its own PR says. It then counts as merged for archiving, and `wm rebase` skips it.
 
 ### Workstream startup: voice intake, then work
 

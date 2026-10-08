@@ -183,9 +183,14 @@ def status(worktree: Path, base: str) -> Status:
     )
 
 
-def is_merged(repo: Path, branch: str, base: str) -> bool:
-    """True if the branch tip is contained in base (regular merges; squash merges are detected via gh)."""
-    return ok(repo, "merge-base", "--is-ancestor", branch, base)
+def in_base(worktree: Path, base: str) -> bool:
+    """True if merging HEAD into base would change nothing: every change on the branch already reached base, however
+    it got there (a regular or squash merge, a cherry-pick, a PR from another branch, e.g. the last of a stack)."""
+    try:
+        tree = git(worktree, "merge-tree", "--write-tree", base, "HEAD").partition("\n")[0]
+    except GitError:  # conflicts, or git older than 2.38
+        return False
+    return tree == git(worktree, "rev-parse", f"{base}^{{tree}}", check=False)
 
 
 def remote_url(repo: Path) -> str | None:
