@@ -70,11 +70,11 @@ final class AppModel {
     @ObservationIgnored let terminal = TerminalController()
     @ObservationIgnored private var env: [String: String] = [:]
     @ObservationIgnored private var attaching: String?
-    @ObservationIgnored private var attachedAt = Date.distantPast
     @ObservationIgnored private var diffLoading = false
     @ObservationIgnored private var diffLoop: Task<Void, Never>?
     @ObservationIgnored private var restarts = 0
     @ObservationIgnored private var quitting = false
+    @ObservationIgnored private var focusObservers: [NSObjectProtocol] = []
 
     // MARK: - Derived
 
@@ -123,6 +123,7 @@ final class AppModel {
             phase = .failed("Couldn't start \(wm): \(error.localizedDescription)")
             return
         }
+        observeFocus()
         diffLoop?.cancel()
         diffLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -133,6 +134,24 @@ final class AppModel {
     }
 
     /// Start over, e.g. after pointing Settings at another wm. The old server finishes any request in flight.
+    /// Hooks notify only when nobody is looking at a session; the app looks only while it is in front.
+    private func observeFocus() {
+        if focusObservers.isEmpty {
+            for (name, active) in [(NSApplication.didBecomeActiveNotification, true),
+                                   (NSApplication.didResignActiveNotification, false)] {
+                focusObservers.append(NotificationCenter.default.addObserver(forName: name, object: nil,
+                                                                             queue: .main) { [weak self] _ in
+                    MainActor.assumeIsolated { self?.reportFocus(active) }
+                })
+            }
+        }
+        reportFocus(NSApp.isActive)
+    }
+
+    private func reportFocus(_ active: Bool) {
+        Task { let _: [String: String]? = try? await backend.call("focus", ["active": active]) }
+    }
+
     func restart() {
         backend.stop()
         restarts = 0
@@ -172,6 +191,9 @@ final class AppModel {
         phase = .ready
         restarts = 0
         NSApp.dockTile.badgeLabel = waitingCount > 0 ? "\(waitingCount)" : nil
+        if let key = terminal.key, let shown = new.clients[String(terminal.pid)], shown != key + "_app" {
+            terminal.forget()  // tmux moved our client (C-b s, C-b ( …): put it back on the selected workstream
+        }
         if first {
             if selection == nil {
                 let saved = UserDefaults.standard.string(forKey: "selected")
@@ -213,7 +235,6 @@ final class AppModel {
         Task {
             do {
                 try await terminal.show(key, backend: backend)
-                attachedAt = Date()
                 terminal.focus()
             } catch {
                 toast(error.localizedDescription, .error)
@@ -225,7 +246,7 @@ final class AppModel {
     }
 
     private func terminalDetached(_ key: String) {
-        if Date().timeIntervalSince(attachedAt) < 2 {
+        if Date().timeIntervalSince(terminal.startedAt) < 2 {
             terminalFailed = key  // the client quit right away: don't retry in a loop
             return
         }
@@ -278,6 +299,10 @@ final class AppModel {
 
     /// A wm request behind the busy indicator; errors (wm's own refusals included) become a toast.
     private func request<T: Decodable>(_ message: String, _ method: String, _ params: [String: Any] = [:]) async -> T? {
+        if let busy {
+            toast("Still busy: \(busy)", .warning)
+            return nil
+        }
         busy = message
         defer { busy = nil }
         do {

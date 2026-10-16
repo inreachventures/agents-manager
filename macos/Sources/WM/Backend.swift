@@ -39,6 +39,8 @@ final class Backend {
         for handle in [stdin.fileHandleForWriting, stdout.fileHandleForReading, stderr.fileHandleForReading] {
             _ = fcntl(handle.fileDescriptor, F_SETFD, FD_CLOEXEC)
         }
+        // writing to a server that just died must fail with EPIPE, not kill the app with SIGPIPE
+        _ = fcntl(stdin.fileHandleForWriting.fileDescriptor, F_SETNOSIGPIPE, 1)
         proc.standardInput = stdin
         proc.standardOutput = stdout
         proc.standardError = stderr
@@ -141,6 +143,7 @@ final class Backend {
     private func exited(_ proc: Process, _ status: Int32) {
         guard proc === process else { return }  // an earlier server, already replaced
         process = nil
+        buffer.removeAll()  // a line cut short by the crash would spoil the next server's first one
         input = nil
         for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
         pending.removeAll()

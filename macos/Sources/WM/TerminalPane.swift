@@ -9,10 +9,11 @@ import SwiftUI
 final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
     let view = WMTerminalView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
     private(set) var key: String?  // the workstream the client shows
+    private(set) var pid: pid_t = 0  // the tmux client's process
+    private(set) var startedAt = Date.distantPast
     var environment: [String] = []
     /// Called when the client went away by itself (Claude exited, the session was archived); not on `detach()`.
     var onDetached: ((String) -> Void)?
-    private var detaching = false
 
     override init() {
         super.init()
@@ -24,8 +25,7 @@ final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
     func show(_ key: String, backend: Backend) async throws {
         if isAttached {
             if self.key == key { return }
-            let pid = Int(view.process.shellPid)
-            let result: SwitchResult = try await backend.call("switch", ["key": key, "pid": pid])
+            let result: SwitchResult = try await backend.call("switch", ["key": key, "pid": Int(pid)])
             if result.switched {
                 self.key = key
                 return
@@ -37,15 +37,28 @@ final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
         view.terminal.resetToInitialState()
         view.startProcess(executable: exe, args: Array(attach.argv.dropFirst()), environment: environment,
                           execName: nil, currentDirectory: NSHomeDirectory())
+        guard view.process.running else { throw BackendError(message: "Couldn't start the terminal (\(exe))") }
+        pid = view.process.shellPid
+        startedAt = Date()
         self.key = key
+    }
+
+    /// Show `key` again at the next `show`, e.g. after tmux moved the client to another session (C-b s).
+    func forget() {
+        key = nil
     }
 
     /// Stop showing any session (the tmux client exits; the session keeps running).
     func detach() {
-        guard isAttached else { key = nil; return }
-        detaching = true
-        view.terminate()
         key = nil
+        guard isAttached else { return }
+        let old = pid
+        pid = 0
+        view.terminate()  // SIGTERM; SwiftTerm stops watching the process, so no processTerminated follows
+        DispatchQueue.global(qos: .utility).async {
+            var status: Int32 = 0
+            waitpid(old, &status, 0)  // reap it
+        }
     }
 
     func focus() {
@@ -59,16 +72,13 @@ final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
     nonisolated func hostCurrentDirectoryUpdate(source: TerminalView, directory: String?) {}
 
     nonisolated func processTerminated(source: TerminalView, exitCode: Int32?) {
-        DispatchQueue.main.async {
-            MainActor.assumeIsolated {
-                let gone = self.key
-                self.key = nil
-                if self.detaching {
-                    self.detaching = false
-                } else if let gone {
-                    self.onDetached?(gone)
-                }
-            }
+        // SwiftTerm reports on the main queue: check right away which process this is about
+        MainActor.assumeIsolated {
+            guard pid != 0, view.process.shellPid == pid else { return }  // not the current client
+            let gone = key
+            key = nil
+            pid = 0
+            if let gone { onDetached?(gone) }
         }
     }
 }

@@ -6,6 +6,7 @@ struct DashboardState: Decodable, Equatable {
     var workstreams: [Workstream]
     var archived: [Workstream]
     var origin: Origin
+    var clients: [String: String] = [:]  // tmux client pid -> the session it shows
 
     struct Origin: Decodable, Equatable {
         var repos: Int
@@ -13,6 +14,20 @@ struct DashboardState: Decodable, Equatable {
     }
 
     static let empty = DashboardState(workstreams: [], archived: [], origin: Origin(repos: 0, checkedAt: nil))
+
+    enum CodingKeys: String, CodingKey { case workstreams, archived, origin, clients }
+
+    init(workstreams: [Workstream], archived: [Workstream], origin: Origin) {
+        (self.workstreams, self.archived, self.origin) = (workstreams, archived, origin)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workstreams = try c.decode([Workstream].self, forKey: .workstreams)
+        archived = try c.decode([Workstream].self, forKey: .archived)
+        origin = try c.decode(Origin.self, forKey: .origin)
+        clients = try c.decodeIfPresent([String: String].self, forKey: .clients) ?? [:]
+    }
 }
 
 enum Status: String, Decodable {
@@ -90,6 +105,7 @@ struct RepoDiff: Decodable, Equatable, Identifiable {
     var additions: Int
     var deletions: Int
     var error: String?
+    var untrackedOmitted: Int?
 
     var id: String { repo }
 }
@@ -105,7 +121,8 @@ struct FileDiff: Decodable, Equatable, Identifiable {
     var truncated: Bool
     var hunks: [Hunk]
 
-    var id: String { path }
+    // a path can show twice: deleted from git and back as an untracked file (`git rm --cached`)
+    var id: String { (untracked ? "untracked:" : "tracked:") + path }
     var lineCount: Int { hunks.reduce(0) { $0 + $1.lines.count } }
 }
 

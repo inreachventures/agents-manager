@@ -105,7 +105,7 @@ struct ChangesPanel: View {
     private func rows(_ repo: RepoDiff) -> [Row] {
         var rows: [Row] = []
         for file in repo.files {
-            let id = "\(repo.repo)/\(file.path)"
+            let id = "\(repo.repo)/\(file.id)"
             let open = isOpen(id, file)
             rows.append(Row(id: id, kind: .file(file, open: open)))
             guard open else { continue }
@@ -120,6 +120,9 @@ struct ChangesPanel: View {
                 rows.append(Row(id: "\(id)#more", kind: .note(file.hunks.isEmpty ? "Too large to show"
                                                                                   : "More lines not shown")))
             }
+        }
+        if let omitted = repo.untrackedOmitted, omitted > 0 {
+            rows.append(Row(id: "\(repo.repo)#omitted", kind: .note("\(omitted) more untracked files not shown")))
         }
         return rows
     }

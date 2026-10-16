@@ -329,13 +329,15 @@ for everything that matters: no daemon, no web server, sessions in the manager's
   embeds a terminal (SwiftTerm) running a tmux client on `<key>_app`, a session grouped with the workstream's: it
   shares the window, so it is the same Claude, but has its own options (no status line; `detach-on-destroy on`, so
   the client exits with Claude instead of jumping to another session). One client per app window, switched with
-  `switch-client`, so `tmux.clients()` (which counts views too) still means "someone is looking at this session".
-  `kill_session` kills the view as well, because a grouped session keeps a shared window, and so Claude, alive;
-  `prune_views` cleans up views whose session an older `wm` killed. The last prompt is a window option so both
-  sessions show it.
+  `switch-client`; if tmux moves it (`C-b s`, `C-b (`), the app moves it back. Notifications ask `tmux.watched()`:
+  a terminal shows the session, or the app shows it and is in front (the app sets `@wm_app_active`).
+  `kill_session` kills every session in the group, because a grouped session keeps the shared window, and so
+  Claude, alive; a view not grouped with its workstream's current session is stale and replaced or pruned. Changes
+  to one workstream wait for each other in the server. The last prompt is a window option so both sessions show it.
 - **Diff panel**: `diffs.repo_diff`, read-only: the working tree against `merge-base(base, HEAD)`, so committed,
-  staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded). Capped per file
-  and per repo so a lockfile can't flood the app.
+  staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded; symlinks not
+  followed). Output flags are forced, so the user's diff config can't change the format the parser reads. Capped per
+  file, per repo and in untracked files, so a lockfile or an un-ignored build folder can't flood the app.
 
 ## Later (rough priority)
 

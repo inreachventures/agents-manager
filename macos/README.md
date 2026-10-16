@@ -52,8 +52,9 @@ Workstreams.app ──JSON lines──▶ wm app-server ──▶ workstream ser
   the app can be used side by side. The app shows a workstream through a session grouped with it, `<key>_app`: same
   window (same Claude), but no tmux status line, and its client detaches when Claude exits instead of jumping to
   another session. One terminal view serves the whole window: selecting another workstream switches that tmux
-  client, so wm's "skip the notification if someone is looking" check sees exactly the session on screen.
-  `C-b h` and `C-b n` only say to use the sidebar there. Killing a workstream's session kills its view too.
+  client. wm skips a notification while someone is looking at the session, and the app counts only while it is in
+  front. `C-b h` and `C-b n` only say to use the sidebar there; if tmux moves the client anyway, the app moves it
+  back. Killing a workstream's session kills its view too.
 - **Diffs** (`src/agentmgr/diffs.py`) are read-only: `git diff` against the merge base with the branch's base, plus
   untracked files read from disk, with `--no-optional-locks` so not even the index is refreshed.
 
