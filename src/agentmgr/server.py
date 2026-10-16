@@ -10,6 +10,7 @@ worktrees, branches and guardrails stay wm's job. Requests run in threads, so a 
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import sys
@@ -222,7 +223,9 @@ class Server:
         self.refresh_prs()
         return {"failed": self.fetch_bases(max_age=0)}
 
-    def rpc_diff(self, key: str) -> dict:
+    def rpc_diff(self, key: str, since: str | None = None) -> dict:
+        """Each repo's changes. `since`: the digest of the diff the app shows; if nothing changed, only that is
+        returned, so the app doesn't decode the same diff every few seconds."""
         conn = db.connect()
         ws = workstream.require(conn, key)
         repos = []
@@ -235,7 +238,10 @@ class Server:
             except gitops.GitError as e:
                 entry |= {"error": str(e), "files": [], "additions": 0, "deletions": 0}
             repos.append(entry)
-        return {"key": ws.key, "repos": repos}
+        digest = hashlib.sha1(json.dumps(repos, sort_keys=True).encode()).hexdigest()[:16]
+        if digest == since:
+            return {"key": ws.key, "digest": digest, "unchanged": True, "repos": []}
+        return {"key": ws.key, "digest": digest, "repos": repos}
 
     def rpc_attach(self, key: str) -> dict:
         """argv for the app's terminal: a tmux client on the workstream's app view."""

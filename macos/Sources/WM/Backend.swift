@@ -16,14 +16,8 @@ final class Backend {
     private var process: Process?
     private var input: FileHandle?
     private var nextID = 1
-    private var pending: [Int: CheckedContinuation<Any, Error>] = [:]
-    private var buffer = Data()
+    private var pending: [Int: CheckedContinuation<Data, Error>] = [:]
     private var stderrTail = ""
-    private let decoder: JSONDecoder = {
-        let d = JSONDecoder()
-        d.keyDecodingStrategy = .convertFromSnakeCase
-        return d
-    }()
 
     var isRunning: Bool { process?.isRunning ?? false }
 
@@ -45,11 +39,17 @@ final class Backend {
         proc.standardOutput = stdout
         proc.standardError = stderr
 
-        // DispatchQueue.main keeps the chunks in order (Tasks don't promise that)
+        // Parsed on the reader's queue, so a big diff never holds up the main thread (and the terminal); serial
+        // queues keep the messages in order (Tasks don't promise that)
+        let reader = Reader()
         stdout.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
             if data.isEmpty { handle.readabilityHandler = nil }
-            DispatchQueue.main.async { MainActor.assumeIsolated { self?.received(data, from: proc) } }
+            reader.queue.async {
+                let messages = reader.feed(data)
+                guard !messages.isEmpty else { return }
+                DispatchQueue.main.async { MainActor.assumeIsolated { self?.deliver(messages, from: proc) } }
+            }
         }
         stderr.fileHandleForReading.readabilityHandler = { [weak self] handle in
             let data = handle.availableData
@@ -81,17 +81,15 @@ final class Backend {
             process = nil
             for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
             pending.removeAll()
-            buffer.removeAll()
         }
     }
 
     func call<T: Decodable>(_ method: String, _ params: [String: Any] = [:]) async throws -> T {
-        let raw = try await send(method, params)
-        let data = try JSONSerialization.data(withJSONObject: raw)
-        return try decoder.decode(T.self, from: data)
+        let data = try await send(method, params)
+        return try await Task.detached(priority: .userInitiated) { try Reader.decoder.decode(T.self, from: data) }.value
     }
 
-    private func send(_ method: String, _ params: [String: Any]) async throws -> Any {
+    private func send(_ method: String, _ params: [String: Any]) async throws -> Data {
         guard let input, isRunning else { throw BackendError(message: "wm is not running") }
         let id = nextID
         nextID += 1
@@ -108,47 +106,74 @@ final class Backend {
         }
     }
 
-    private func received(_ data: Data, from proc: Process) {
+    private func deliver(_ messages: [Reader.Message], from proc: Process) {
         guard proc === process else { return }  // the tail of a server already replaced
+        for message in messages {
+            switch message {
+            case .state(let state): onState?(state)
+            case .notice(let notice): onNotice?(notice)
+            case .reply(let id, let result):
+                switch result {
+                case .success(let data): pending.removeValue(forKey: id)?.resume(returning: data)
+                case .failure(let error): pending.removeValue(forKey: id)?.resume(throwing: error)
+                }
+            }
+        }
+    }
+
+    private func exited(_ proc: Process, _ status: Int32) {
+        guard proc === process else { return }  // an earlier server, already replaced
+        process = nil  // its reader goes with it, and so does any line the crash cut short
+        input = nil
+        for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
+        pending.removeAll()
+        let tail = stderrTail.split(separator: "\n").suffix(3).joined(separator: "\n")
+        onExit?(tail.isEmpty ? "wm app-server exited (status \(status))" : tail)
+    }
+}
+
+/// Splits one server's output into lines and decodes them. Only used on its `queue`.
+private final class Reader: @unchecked Sendable {
+    enum Message {
+        case state(DashboardState)
+        case notice(Notice)
+        case reply(id: Int, result: Result<Data, Error>)  // the result as JSON, decoded by the caller
+    }
+
+    static let decoder: JSONDecoder = {
+        let d = JSONDecoder()
+        d.keyDecodingStrategy = .convertFromSnakeCase
+        return d
+    }()
+
+    let queue = DispatchQueue(label: "wm.backend.reader", qos: .userInitiated)
+    private var buffer = Data()
+
+    func feed(_ data: Data) -> [Message] {
         buffer.append(data)
+        var messages: [Message] = []
         while let nl = buffer.firstIndex(of: 0x0A) {
             let line = buffer[buffer.startIndex..<nl]
             buffer.removeSubrange(buffer.startIndex...nl)
             guard !line.isEmpty,
                   let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { continue }
             if let event = obj["event"] as? String {
-                handle(event: event, payload: obj["data"] ?? [:])
-            } else if let id = obj["id"] as? Int, let cont = pending.removeValue(forKey: id) {
+                guard let payload = try? JSONSerialization.data(withJSONObject: obj["data"] ?? [:]) else { continue }
+                if event == "state", let state = try? Self.decoder.decode(DashboardState.self, from: payload) {
+                    messages.append(.state(state))
+                } else if event == "notice", let notice = try? Self.decoder.decode(Notice.self, from: payload) {
+                    messages.append(.notice(notice))
+                }
+            } else if let id = obj["id"] as? Int {
                 if let error = obj["error"] as? String {
-                    cont.resume(throwing: BackendError(message: error))
+                    messages.append(.reply(id: id, result: .failure(BackendError(message: error))))
                 } else {
-                    cont.resume(returning: obj["result"] ?? [:])
+                    let result = Result { try JSONSerialization.data(withJSONObject: obj["result"] ?? [:]) }
+                    messages.append(.reply(id: id, result: result))
                 }
             }
         }
-    }
-
-    private func handle(event: String, payload: Any) {
-        guard let data = try? JSONSerialization.data(withJSONObject: payload) else { return }
-        switch event {
-        case "state":
-            if let state = try? decoder.decode(DashboardState.self, from: data) { onState?(state) }
-        case "notice":
-            if let notice = try? decoder.decode(Notice.self, from: data) { onNotice?(notice) }
-        default:
-            break
-        }
-    }
-
-    private func exited(_ proc: Process, _ status: Int32) {
-        guard proc === process else { return }  // an earlier server, already replaced
-        process = nil
-        buffer.removeAll()  // a line cut short by the crash would spoil the next server's first one
-        input = nil
-        for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
-        pending.removeAll()
-        let tail = stderrTail.split(separator: "\n").suffix(3).joined(separator: "\n")
-        onExit?(tail.isEmpty ? "wm app-server exited (status \(status))" : tail)
+        return messages
     }
 }
 

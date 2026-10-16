@@ -304,8 +304,10 @@ final class AppModel {
               phase == .ready else { return }
         diffLoading = true
         defer { diffLoading = false }
-        guard let result: DiffResult = try? await backend.call("diff", ["key": ws.key]) else { return }
-        if result.key == selected?.key, result != diff { diff = result }
+        var params: [String: Any] = ["key": ws.key]
+        if let digest = diff?.digest, diff?.key == ws.key { params["since"] = digest }
+        guard let result: DiffResult = try? await backend.call("diff", params), result.unchanged != true else { return }
+        if result.key == selected?.key { diff = result }
     }
 
     // MARK: - Actions (each one is a wm request; wm does the checks)

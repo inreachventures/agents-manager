@@ -54,6 +54,10 @@ def test_requests_go_through_the_workstream_service(env):
     diff = ask(srv, "diff", key=ws.key)["result"]
     assert [(r["repo"], [f["path"] for f in r["files"]]) for r in diff["repos"]] == [
         ("acme-web", ["wip.txt"]), ("acme-ml-pipeline", [])]
+    again = ask(srv, "diff", key=ws.key, since=diff["digest"])["result"]
+    assert again["unchanged"] and again["repos"] == []
+    (wt / "wip.txt").write_text("wip, more\n")
+    assert not ask(srv, "diff", key=ws.key, since=diff["digest"])["result"].get("unchanged")
 
     report = ask(srv, "archive_report", key=ws.key)["result"]
     assert report["blocked"] and report["repos"][0]["blockers"] == ["1 uncommitted change(s)"]

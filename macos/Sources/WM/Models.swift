@@ -94,6 +94,8 @@ struct RepoState: Decodable, Identifiable, Equatable {
 struct DiffResult: Decodable, Equatable {
     var key: String
     var repos: [RepoDiff]
+    var digest: String?
+    var unchanged: Bool?  // the server's diff matches `digest` sent with the request
 }
 
 struct RepoDiff: Decodable, Equatable, Identifiable {
