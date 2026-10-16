@@ -30,6 +30,9 @@ The app runs `wm app-server`, so it needs a `wm` that has it. It uses, in order:
 Settings (⌘,), the `wm` of the checkout it was built from (`.venv/bin/wm`), then the first `wm` on your login
 shell's PATH. GUI apps don't get your shell's PATH, so the app reads it from a login shell once at start.
 
+Settings also has "Use Option as Meta key in the terminal": off by default, as in Terminal.app, so Option types the
+characters your keyboard layout puts there; on, Option+Enter and Option+letter shortcuts reach Claude instead.
+
 ## How it works
 
 The app is only a view. It never runs git, creates a worktree or starts a session itself:

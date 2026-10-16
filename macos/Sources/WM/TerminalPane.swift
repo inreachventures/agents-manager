@@ -77,7 +77,8 @@ final class WMTerminalView: LocalProcessTerminalView {
     override init(frame: CGRect) {
         super.init(frame: frame)
         font = NSFont.monospacedSystemFont(ofSize: 12.5, weight: .regular)
-        optionAsMetaKey = true
+        // off by default, as in Terminal.app: many layouts type @ # [ ] { } with Option
+        optionAsMetaKey = UserDefaults.standard.bool(forKey: "optionAsMeta")
         applyColors()
     }
 

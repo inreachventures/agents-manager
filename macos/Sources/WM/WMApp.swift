@@ -93,6 +93,7 @@ struct WMCommands: Commands {
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("wmPath") private var wmPath = ""
+    @AppStorage("optionAsMeta") private var optionAsMeta = false
 
     var body: some View {
         Form {
@@ -105,6 +106,12 @@ struct SettingsView: View {
                 Spacer()
                 Button("Restart wm") { model.restart() }
             }
+            Toggle("Use Option as Meta key in the terminal", isOn: $optionAsMeta)
+                .onChange(of: optionAsMeta) { _, on in model.terminal.view.optionAsMetaKey = on }
+            Text("On: Option+Enter and Option+letter shortcuts reach Claude. Off: Option types characters, as your "
+                 + "keyboard layout defines them.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
         }
         .padding(20)
         .frame(width: 460)
