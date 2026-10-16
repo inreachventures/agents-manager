@@ -30,6 +30,7 @@ Assumptions: everything runs locally on macOS, Terminal.app, Claude Code CLI wit
 | D12 | **Every workstream has a key, a name and optionally a ticket ID.** Key = stable folder name (`PROJ-313` if given to `wm new`, else `WS-<n>`). Name = 3 words, chosen by Claude at intake. Ticket ID (e.g. `PROJ-313`) can be given at `wm new` or mentioned during intake. Branches are `<ticket-or-key>-<name-slug>`, e.g. `proj-313-dark-mode-toggle`. |
 | D13 | **Constraints are enforced, not just instructed**: the manager does all structural work itself, Claude Code permissions + a `PreToolUse` guard hook block violations, a `PostToolUse` check detects drift. See "Guardrails". |
 | D14 | **Workstreams start with a voice/text intake in their own session**: Claude writes `TASK.md` and attaches repos via `wm add-repo`, confirms, then works. |
+| D15 | **A native macOS app is a second view, not a second manager.** It talks to `wm app-server` and shows sessions through tmux; it never touches git or sessions itself. See "Native app". |
 
 ```
 ~/workstreams/WS-7/                       ← claude cwd, never renamed (outside ~/code on purpose, see Guardrails)
@@ -312,6 +313,29 @@ Single Python package (installed with `uv tool install`), no long-running proces
 
 Linear, web UI, last-message previews, collision detection, MCP tools, multiple sessions per workstream,
 merging repo-level Claude settings, PR creation by the manager, remote/cloud.
+
+## Native app (D15)
+
+`Workstreams.app` (SwiftUI, in `macos/`) is the dashboard as a Mac window: workstreams and their repos in a
+sidebar, the selected session in a terminal view, the branches' changes in a collapsible right panel. D3 still holds
+for everything that matters: no daemon, no web server, sessions in the manager's tmux server.
+
+- **Backend**: the app runs `wm app-server`, JSON lines on stdin/stdout. Requests map one to one to the workstream
+  service (new, add repo, resume, rebase plan + rebase, archive report + archive, unarchive, refresh, diff); the
+  server pushes the dashboard state when it changes (`view.load`, every 2s, like the TUI) and runs the TUI's PR
+  refresh and base fetch loops. So the app gets every check for free and can't bypass one.
+- **Sessions**: tmux stays the session host. Its alternatives would be the app owning the PTYs (sessions die with
+  the app, and rebase conflicts need a new channel into Claude) or a new PTY daemon (tmux, rewritten). The app
+  embeds a terminal (SwiftTerm) running a tmux client on `<key>_app`, a session grouped with the workstream's: it
+  shares the window, so it is the same Claude, but has its own options (no status line; `detach-on-destroy on`, so
+  the client exits with Claude instead of jumping to another session). One client per app window, switched with
+  `switch-client`, so `tmux.clients()` (which counts views too) still means "someone is looking at this session".
+  `kill_session` kills the view as well, because a grouped session keeps a shared window, and so Claude, alive;
+  `prune_views` cleans up views whose session an older `wm` killed. The last prompt is a window option so both
+  sessions show it.
+- **Diff panel**: `diffs.repo_diff`, read-only: the working tree against `merge-base(base, HEAD)`, so committed,
+  staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded). Capped per file
+  and per repo so a lockfile can't flood the app.
 
 ## Later (rough priority)
 
