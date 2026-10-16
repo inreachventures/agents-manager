@@ -15,6 +15,9 @@ from pathlib import Path
 from .config import Config, get_config
 
 HOME_SESSION = "home"
+# The native app shows a workstream through a session grouped with it (same window, so the same Claude), named
+# <key>_app: there tmux's status line is off and the client detaches when Claude exits. Keys never contain "_".
+VIEW_SUFFIX = "_app"
 
 
 class TmuxError(RuntimeError):
@@ -79,8 +82,49 @@ def new_session(name: str, cwd: Path, command: list[str], env: dict[str, str] | 
 
 
 def kill_session(name: str) -> None:
-    if has_session(name):
-        run("kill-session", "-t", target(name), check=False)
+    # the app's view too: it shares the window, so it would keep Claude running
+    for session in (name, view_name(name)):
+        if has_session(session):
+            run("kill-session", "-t", target(session), check=False)
+
+
+def view_name(name: str) -> str:
+    return name + VIEW_SUFFIX
+
+
+def ensure_view(name: str) -> str:
+    """The native app's session for workstream session `name` (see VIEW_SUFFIX); returns its name."""
+    view = view_name(name)
+    if not has_session(view):
+        run("new-session", "-d", "-t", target(name), "-s", view)
+        set_session_option(view, "status", "off")
+        set_session_option(view, "detach-on-destroy", "on")
+    return view
+
+
+def prune_views() -> None:
+    """Kill app views whose workstream session is gone (killed by an older wm, say), so Claude doesn't live on."""
+    live = sessions()
+    for session in live:
+        if session.endswith(VIEW_SUFFIX) and session.removesuffix(VIEW_SUFFIX) not in live:
+            run("kill-session", "-t", target(session), check=False)
+
+
+def attach_command(name: str) -> list[str]:
+    """argv that attaches a terminal to session `name`, for the native app's terminal view."""
+    cfg = get_config()
+    ensure_conf(cfg)
+    return [shutil.which("tmux") or "tmux", "-u", *_base(cfg)[1:], "attach-session", "-t", target(name)]
+
+
+def client_of(pid: int) -> str | None:
+    """Name of the tmux client whose process is `pid`."""
+    proc = run("list-clients", "-F", "#{client_pid}\t#{client_name}", check=False)
+    for line in proc.stdout.splitlines():
+        client_pid, _, name = line.partition("\t")
+        if client_pid == str(pid):
+            return name
+    return None
 
 
 def set_session_option(name: str, option: str, value: str) -> None:
@@ -101,9 +145,10 @@ def send_text(name: str, text: str) -> None:
 
 
 def clients(name: str) -> list[str]:
-    """TTYs of terminals currently viewing session `name`."""
-    proc = run("list-clients", "-t", target(name), "-F", "#{client_tty}", check=False)
-    return proc.stdout.split() if proc.returncode == 0 else []
+    """TTYs of terminals currently viewing session `name`, in a terminal or in the native app."""
+    proc = run("list-clients", "-F", "#{session_name}\t#{client_tty}", check=False)
+    pairs = [line.partition("\t") for line in proc.stdout.splitlines()] if proc.returncode == 0 else []
+    return [tty for session, _, tty in pairs if session in (name, view_name(name))]
 
 
 def inside_manager() -> bool:

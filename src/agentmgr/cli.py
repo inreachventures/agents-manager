@@ -423,6 +423,14 @@ def dashboard() -> None:
     run()
 
 
+@app.command("app-server", hidden=True)
+def app_server() -> None:
+    """Backend of the native macOS app: JSON lines on stdin/stdout."""
+    from .server import main as serve
+
+    serve()
+
+
 def main() -> None:
     app()
 
