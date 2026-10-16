@@ -94,8 +94,10 @@ def test_app_views_share_the_session_and_go_with_it(env):
         argv = tmux.attach_command(view)
         assert argv[-2:] == ["-t", "=WS-1_app"] and "-u" in argv
 
+        assert not tmux.watched("WS-1")
+        tmux.run("rename-session", "-t", "=WS-1_app", "renamed")  # C-b $ in the app
         tmux.kill_session("WS-1")
-        assert not tmux.sessions() & {"WS-1", "WS-1_app"}
+        assert not tmux.sessions() & {"WS-1", "WS-1_app", "renamed"}  # the whole group goes
 
         tmux.new_session("WS-2", env.root, ["sleep", "600"])
         tmux.ensure_view("WS-2")
@@ -103,6 +105,14 @@ def test_app_views_share_the_session_and_go_with_it(env):
         assert "WS-2_app" in tmux.sessions()
         tmux.prune_views()
         assert "WS-2_app" not in tmux.sessions()
+
+        tmux.new_session("WS-3", env.root, ["sleep", "600"])
+        tmux.ensure_view("WS-3")
+        tmux.run("kill-session", "-t", "=WS-3")
+        tmux.new_session("WS-3", env.root, ["sleep", "600"])  # started again before the stale view was pruned
+        tmux.ensure_view("WS-3")
+        pane = tmux.run("display-message", "-p", "-t", "=WS-3:", "#{pane_id}").stdout
+        assert tmux.run("display-message", "-p", "-t", "=WS-3_app:", "#{pane_id}").stdout == pane
     finally:
         tmux.run("kill-server", check=False)
 
@@ -127,3 +137,49 @@ def test_attach_refuses_a_stopped_session(env):
     ws = ws_mod.new(launch=False, name="not running")
     assert "is stopped" in ask(srv, "attach", key=ws.key)["error"]
     assert ask(srv, "switch", key=ws.key, pid=1)["result"] == {"switched": False}
+
+
+@pytest.mark.skipif(not tmux.available(), reason="needs tmux")
+def test_the_app_counts_as_watching_only_while_in_front(env, monkeypatch):
+    try:
+        tmux.new_session("WS-1", env.root, ["sleep", "600"])
+        view = tmux.ensure_view("WS-1")
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4242: view})  # the app's client shows WS-1
+        srv = server.Server(io.StringIO())
+        ask(srv, "focus", active=True)
+        assert tmux.watched("WS-1")
+        ask(srv, "focus", active=False)
+        assert not tmux.watched("WS-1")
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4242: view, 4343: "WS-1"})  # and a terminal does
+        assert tmux.watched("WS-1")
+    finally:
+        tmux.run("kill-server", check=False)
+
+
+def test_changes_to_one_workstream_wait_for_each_other(env, monkeypatch):
+    import threading
+    import time
+
+    srv = server.Server(io.StringIO())
+    ws = ws_mod.new(launch=False, name="one change only", repo_queries=["web"])
+    order = []
+
+    def slow_archive(key, force=False):
+        order.append("archive starts")
+        time.sleep(0.5)
+        order.append("archive ends")
+        return ["archived"]
+
+    def add_repo(*args, **kwargs):
+        order.append("add repo")
+        raise ws_mod.WorkstreamError("archived")
+
+    monkeypatch.setattr(ws_mod, "archive", slow_archive)
+    monkeypatch.setattr(ws_mod, "add_repo", add_repo)
+    first = threading.Thread(target=srv.call, args=(json.dumps({"id": 1, "method": "archive",
+                                                                "params": {"key": ws.key}}),))
+    first.start()
+    time.sleep(0.1)
+    srv.call(json.dumps({"id": 2, "method": "add_repo", "params": {"key": ws.key, "repo": "ml"}}))
+    first.join()
+    assert order == ["archive starts", "archive ends", "add repo"]

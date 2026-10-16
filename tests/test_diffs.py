@@ -1,3 +1,5 @@
+import os
+
 from agentmgr import diffs
 from agentmgr import workstream as ws_mod
 
@@ -83,3 +85,57 @@ def test_repo_diff_covers_commits_staged_unstaged_and_untracked_files(env):
     assert files["blob.bin"]["binary"]
     assert (out["additions"], out["deletions"]) == (5, 0)
     assert sh(wt, "git", "status", "--porcelain") == before  # read-only: nothing staged or added
+
+
+def worktree(env):
+    return ws_mod.new(launch=False, name="show changes", repo_queries=["web"]).path / "acme-web"
+
+
+def test_repo_diff_ignores_diff_settings_that_change_the_format(env):
+    wt = worktree(env)
+    (wt / "notes.txt").write_text("one\n\nthree\n")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "notes")
+    for key, value in (("diff.noprefix", "true"), ("diff.mnemonicPrefix", "true"),
+                       ("diff.suppressBlankEmpty", "true")):
+        sh(wt, "git", "config", key, value)
+    (wt / "notes.txt").write_text("one\n\n3\n")
+    (wt / "tab\tname.txt").write_text("x\n")
+    sh(wt, "git", "add", "tab\tname.txt")
+    files = {f["path"]: f for f in diffs.repo_diff(wt, "origin/main")["files"]}
+    assert set(files) == {"notes.txt", "tab\tname.txt"}
+    lines = [(ln["kind"], ln["old"], ln["new"], ln["text"]) for h in files["notes.txt"]["hunks"] for ln in h["lines"]]
+    assert lines == [("+", None, 1, "one"), ("+", None, 2, ""), ("+", None, 3, "3")]  # all new since the fork
+
+
+def test_untracked_links_are_not_followed(env):
+    wt = worktree(env)
+    secret = env.root / "secret.txt"
+    secret.write_text("do not show\n")
+    (wt / "link").symlink_to(secret)
+    os.mkfifo(wt / "pipe")  # git doesn't list it; reading it would block
+    [link] = diffs.repo_diff(wt, "origin/main")["files"]
+    assert link["path"] == "link" and [ln["text"] for ln in link["hunks"][0]["lines"]] == [str(secret)]
+
+
+def test_untracked_files_share_the_line_budget_and_are_capped(env, monkeypatch):
+    wt = worktree(env)
+    monkeypatch.setattr(diffs, "MAX_TOTAL_LINES", 5)
+    monkeypatch.setattr(diffs, "MAX_UNTRACKED_FILES", 2)
+    for name in ("a.txt", "b.txt", "c.txt"):
+        (wt / name).write_text("1\n2\n3\n")
+    out = diffs.repo_diff(wt, "origin/main")
+    a, b = out["files"]
+    assert (a["path"], b["path"], out["untracked_omitted"]) == ("a.txt", "b.txt", 1)
+    assert len(b["hunks"][0]["lines"]) == 2 and b["truncated"] and b["additions"] == 3
+
+
+def test_parse_reads_a_blank_context_line_without_its_space_and_quoted_paths():
+    [f] = diffs.parse('diff --git "a/tab\\tname" "b/tab\\tname"\n--- "a/tab\\tname"\n+++ "b/tab\\tname"\n'
+                      "@@ -1,3 +1,3 @@\n one\n\n-three\n+3\n")
+    assert f.path == "tab\tname"
+    assert [(ln.kind, ln.old, ln.new) for ln in f.hunks[0].lines] == [
+        (" ", 1, 1), (" ", 2, 2), ("-", 3, None), ("+", None, 3)]
+    [g] = diffs.parse('diff --git "a/caf\\303\\251" "b/caf\\303\\251"\nnew file mode 100644\n'
+                      "Binary files /dev/null and \"b/caf\\303\\251\" differ\n")
+    assert (g.path, g.binary) == ("café", True)

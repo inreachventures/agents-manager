@@ -64,6 +64,8 @@ def state() -> dict:
         "workstreams": [_row(r) for r in active],
         "archived": [_row(r) for r in rows if r.status == db.ARCHIVED],
         "origin": {"repos": len(oks), "checked_at": None if None in oks or not oks else min(oks)},
+        # client pid -> the session it shows, so the app notices when tmux moved its terminal (C-b s, say)
+        "clients": {str(pid): session for pid, session in tmux.client_sessions().items()},
     }
 
 
@@ -75,6 +77,8 @@ class Server:
         self.done = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wm-request")
         self.last_state: dict | None = None
+        self.locks: dict[str, threading.Lock] = {}  # per workstream: one change at a time (an add-repo during an
+        self.locks_lock = threading.Lock()  # archive would leave a worktree behind)
 
     def send(self, msg: dict) -> None:
         line = json.dumps(msg, separators=(",", ":")) + "\n"
@@ -84,6 +88,10 @@ class Server:
                 self.out.flush()
             except (BrokenPipeError, ValueError):  # the app is gone
                 self.done.set()
+
+    def locked(self, key: str) -> threading.Lock:
+        with self.locks_lock:
+            return self.locks.setdefault(key.upper(), threading.Lock())
 
     def notice(self, message: str, level: str = "info") -> None:
         self.send({"event": "notice", "data": {"level": level, "message": message}})
@@ -169,12 +177,14 @@ class Server:
         return {"key": ws.key}
 
     def rpc_add_repo(self, key: str, repo: str, branch: str | None = None) -> dict:
-        res = workstream.add_repo(key, repo, branch=branch or None)
+        with self.locked(key):
+            res = workstream.add_repo(key, repo, branch=branch or None)
         return {"repo": res.link.repo, "branch": res.link.branch, "created_branch": res.created_branch,
                 "notes": res.notes}
 
     def rpc_resume(self, key: str) -> dict:
-        return {"key": workstream.resume(key).key}
+        with self.locked(key):
+            return {"key": workstream.resume(key).key}
 
     def rpc_rebase_plan(self, key: str) -> dict:
         ws, steps = workstream.rebase_plan(key)
@@ -183,7 +193,8 @@ class Server:
              "skip": s.skip, "push": s.pushed_at is not None} for s in steps]}
 
     def rpc_rebase(self, key: str) -> dict:
-        return {"log": workstream.rebase(key)}
+        with self.locked(key):
+            return {"log": workstream.rebase(key)}
 
     def rpc_archive_report(self, key: str) -> dict:
         ws, reports = workstream.cleanup_report(key)
@@ -195,10 +206,17 @@ class Server:
         return {"label": ws.label, "repos": repos, "blocked": any(r.blockers for r in reports)}
 
     def rpc_archive(self, key: str, force: bool = False) -> dict:
-        return {"log": workstream.archive(key, force=force)}
+        with self.locked(key):
+            return {"log": workstream.archive(key, force=force)}
 
     def rpc_unarchive(self, key: str) -> dict:
-        return {"log": workstream.unarchive(key)}
+        with self.locked(key):
+            return {"log": workstream.unarchive(key)}
+
+    def rpc_focus(self, active: bool) -> dict:
+        """The app came to the front or went to the back: hooks notify only when nobody is looking (tmux.watched)."""
+        tmux.set_app_active(active)
+        return {}
 
     def rpc_refresh(self) -> dict:
         self.refresh_prs()

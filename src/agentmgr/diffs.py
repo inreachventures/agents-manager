@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import codecs
 import os
 import re
+import stat
 import subprocess
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -13,6 +15,10 @@ from . import gitops
 MAX_FILE_LINES = 2000  # diff lines shown per file; the rest of the file is summarised by its counts
 MAX_TOTAL_LINES = 8000  # per repo
 MAX_UNTRACKED_BYTES = 512_000
+MAX_UNTRACKED_FILES = 200  # an un-ignored build folder shouldn't flood the app
+# The parser needs git's default output whatever the user's config says (diff.noprefix, diff.mnemonicPrefix, ...).
+DIFF_ARGS = ("-c", "diff.suppressBlankEmpty=false", "--no-optional-locks", "diff", "--no-color", "--no-ext-diff",
+             "--no-textconv", "--src-prefix=a/", "--dst-prefix=b/", "-M")
 HUNK_RE = re.compile(r"^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@")
 
 
@@ -53,14 +59,22 @@ def _git(worktree: Path, *args: str) -> str:
 
 
 def _unquote(path: str) -> str:
-    return path[1:-1] if len(path) > 1 and path[0] == path[-1] == '"' else path
+    """git C-quotes paths with special characters: "tab\\tname" or octal escapes for raw bytes."""
+    if len(path) > 1 and path[0] == path[-1] == '"':
+        return codecs.escape_decode(path[1:-1].encode())[0].decode("utf-8", errors="replace")
+    return path
 
 
 def _header_path(line: str) -> str:
     """Path from `diff --git a/X b/X`; only used when there are no ---/+++ lines (binary, mode-only changes)."""
     rest = line.removeprefix("diff --git ")
-    n = (len(rest) - 5) // 2  # "a/" + X + " b/" + X
-    return _unquote(rest[2:2 + n]) if n > 0 else rest
+    if rest.startswith('"'):  # "a/tab\tname" "b/tab\tname"
+        i = 1
+        while i < len(rest) and rest[i] != '"':
+            i += 2 if rest[i] == "\\" else 1
+        return _unquote(rest[:i + 1]).removeprefix("a/")
+    n = (len(rest) - 5) // 2  # a/X b/X
+    return rest[2:2 + n] if n > 0 else rest
 
 
 def parse(patch: str, budget: int = MAX_TOTAL_LINES) -> list[FileDiff]:
@@ -69,7 +83,10 @@ def parse(patch: str, budget: int = MAX_TOTAL_LINES) -> list[FileDiff]:
     cur: FileDiff | None = None
     hunk: Hunk | None = None
     shown = old = new = 0
-    for line in patch.split("\n"):
+    lines = patch.split("\n")  # not splitlines(): a "\r" inside a line is content
+    if lines[-1] == "":
+        lines.pop()  # after the final newline
+    for line in lines:
         if line.startswith("diff --git "):
             cur, hunk, shown = FileDiff(path=_header_path(line)), None, 0
             files.append(cur)
@@ -97,9 +114,9 @@ def parse(patch: str, budget: int = MAX_TOTAL_LINES) -> list[FileDiff]:
             elif line.startswith("+++ ") and line != "+++ /dev/null":
                 cur.path = _unquote(line[4:].rstrip("\t")).removeprefix("b/")
             continue
-        kind = line[:1]
+        kind = line[:1] or " "  # a blank context line, should a config strip its space
         if kind not in ("+", "-", " "):
-            continue  # "\ No newline at end of file", or the empty string after the last line
+            continue  # "\ No newline at end of file"
         if kind == "+":
             cur.additions += 1
         elif kind == "-":
@@ -117,41 +134,55 @@ def parse(patch: str, budget: int = MAX_TOTAL_LINES) -> list[FileDiff]:
     return files
 
 
-def _untracked(worktree: Path) -> list[FileDiff]:
-    """New files git doesn't track yet (ignored ones excluded), shown as all-added."""
+def _shown(files: list[FileDiff]) -> int:
+    return sum(len(h.lines) for f in files for h in f.hunks)
+
+
+def _untracked(worktree: Path, budget: int) -> tuple[list[FileDiff], int]:
+    """New files git doesn't track yet (ignored ones excluded), shown as all-added, and how many were left out.
+    Only regular files are read, and symlinks aren't followed: a link shows its target, as git would."""
+    names = [n for n in _git(worktree, "ls-files", "--others", "--exclude-standard", "-z").split("\0") if n]
     files = []
-    for name in filter(None, _git(worktree, "ls-files", "--others", "--exclude-standard", "-z").split("\0")):
+    for name in names[:MAX_UNTRACKED_FILES]:
         path = worktree / name
         f = FileDiff(path=name, status="added", untracked=True)
         files.append(f)
         try:
-            if path.is_dir() or path.stat().st_size > MAX_UNTRACKED_BYTES:
+            info = path.lstat()
+            if stat.S_ISLNK(info.st_mode):
+                text = [os.readlink(path)]
+            elif not stat.S_ISREG(info.st_mode) or info.st_size > MAX_UNTRACKED_BYTES:
                 f.truncated = True
                 continue
-            data = path.read_bytes()
+            else:
+                data = path.read_bytes()
+                if b"\0" in data[:8000]:
+                    f.binary = True
+                    continue
+                text = data.decode("utf-8", errors="replace").splitlines()
         except OSError:
             f.truncated = True
             continue
-        if b"\0" in data[:8000]:
-            f.binary = True
-            continue
-        lines = data.decode("utf-8", errors="replace").splitlines()
-        f.additions = len(lines)
-        f.hunks = [Hunk(f"@@ -0,0 +1,{len(lines)} @@",
-                        [Line("+", None, i + 1, text) for i, text in enumerate(lines[:MAX_FILE_LINES])])]
-        f.truncated = len(lines) > MAX_FILE_LINES
-    return files
+        f.additions = len(text)
+        keep = text[:max(0, min(MAX_FILE_LINES, budget))]
+        budget -= len(keep)
+        f.truncated = len(keep) < len(text)
+        if keep:
+            f.hunks = [Hunk(f"@@ -0,0 +1,{len(text)} @@", [Line("+", None, i + 1, t) for i, t in enumerate(keep)])]
+    return files, max(0, len(names) - MAX_UNTRACKED_FILES)
 
 
 def repo_diff(worktree: Path, base: str) -> dict:
     """Everything the branch changes against where it forked from `base`: commits, staged, unstaged and untracked
     files. Never writes to the repo (no index refresh, no intent-to-add)."""
     fork = _git(worktree, "merge-base", base, "HEAD").strip() if gitops.ref_exists(worktree, base) else "HEAD"
-    files = parse(_git(worktree, "--no-optional-locks", "diff", "--no-color", "--no-ext-diff", "-M", fork))
-    files += _untracked(worktree)
+    files = parse(_git(worktree, *DIFF_ARGS, fork))
+    untracked, omitted = _untracked(worktree, MAX_TOTAL_LINES - _shown(files))
+    files += untracked
     return {
         "fork_point": fork[:12],
         "files": [asdict(f) for f in files],
+        "untracked_omitted": omitted,
         "additions": sum(f.additions for f in files),
         "deletions": sum(f.deletions for f in files),
     }

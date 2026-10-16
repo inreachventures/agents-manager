@@ -18,6 +18,7 @@ HOME_SESSION = "home"
 # The native app shows a workstream through a session grouped with it (same window, so the same Claude), named
 # <key>_app: there tmux's status line is off and the client detaches when Claude exits. Keys never contain "_".
 VIEW_SUFFIX = "_app"
+APP_ACTIVE = "@wm_app_active"  # global option: "1" while the native app is the frontmost app
 
 
 class TmuxError(RuntimeError):
@@ -88,20 +89,42 @@ def new_session(name: str, cwd: Path, command: list[str], env: dict[str, str] | 
 
 
 def kill_session(name: str) -> None:
-    # the app's view too: it shares the window, so it would keep Claude running
-    for session in (name, view_name(name)):
-        if has_session(session):
+    """Kill session `name` and every session grouped with it, such as the app's view, even renamed: a grouped
+    session keeps the shared window, and so Claude, alive."""
+    groups = _groups()
+    group = groups.get(name)
+    for session, g in groups.items():
+        if session in (name, view_name(name)) or (group and g == group):
             run("kill-session", "-t", target(session), check=False)
+
+
+def _groups() -> dict[str, str]:
+    """Session name -> its session group ("" when not grouped)."""
+    if not available():
+        return {}
+    proc = run("list-sessions", "-F", "#{session_name}\t#{session_group}", check=False)
+    pairs = [line.partition("\t") for line in proc.stdout.splitlines()] if proc.returncode == 0 else []
+    return {name: group for name, _, group in pairs}
 
 
 def view_name(name: str) -> str:
     return name + VIEW_SUFFIX
 
 
+def _stale_view(view: str, groups: dict[str, str]) -> bool:
+    """A view not grouped with its workstream's current session: that session is gone, or was started again."""
+    base = view.removesuffix(VIEW_SUFFIX)
+    return base not in groups or not groups[base] or groups[base] != groups[view]
+
+
 def ensure_view(name: str) -> str:
     """The native app's session for workstream session `name` (see VIEW_SUFFIX); returns its name."""
     view = view_name(name)
-    if not has_session(view):
+    groups = _groups()
+    if view in groups and _stale_view(view, groups):
+        run("kill-session", "-t", target(view), check=False)
+        del groups[view]
+    if view not in groups:
         run("new-session", "-d", "-t", target(name), "-s", view)
         set_session_option(view, "status", "off")
         set_session_option(view, "detach-on-destroy", "on")
@@ -109,11 +132,24 @@ def ensure_view(name: str) -> str:
 
 
 def prune_views() -> None:
-    """Kill app views whose workstream session is gone (killed by an older wm, say), so Claude doesn't live on."""
-    live = sessions()
-    for session in live:
-        if session.endswith(VIEW_SUFFIX) and session.removesuffix(VIEW_SUFFIX) not in live:
+    """Kill app views left without their workstream's session (killed by an older wm, say), so Claude doesn't
+    live on in them."""
+    groups = _groups()
+    for session in groups:
+        if session.endswith(VIEW_SUFFIX) and _stale_view(session, groups):
             run("kill-session", "-t", target(session), check=False)
+
+
+def set_app_active(active: bool) -> None:
+    if sessions():
+        run("set-option", "-g", APP_ACTIVE, "1" if active else "0", check=False)
+
+
+def client_sessions() -> dict[int, str]:
+    """Client process id -> the session it shows."""
+    proc = run("list-clients", "-F", "#{client_pid}\t#{session_name}", check=False) if available() else None
+    pairs = [line.partition("\t") for line in proc.stdout.splitlines()] if proc and proc.returncode == 0 else []
+    return {int(pid): session for pid, _, session in pairs if pid.isdigit()}
 
 
 def attach_command(name: str) -> list[str]:
@@ -157,10 +193,18 @@ def send_text(name: str, text: str) -> None:
 
 
 def clients(name: str) -> list[str]:
-    """TTYs of terminals currently viewing session `name`, in a terminal or in the native app."""
-    proc = run("list-clients", "-F", "#{session_name}\t#{client_tty}", check=False)
-    pairs = [line.partition("\t") for line in proc.stdout.splitlines()] if proc.returncode == 0 else []
-    return [tty for session, _, tty in pairs if session in (name, view_name(name))]
+    """TTYs of terminals currently viewing session `name`."""
+    proc = run("list-clients", "-t", target(name), "-F", "#{client_tty}", check=False)
+    return proc.stdout.split() if proc.returncode == 0 else []
+
+
+def watched(name: str) -> bool:
+    """Someone is looking at session `name`: a terminal shows it, or the native app shows it and is in front."""
+    shown = set(client_sessions().values())
+    if name in shown:
+        return True
+    active = run("show-options", "-g", "-v", "-q", APP_ACTIVE, check=False).stdout.strip() == "1"
+    return view_name(name) in shown and active
 
 
 def inside_manager() -> bool:

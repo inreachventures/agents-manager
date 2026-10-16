@@ -40,7 +40,7 @@ def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None)
         return
     db.set_status(conn, ws.key, status, reason)
     if status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
-        if not tmux.clients(ws.key):  # nobody is looking at this session
+        if not tmux.watched(ws.key):  # nobody is looking at this session
             msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
             notify.notify(ws.label, msg)
 
