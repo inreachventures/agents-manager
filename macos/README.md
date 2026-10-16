@@ -1,20 +1,22 @@
 # Workstreams.app: the native macOS dashboard
 
-The TUI dashboard as a Mac app: workstreams in the sidebar, the selected one's Claude session in the middle, and
-what its branches change on the right.
+The TUI dashboard as a Mac app: workstreams in the sidebar, the selected one's Claude session in the middle, its
+repos in the top bar and what their branches change on the right.
 
-- **Sidebar**: the same order and states as `wm`'s dashboard (needs you, working, your turn, intake, stopped). A
-  spinner while Claude works, a pulsing dot when it waits for you (orange with `!` when it's blocked on a permission
-  or a question). Each workstream opens onto its repos, with what each one needs next (`↑ needs push`,
-  `● ready to merge`, …) and how far behind base it is once that matters (yellow from 20).
+- **Sidebar**: one row per workstream, in the same order and states as `wm`'s dashboard (needs you, working, your
+  turn, intake, stopped). A spinner while Claude works, a pulsing dot when it waits for you (orange with `!` when
+  it's blocked on a permission or a question), and a small dot per repo coloured by what it needs next; hover it
+  for the details.
+- **Top bar**: the selected workstream's repos, each with that dot, its PR number or, from 20 commits, how far
+  behind base it is (`acme-web 23↓`). Click one to see only its changes, again to see all; right-click for its PR,
+  its worktree and its branch name. ⌘1–⌘9 pick the Nth repo, ⌘0 all of them.
 - **Session**: the real `claude` TUI, through a terminal view. Selecting a workstream switches to its session;
   stopped ones offer **Resume**, archived ones **Restore**.
-- **Changes** (⌥⌘0): per repo, everything the branch changes since it forked from its base: commits, staged,
-  unstaged and untracked files. Each repo has a chip to show or hide its changes; clicking a repo in the sidebar
-  scrolls to it.
+- **Changes** (⌥⌘0): everything each branch changes since it forked from its base: commits, staged, unstaged and
+  untracked files.
 - **Actions**: the `…` toolbar menu or the context menu, ⌘N new, ⇧⌘A add repo, ⇧⌘B rebase, ⌘⌫ archive, ⇧⌘↩
-  resume, ⌘R refresh git/PR/CI, ⌘J next workstream waiting on you, ⌥⌘↑/↓ previous/next, ⌥⌘←/→ collapse/expand
-  all, ⌥⌘A archived ones. The Dock icon shows how many workstreams wait on you.
+  resume, ⌘R refresh git/PR/CI, ⌘J next workstream waiting on you, ⌥⌘↑/↓ previous/next, ⌥⌘A archived ones. The
+  Dock icon shows how many workstreams wait on you.
 
 ## Build and run
 

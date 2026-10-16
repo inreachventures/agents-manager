@@ -316,8 +316,9 @@ merging repo-level Claude settings, PR creation by the manager, remote/cloud.
 
 ## Native app (D15)
 
-`Workstreams.app` (SwiftUI, in `macos/`) is the dashboard as a Mac window: workstreams and their repos in a
-sidebar, the selected session in a terminal view, the branches' changes in a collapsible right panel. D3 still holds
+`Workstreams.app` (SwiftUI, in `macos/`) is the dashboard as a Mac window: workstreams in a sidebar (a dot per repo
+for what it needs next), the selected one's repos in the top bar, its session in a terminal view and the branches'
+changes in a collapsible right panel, for every repo or the one picked in the top bar. D3 still holds
 for everything that matters: no daemon, no web server, sessions in the manager's tmux server.
 
 - **Backend**: the app runs `wm app-server`, JSON lines on stdin/stdout. Requests map one to one to the workstream

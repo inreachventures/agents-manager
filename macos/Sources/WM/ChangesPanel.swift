@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// What the workstream's branches change against their base: commits, staged, unstaged and untracked files.
-/// Each repo can be switched off with its chip at the top.
+/// What the workstream's branches change against their base: commits, staged, unstaged and untracked files. Every
+/// repo, or the one picked with its chip in the top bar.
 struct ChangesPanel: View {
     @Environment(AppModel.self) private var model
     @State private var expanded: Set<String> = []  // "repo/path" of big files opened by hand
@@ -31,72 +31,44 @@ struct ChangesPanel: View {
     }
 
     private func content(ws: Workstream, diff: DiffResult) -> some View {
-        let shown = diff.repos.filter { model.repoShown(ws.key, $0.repo) }
+        let solo = model.soloRepo
+        let shown = diff.repos.filter { solo == nil || $0.repo == solo }
         return VStack(spacing: 0) {
-            header(ws: ws, diff: diff, shown: shown)
+            if let solo, let repo = shown.first {
+                SoloHeader(repo: repo, state: ws.repos.first { $0.repo == solo })
+            } else {
+                AllHeader(repos: shown)
+            }
             Divider()
             if diff.repos.isEmpty {
                 ContentUnavailableView("No repos yet", systemImage: "folder.badge.plus",
                                        description: Text("Changes show up here once repos are attached."))
                     .frame(maxHeight: .infinity)
-            } else if shown.isEmpty {
-                ContentUnavailableView("All repos hidden", systemImage: "eye.slash",
-                                       description: Text("Turn a repo back on above."))
-                    .frame(maxHeight: .infinity)
             } else if shown.allSatisfy({ $0.files.isEmpty && $0.error == nil }) {
                 ContentUnavailableView("No changes yet", systemImage: "checkmark.circle",
-                                       description: Text("The branches match their base."))
+                                       description: Text(solo == nil ? "The branches match their base."
+                                                                     : "The branch matches its base."))
                     .frame(maxHeight: .infinity)
             } else {
-                ScrollViewReader { proxy in
-                    ScrollView {
-                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                            ForEach(shown) { repo in
-                                Section {
-                                    Color.clear.frame(height: 0).id(repo.repo)  // scroll target (the header is pinned)
-                                    if let error = repo.error {
-                                        Text(error).font(.caption).foregroundStyle(.red).padding(12)
-                                    }
-                                    ForEach(rows(repo)) { row in
-                                        rowView(row)
-                                    }
-                                } header: {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                        ForEach(shown) { repo in
+                            Section {
+                                if let error = repo.error {
+                                    Text(error).font(.caption).foregroundStyle(.red).padding(12)
+                                }
+                                ForEach(rows(repo)) { row in
+                                    rowView(row)
+                                }
+                            } header: {
+                                if solo == nil {  // a single repo is named in the panel's header already
                                     RepoHeader(repo: repo, state: ws.repos.first { $0.repo == repo.repo })
                                 }
                             }
                         }
                     }
-                    .onChange(of: model.focusRepo) { _, repo in
-                        guard let repo else { return }
-                        withAnimation(.snappy) { proxy.scrollTo(repo, anchor: .top) }
-                    }
                 }
-            }
-        }
-    }
-
-    private func header(ws: Workstream, diff: DiffResult, shown: [RepoDiff]) -> some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Changes").font(.headline)
-                Spacer()
-                let additions = shown.reduce(0) { $0 + $1.additions }, deletions = shown.reduce(0) { $0 + $1.deletions }
-                if additions + deletions > 0 { LineCounts(additions: additions, deletions: deletions) }
-            }
-            if !diff.repos.isEmpty { chips(ws: ws, diff: diff) }
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 10)
-    }
-
-    private func chips(ws: Workstream, diff: DiffResult) -> some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                ForEach(diff.repos) { repo in
-                    RepoChip(repo: repo, on: model.repoShown(ws.key, repo.repo)) {
-                        withAnimation(.snappy) { model.toggleRepo(ws.key, repo.repo) }
-                    }
-                }
+                .id(solo ?? "")  // start at the top when switching repos
             }
         }
     }
@@ -165,28 +137,59 @@ struct ChangesPanel: View {
     }
 }
 
-private struct RepoChip: View {
-    let repo: RepoDiff
-    let on: Bool
-    let toggle: () -> Void
+private struct AllHeader: View {
+    let repos: [RepoDiff]
 
     var body: some View {
-        Button(action: toggle) {
-            HStack(spacing: 5) {
-                Image(systemName: on ? "checkmark.circle.fill" : "circle")
-                    .foregroundStyle(on ? Color.accentColor : Color.secondary)
-                Text(repo.repo).foregroundStyle(on ? .primary : .secondary)
+        HStack(alignment: .firstTextBaseline) {
+            Text("Changes").font(.headline)
+            Text(repos.count == 1 ? "1 repo" : "\(repos.count) repos").font(.caption).foregroundStyle(.secondary)
+            Spacer()
+            let additions = repos.reduce(0) { $0 + $1.additions }, deletions = repos.reduce(0) { $0 + $1.deletions }
+            if additions + deletions > 0 { LineCounts(additions: additions, deletions: deletions) }
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 12)
+    }
+}
+
+/// The panel's header while it shows one repo: what it needs next, its branch and PR, and the way back to all.
+private struct SoloHeader: View {
+    @Environment(AppModel.self) private var model
+    let repo: RepoDiff
+    let state: RepoState?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 5) {
+            HStack(alignment: .firstTextBaseline, spacing: 8) {
+                Text(repo.repo).font(.headline)
+                if let state { Text(state.state).font(.caption).foregroundStyle(Color.tone(state.tone)).lineLimit(1) }
+                Spacer()
                 if repo.additions + repo.deletions > 0 {
-                    LineCounts(additions: repo.additions, deletions: repo.deletions).opacity(on ? 1 : 0.5)
+                    LineCounts(additions: repo.additions, deletions: repo.deletions)
                 }
             }
-            .font(.caption)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 4)
-            .background(on ? Color.accentColor.opacity(0.12) : Color.secondary.opacity(0.08), in: Capsule())
+            HStack(spacing: 8) {
+                Text("\(repo.branch) → \(repo.base)")
+                    .font(.caption2.monospaced())
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let state, let url = state.prUrl {
+                    Button(state.chipExtra ?? "PR") { model.open(url) }
+                        .buttonStyle(.link)
+                        .font(.caption)
+                        .help("Open \(state.pr)")
+                }
+                Spacer()
+                Button("All repos") { withAnimation(.snappy(duration: 0.2)) { model.pickRepo(nil) } }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Show every repo's changes (⌘0)")
+            }
         }
-        .buttonStyle(.plain)
-        .help(on ? "Hide \(repo.repo)'s changes" : "Show \(repo.repo)'s changes")
+        .padding(.horizontal, 12)
+        .padding(.vertical, 10)
     }
 }
 
@@ -199,7 +202,10 @@ private struct RepoHeader: View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(repo.repo).font(.callout.weight(.semibold))
+                Button(repo.repo) { withAnimation(.snappy(duration: 0.2)) { model.pickRepo(repo.repo) } }
+                    .buttonStyle(.plain)
+                    .font(.callout.weight(.semibold))
+                    .help("Show only \(repo.repo)'s changes")
                 Text("\(repo.branch) → \(repo.base)")
                     .font(.caption2.monospaced())
                     .foregroundStyle(.secondary)

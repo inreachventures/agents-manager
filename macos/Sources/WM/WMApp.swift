@@ -80,10 +80,17 @@ struct WMCommands: Commands {
                 .keyboardShortcut("0", modifiers: [.command, .option])
             Button("Toggle Archived Workstreams") { model.showArchived.toggle() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
-            Button("Collapse All Workstreams") { model.collapseAll() }
-                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
-            Button("Expand All Workstreams") { model.expandAll() }
-                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
+            Divider()
+            Button("All Repos' Changes") { model.pickRepo(nil) }
+                .keyboardShortcut("0")
+            ForEach(0..<9, id: \.self) { index in
+                Button(model.selected?.repos.indices.contains(index) == true
+                       ? "\(model.selected!.repos[index].repo)'s Changes" : "Repo \(index + 1)'s Changes") {
+                    model.pickRepo(at: index)
+                }
+                .keyboardShortcut(KeyEquivalent(Character("\(index + 1)")))
+                .disabled(model.selected?.repos.indices.contains(index) != true)
+            }
             Divider()
         }
     }

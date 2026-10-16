@@ -1,17 +1,6 @@
 import AppKit
 import SwiftUI
 
-enum SidebarItem: Hashable {
-    case workstream(String)
-    case repo(String, String)
-
-    var key: String {
-        switch self {
-        case .workstream(let key), .repo(let key, _): return key
-        }
-    }
-}
-
 enum ActiveSheet: Identifiable {
     case new
     case addRepo(key: String, repos: [String])
@@ -44,7 +33,7 @@ final class AppModel {
 
     var phase: Phase = .starting
     var state = DashboardState.empty
-    var selection: SidebarItem? { didSet { if oldValue != selection { selectionChanged(from: oldValue) } } }
+    var selection: String? { didSet { if oldValue != selection { selectionChanged() } } }  // a workstream key
     var showArchived = false { didSet { if oldValue != showArchived { selection = nil } } }
     // Opened once the first state is in: presented at launch, the inspector would take its minimum width.
     var showChanges = false {
@@ -54,12 +43,8 @@ final class AppModel {
             if showChanges { Task { await loadDiff() } }
         }
     }
-    var collapsed = Set(UserDefaults.standard.stringArray(forKey: "collapsed") ?? []) {
-        didSet { UserDefaults.standard.set(Array(collapsed), forKey: "collapsed") }
-    }
-    var hiddenRepos: [String: Set<String>] = [:]  // per workstream: repos whose changes are toggled off
+    var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
     var diff: DiffResult?
-    var focusRepo: String?  // the changes panel scrolls to it
     var busy: String?
     var refreshing = false
     var toasts: [Toast] = []
@@ -81,36 +66,35 @@ final class AppModel {
     var workstreams: [Workstream] { showArchived ? state.archived : state.workstreams }
 
     var selected: Workstream? {
-        guard let key = selection?.key else { return nil }
+        guard let key = selection else { return nil }
         return state.workstreams.first { $0.key == key } ?? state.archived.first { $0.key == key }
     }
 
     var waitingCount: Int { state.workstreams.filter { $0.status == .needsYou || $0.status == .yourTurn }.count }
 
-    func isExpanded(_ key: String) -> Binding<Bool> {
-        Binding(get: { !self.collapsed.contains(key) },
-                set: { open in if open { self.collapsed.remove(key) } else { self.collapsed.insert(key) } })
+    /// The repo the changes panel shows on its own, if any, for the selected workstream.
+    var soloRepo: String? {
+        guard let key = selection, let repo = soloRepos[key], selected?.repos.contains(where: { $0.repo == repo }) == true
+        else { return nil }
+        return repo
     }
 
-    var allCollapsed: Bool { state.workstreams.allSatisfy { collapsed.contains($0.key) } }
-
-    // The archived list has no disclosure groups.
-    func collapseAll() {
-        guard !showArchived else { return }
-        withAnimation(.snappy) { collapsed = Set(state.workstreams.map(\.key)) }
+    /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is.
+    func pickRepo(_ repo: String?) {
+        guard let key = selection else { return }
+        if repo == nil || (showChanges && soloRepo == repo) {
+            soloRepos[key] = nil
+        } else {
+            soloRepos[key] = repo
+        }
+        if !showChanges { showChanges = true }
     }
 
-    func expandAll() {
-        guard !showArchived else { return }
-        withAnimation(.snappy) { collapsed = [] }
-    }
-
-    func repoShown(_ key: String, _ repo: String) -> Bool { !(hiddenRepos[key]?.contains(repo) ?? false) }
-
-    func toggleRepo(_ key: String, _ repo: String) {
-        var hidden = hiddenRepos[key] ?? []
-        if hidden.contains(repo) { hidden.remove(repo) } else { hidden.insert(repo) }
-        hiddenRepos[key] = hidden
+    /// ⌘1…⌘9: the selected workstream's Nth repo.
+    func pickRepo(at index: Int) {
+        guard let key = selection, let repos = selected?.repos, repos.indices.contains(index) else { return }
+        soloRepos[key] = repos[index].repo
+        if !showChanges { showChanges = true }
     }
 
     // MARK: - Lifecycle
@@ -211,7 +195,7 @@ final class AppModel {
             if selection == nil {
                 let saved = UserDefaults.standard.string(forKey: "selected")
                 let key = state.workstreams.first { $0.key == saved }?.key ?? state.workstreams.first?.key
-                if let key { selection = .workstream(key) }
+                if let key { selection = key }
             }
             showChanges = UserDefaults.standard.object(forKey: "showChanges") as? Bool ?? true
         }
@@ -224,14 +208,11 @@ final class AppModel {
 
     // MARK: - Selection and terminal
 
-    private func selectionChanged(from old: SidebarItem?) {
-        if let key = selection?.key { UserDefaults.standard.set(key, forKey: "selected") }
-        if case .repo(_, let repo) = selection { focusRepo = repo }
-        if old?.key != selection?.key {
-            diff = nil
-            terminalFailed = nil
-            Task { await loadDiff() }
-        }
+    private func selectionChanged() {
+        if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
+        diff = nil
+        terminalFailed = nil
+        Task { await loadDiff() }
         syncTerminal()
     }
 
@@ -278,19 +259,19 @@ final class AppModel {
     func selectAdjacent(_ step: Int) {
         let keys = workstreams.map(\.key)
         guard !keys.isEmpty else { return }
-        let index = selection.flatMap { keys.firstIndex(of: $0.key) }.map { $0 + step } ?? 0
-        selection = .workstream(keys[min(max(index, 0), keys.count - 1)])
+        let index = selection.flatMap { keys.firstIndex(of: $0) }.map { $0 + step } ?? 0
+        selection = keys[min(max(index, 0), keys.count - 1)]
     }
 
     func selectNextWaiting() {
         let order: [Status: Int] = [.needsYou: 0, .yourTurn: 1]
         let next = state.workstreams
-            .filter { order[$0.status] != nil && $0.key != selection?.key }
+            .filter { order[$0.status] != nil && $0.key != selection }
             .sorted { (order[$0.status]!, $0.since) < (order[$1.status]!, $1.since) }
             .first
         if let next {
             showArchived = false
-            selection = .workstream(next.key)
+            selection = next.key
         } else {
             toast("Nothing needs you", .info)
         }
@@ -333,7 +314,7 @@ final class AppModel {
         guard let result: NewResult = await request("Creating the workstream…", "new", params) else { return }
         showArchived = false
         await reloadState()
-        selection = .workstream(result.key)
+        selection = result.key
     }
 
     func startAddRepo(_ key: String) async {
@@ -393,7 +374,7 @@ final class AppModel {
         toast(result.log.joined(separator: "\n"), .info)
         showArchived = false
         await reloadState()
-        selection = .workstream(key)
+        selection = key
     }
 
     func refresh() async {

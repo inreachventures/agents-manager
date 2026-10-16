@@ -87,6 +87,20 @@ struct RepoState: Decodable, Identifiable, Equatable {
     var fetchError: String?
 
     var id: String { repo }
+
+    /// What its top-bar chip shows after the name: the PR number, else how far behind base once that matters.
+    var chipExtra: String? {
+        if let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") }) { return String(number) }
+        return behindWarn ? "\(behind)↓" : nil
+    }
+
+    /// Everything about it in a few lines, for tooltips.
+    var details: String {
+        var lines = ["\(repo) · \(branch) → \(base)", state, pr]
+        if behind > 0 { lines.append("\(behind) behind base") }
+        if let fetchError { lines.append("fetch failed: \(fetchError)") }
+        return lines.joined(separator: "\n")
+    }
 }
 
 // MARK: - Diffs

@@ -1,6 +1,7 @@
 import SwiftUI
 
-/// Workstreams in the TUI's order (needs you, working, your turn, intake, stopped), each one opening onto its repos.
+/// Workstreams in the TUI's order (needs you, working, your turn, intake, stopped), one row each, with a dot per repo
+/// coloured by what it needs next; the selected workstream's repos are in the top bar.
 struct SidebarView: View {
     @Environment(AppModel.self) private var model
 
@@ -11,33 +12,20 @@ struct SidebarView: View {
                 Section("Archived") {
                     ForEach(model.state.archived) { ws in
                         WorkstreamRow(ws: ws)
-                            .tag(SidebarItem.workstream(ws.key))
+                            .tag(ws.key)
                             .contextMenu { ArchivedMenu(ws: ws) }
                     }
                 }
             } else {
                 ForEach(model.state.workstreams) { ws in
-                    DisclosureGroup(isExpanded: model.isExpanded(ws.key)) {
-                        ForEach(ws.repos) { repo in
-                            RepoRow(repo: repo)
-                                .tag(SidebarItem.repo(ws.key, repo.repo))
-                                .contextMenu { RepoMenu(repo: repo) }
-                        }
-                        if ws.repos.isEmpty {
-                            Text(ws.intake ? "no repos yet: Claude attaches them at intake" : "no repos")
-                                .font(.caption).foregroundStyle(.tertiary)
-                                .selectionDisabled()
-                        }
-                    } label: {
-                        WorkstreamRow(ws: ws)
-                            .tag(SidebarItem.workstream(ws.key))
-                            .contextMenu { WorkstreamMenu(ws: ws) }
-                    }
+                    WorkstreamRow(ws: ws)
+                        .tag(ws.key)
+                        .contextMenu { WorkstreamMenu(ws: ws) }
                 }
             }
         }
         .listStyle(.sidebar)
-        .id(model.showArchived)  // a fresh list per mode: rows moving between the two structures leave ghosts
+        .id(model.showArchived)  // a fresh list per mode: rows moving between the two lists leave ghosts
         .overlay {
             if model.phase == .ready && model.workstreams.isEmpty {
                 Text(model.showArchived ? "Nothing archived" : "No workstreams")
@@ -46,18 +34,6 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .toolbar {
-            if !model.showArchived && !model.state.workstreams.isEmpty {
-                ToolbarItem {
-                    let expand = model.allCollapsed
-                    Button {
-                        if expand { model.expandAll() } else { model.collapseAll() }
-                    } label: {
-                        Label(expand ? "Expand All" : "Collapse All",
-                              systemImage: expand ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
-                    }
-                    .help(expand ? "Expand all (⌥⌘→)" : "Collapse all (⌥⌘←)")
-                }
-            }
             ToolbarItem {
                 Button { model.sheet = .new } label: { Label("New Workstream", systemImage: "plus") }
                     .help("New workstream (⌘N)")
@@ -110,6 +86,14 @@ struct WorkstreamRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if ws.status != .archived {
+                HStack(spacing: 3) {
+                    ForEach(ws.repos) { repo in
+                        Circle().fill(Color.tone(repo.tone)).frame(width: 7, height: 7)
+                            .help(repo.details)
+                    }
+                }
+            }
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 Text(ago(ws.since, now: context.date))
             }
@@ -126,37 +110,6 @@ struct WorkstreamRow: View {
         } else {
             Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
         }
-    }
-}
-
-struct RepoRow: View {
-    let repo: RepoState
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Text(repo.repo)
-                .font(.callout)
-                .lineLimit(1)
-            Spacer(minLength: 6)
-            if repo.fetchError != nil {
-                Image(systemName: "exclamationmark.triangle").font(.caption2).foregroundStyle(.red)
-            }
-            if repo.behindWarn {
-                Text("\(repo.behind)↓").font(.caption2.monospacedDigit()).foregroundStyle(Color.amber)
-            }
-            Text(repo.state)
-                .font(.caption)
-                .foregroundStyle(Color.tone(repo.tone))
-                .lineLimit(1)
-        }
-        .help(details)
-    }
-
-    private var details: String {
-        var lines = ["\(repo.repo) · \(repo.branch) → \(repo.base)", repo.state, repo.pr]
-        if repo.behind > 0 { lines.append("\(repo.behind) behind base") }
-        if let error = repo.fetchError { lines.append("fetch failed: \(error)") }
-        return lines.joined(separator: "\n")
     }
 }
 

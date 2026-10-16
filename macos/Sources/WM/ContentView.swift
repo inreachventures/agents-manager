@@ -55,6 +55,9 @@ struct DetailView: View {
             .navigationTitle(model.selected?.label ?? "Workstreams")
             .navigationSubtitle(subtitle)
             .toolbar {
+                if let ws = model.selected, ws.status != .archived, !ws.repos.isEmpty {
+                    ToolbarItem(placement: .automatic) { RepoChips(ws: ws) }
+                }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.refreshing {
                         ProgressView().controlSize(.small)
@@ -206,5 +209,57 @@ struct ToastView: View {
         case .warning: return .orange
         case .error: return .red
         }
+    }
+}
+
+/// The selected workstream's repos, each with a dot for what it needs next and its PR number (or how far behind base
+/// it is). Clicking one shows only its changes; clicking it again shows every repo's.
+struct RepoChips: View {
+    @Environment(AppModel.self) private var model
+    let ws: Workstream
+    private static let shown = 4  // the rest go in a "+N" menu, so the top bar keeps room
+
+    var body: some View {
+        HStack(spacing: 2) {
+            ForEach(Array(ws.repos.prefix(Self.shown).enumerated()), id: \.element.id) { index, repo in
+                chip(repo, index: index)
+            }
+            if ws.repos.count > Self.shown {
+                Menu("+\(ws.repos.count - Self.shown)") {
+                    ForEach(ws.repos.dropFirst(Self.shown)) { repo in
+                        Button(repo.repo) { model.pickRepo(repo.repo) }
+                    }
+                }
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
+                .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    private func chip(_ repo: RepoState, index: Int) -> some View {
+        let on = model.showChanges && model.soloRepo == repo.repo
+        let action = on ? "Click to show every repo's changes" : "Click to show only its changes"
+        return Button {
+            withAnimation(.snappy(duration: 0.2)) { model.pickRepo(repo.repo) }
+        } label: {
+            HStack(spacing: 5) {
+                Circle().fill(Color.tone(repo.tone)).frame(width: 7, height: 7)
+                Text(repo.repo)
+                if let extra = repo.chipExtra {
+                    Text(extra).foregroundStyle(on ? Color.white.opacity(0.75) : Color.secondary)
+                }
+            }
+            .lineLimit(1)
+            .padding(.horizontal, 10)
+            .frame(height: 24)
+            .foregroundStyle(on ? Color.white : Color.primary)
+            .background(on ? Color.accentColor : Color.clear, in: Capsule())
+            .contentShape(Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("\(repo.details)\n\(action)" + (index < 9 ? " (⌘\(index + 1))" : ""))
+        .contextMenu { RepoMenu(repo: repo) }
     }
 }

@@ -4,8 +4,8 @@ import SwiftUI
 
 /// Development builds only. With WM_DEBUG_DIR set, the app runs the commands written to $WM_DEBUG_DIR/cmd, one per
 /// line, so a script can drive it and take snapshots of its own windows (no screen-recording permission needed):
-///   snap NAME · select KEY · select-archived KEY · select-repo KEY REPO · select-row N · toggle-repo REPO
-///   changes on|off · archived on|off · collapse-all · expand-all · sheet new|add|rebase|archive · key return|escape
+///   snap NAME · select KEY · select-archived KEY · select-row N · repo NAME|all (a top-bar chip)
+///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
 ///   appearance dark|light
 @MainActor
@@ -44,20 +44,16 @@ enum DebugControl {
             if let sheet = window.attachedSheet { snapshot(sheet, to: "\(dir)/\(name)-sheet.png") }
         case "select":
             model.showArchived = false
-            model.selection = .workstream(rest[0])
+            model.selection = rest[0]
         case "select-archived":
             model.showArchived = true
-            model.selection = .workstream(rest[0])
-        case "select-repo":
-            model.selection = .repo(rest[0], rest[1])
+            model.selection = rest[0]
+        case "repo":
+            model.pickRepo(rest.first == "all" ? nil : rest.first)
         case "changes":
             model.showChanges = rest.first == "on"
         case "archived":
             model.showArchived = rest.first == "on"
-        case "collapse-all":
-            model.collapseAll()
-        case "expand-all":
-            model.expandAll()
         case "sheet":
             guard let key = model.selected?.key else { return }
             switch rest.first {
@@ -76,7 +72,7 @@ enum DebugControl {
                 return
             }
             table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
-            let selected = model.selection.map { "\($0)" } ?? "nil"
+            let selected = model.selection ?? "nil"
             let out = "rows=\(table.numberOfRows) class=\(type(of: table)) selected=\(selected)\n"
             try? out.write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
         case "offscreen":  // out of the way of real clicks; the window server still captures it
@@ -84,13 +80,11 @@ enum DebugControl {
         case "create":
             Task { await model.create(ticket: rest.first ?? "") }
         case "dump":
-            let out = ["selection=\(model.selection.map { "\($0)" } ?? "nil")",
+            let out = ["selection=\(model.selection ?? "nil") solo=\(model.soloRepo ?? "all")",
                        "selected=\(model.selected?.key ?? "nil") terminal=\(model.terminal.key ?? "nil")",
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
                        "rows=\(model.state.workstreams.map(\.key))"].joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
-        case "toggle-repo":
-            if let key = model.selected?.key { model.toggleRepo(key, rest[0]) }
         case "restart":
             model.restart()
         case "toast":
