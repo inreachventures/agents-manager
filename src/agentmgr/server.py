@@ -91,6 +91,10 @@ class Server:
     # ------------------------------------------------------------------ loop
 
     def serve(self, stdin: TextIO) -> None:
+        try:
+            tmux.reload_conf()
+        except tmux.TmuxError:
+            traceback.print_exc()
         for fn, seconds in ((self.push_state, None), (self.refresh_prs, PR_REFRESH_SECONDS),
                             (self.fetch_bases, FETCH_SECONDS)):
             threading.Thread(target=self._every, args=(fn, seconds), daemon=True).start()

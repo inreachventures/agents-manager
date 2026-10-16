@@ -329,7 +329,9 @@ final class AppModel {
 
     func rebase(_ key: String) async {
         guard let result: LogResult = await request("Rebasing \(key)…", "rebase", ["key": key]) else { return }
-        toast(result.log.joined(separator: "\n"), .info)
+        let text = result.log.joined(separator: "\n")
+        let trouble = ["conflicts", "failed", "not pushed"].contains { text.contains($0) }
+        toast(text, trouble ? .warning : .info)
     }
 
     func startArchive(_ key: String) async {

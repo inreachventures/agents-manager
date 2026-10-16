@@ -46,6 +46,12 @@ def ensure_conf(cfg: Config | None = None) -> Path:
     return cfg.tmux_conf
 
 
+def reload_conf() -> None:
+    """Re-read the config into a running server: one started by an older wm lacks the app-aware key bindings."""
+    if sessions():
+        run("source-file", str(ensure_conf()), check=False)
+
+
 def run(*args: str, check: bool = True, cfg: Config | None = None) -> subprocess.CompletedProcess:
     cfg = cfg or get_config()
     ensure_conf(cfg)

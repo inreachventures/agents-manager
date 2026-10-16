@@ -1,5 +1,6 @@
 import io
 import json
+import subprocess
 
 import pytest
 
@@ -102,6 +103,21 @@ def test_app_views_share_the_session_and_go_with_it(env):
         assert "WS-2_app" in tmux.sessions()
         tmux.prune_views()
         assert "WS-2_app" not in tmux.sessions()
+    finally:
+        tmux.run("kill-server", check=False)
+
+
+@pytest.mark.skipif(not tmux.available(), reason="needs tmux")
+def test_a_server_started_by_an_older_wm_gets_the_app_aware_bindings(env):
+    from agentmgr.config import get_config
+
+    socket = get_config().tmux_socket
+    try:  # started without wm's config, as by a wm from before the app
+        subprocess.run(["tmux", "-L", socket, "-f", "/dev/null", "new-session", "-d", "-s", "WS-1", "sleep 600"],
+                       check=True)
+        tmux.reload_conf()
+        [h] = [line for line in tmux.run("list-keys", "-T", "prefix").stdout.splitlines() if line.split()[3] == "h"]
+        assert "*_app" in h and "switch-client" in h
     finally:
         tmux.run("kill-server", check=False)
 
