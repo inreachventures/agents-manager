@@ -88,6 +88,8 @@ def test_app_views_share_the_session_and_go_with_it(env):
         assert tmux.session_option(view, "status") == "off"
         pane = tmux.run("display-message", "-p", "-t", "=WS-1:", "#{pane_id}").stdout
         assert tmux.run("display-message", "-p", "-t", "=WS-1_app:", "#{pane_id}").stdout == pane  # same Claude
+        tmux.set_window_option("WS-1", "@wm_prompt", "fix the tests")  # the prompt bar shows in both
+        assert tmux.run("display-message", "-p", "-t", "=WS-1_app:", "#{@wm_prompt}").stdout.strip() == "fix the tests"
         argv = tmux.attach_command(view)
         assert argv[-2:] == ["-t", "=WS-1_app"] and "-u" in argv
 

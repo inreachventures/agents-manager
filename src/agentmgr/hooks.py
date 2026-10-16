@@ -70,7 +70,7 @@ def _one_line(text: str) -> str:
 
 def _show_prompt(ws: db.Workstream, prompt: str) -> None:
     if prompt.strip() and tmux.available():
-        tmux.set_session_option(ws.key, PROMPT_OPTION, _one_line(prompt))
+        tmux.set_window_option(ws.key, PROMPT_OPTION, _one_line(prompt))
 
 
 def last_prompt(transcript: Path) -> str:

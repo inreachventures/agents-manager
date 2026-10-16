@@ -132,6 +132,12 @@ def set_session_option(name: str, option: str, value: str) -> None:
         run("set-option", "-t", f"{target(name)}:", option, value, check=False)  # bare "=name" is rejected here
 
 
+def set_window_option(name: str, option: str, value: str) -> None:
+    """On the session's window, so the app's view of the session (same window) shows it too."""
+    if has_session(name):
+        run("set-option", "-w", "-t", f"{target(name)}:", option, value, check=False)
+
+
 def session_option(name: str, option: str) -> str:
     return run("show-options", "-v", "-q", "-t", f"{target(name)}:", option, check=False).stdout.strip()
 
