@@ -46,6 +46,18 @@ struct SidebarView: View {
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .toolbar {
+            if !model.showArchived && !model.state.workstreams.isEmpty {
+                ToolbarItem {
+                    let expand = model.allCollapsed
+                    Button {
+                        if expand { model.expandAll() } else { model.collapseAll() }
+                    } label: {
+                        Label(expand ? "Expand All" : "Collapse All",
+                              systemImage: expand ? "rectangle.expand.vertical" : "rectangle.compress.vertical")
+                    }
+                    .help(expand ? "Expand all (⌥⌘→)" : "Collapse all (⌥⌘←)")
+                }
+            }
             ToolbarItem {
                 Button { model.sheet = .new } label: { Label("New Workstream", systemImage: "plus") }
                     .help("New workstream (⌘N)")

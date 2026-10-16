@@ -92,6 +92,19 @@ final class AppModel {
                 set: { open in if open { self.collapsed.remove(key) } else { self.collapsed.insert(key) } })
     }
 
+    var allCollapsed: Bool { state.workstreams.allSatisfy { collapsed.contains($0.key) } }
+
+    // The archived list has no disclosure groups.
+    func collapseAll() {
+        guard !showArchived else { return }
+        withAnimation(.snappy) { collapsed = Set(state.workstreams.map(\.key)) }
+    }
+
+    func expandAll() {
+        guard !showArchived else { return }
+        withAnimation(.snappy) { collapsed = [] }
+    }
+
     func repoShown(_ key: String, _ repo: String) -> Bool { !(hiddenRepos[key]?.contains(repo) ?? false) }
 
     func toggleRepo(_ key: String, _ repo: String) {

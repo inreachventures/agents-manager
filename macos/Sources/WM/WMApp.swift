@@ -80,6 +80,10 @@ struct WMCommands: Commands {
                 .keyboardShortcut("0", modifiers: [.command, .option])
             Button("Toggle Archived Workstreams") { model.showArchived.toggle() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
+            Button("Collapse All Workstreams") { model.collapseAll() }
+                .keyboardShortcut(.leftArrow, modifiers: [.command, .option])
+            Button("Expand All Workstreams") { model.expandAll() }
+                .keyboardShortcut(.rightArrow, modifiers: [.command, .option])
             Divider()
         }
     }

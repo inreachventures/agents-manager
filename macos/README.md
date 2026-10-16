@@ -13,8 +13,8 @@ what its branches change on the right.
   unstaged and untracked files. Each repo has a chip to show or hide its changes; clicking a repo in the sidebar
   scrolls to it.
 - **Actions**: the `…` toolbar menu or the context menu, ⌘N new, ⇧⌘A add repo, ⇧⌘B rebase, ⌘⌫ archive, ⇧⌘↩
-  resume, ⌘R refresh git/PR/CI, ⌘J next workstream waiting on you, ⌥⌘↑/↓ previous/next, ⌥⌘A archived ones. The
-  Dock icon shows how many workstreams wait on you.
+  resume, ⌘R refresh git/PR/CI, ⌘J next workstream waiting on you, ⌥⌘↑/↓ previous/next, ⌥⌘←/→ collapse/expand
+  all, ⌥⌘A archived ones. The Dock icon shows how many workstreams wait on you.
 
 ## Build and run
 

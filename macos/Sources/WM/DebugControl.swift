@@ -5,8 +5,9 @@ import SwiftUI
 /// Development builds only. With WM_DEBUG_DIR set, the app runs the commands written to $WM_DEBUG_DIR/cmd, one per
 /// line, so a script can drive it and take snapshots of its own windows (no screen-recording permission needed):
 ///   snap NAME · select KEY · select-archived KEY · select-repo KEY REPO · select-row N · toggle-repo REPO
-///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape · click X Y (from the top
-///   left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen · appearance dark|light
+///   changes on|off · archived on|off · collapse-all · expand-all · sheet new|add|rebase|archive · key return|escape
+///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
+///   appearance dark|light
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -53,6 +54,10 @@ enum DebugControl {
             model.showChanges = rest.first == "on"
         case "archived":
             model.showArchived = rest.first == "on"
+        case "collapse-all":
+            model.collapseAll()
+        case "expand-all":
+            model.expandAll()
         case "sheet":
             guard let key = model.selected?.key else { return }
             switch rest.first {
