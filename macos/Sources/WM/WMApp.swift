@@ -76,7 +76,7 @@ struct WMCommands: Commands {
             }
         }
         CommandGroup(replacing: .help) {
-            Button("Welcome Guide") { model.sheet = .guide(step: 0) }
+            Button("Show the Tour") { model.startTour() }
         }
         CommandGroup(after: .sidebar) {
             Button("Toggle Changes") { model.showChanges.toggle() }
@@ -110,26 +110,36 @@ struct SettingsView: View {
     @AppStorage("optionAsMeta") private var optionAsMeta = false
 
     var body: some View {
-        Form {
-            TextField("wm executable", text: $wmPath, prompt: Text("found on your PATH"))
-            Text("Leave empty to use the wm of the checkout the app was built from, else the one on your login "
-                 + "shell's PATH. It needs a wm with the app server (`wm app-server`).")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            HStack {
-                Button("Repo Folders…") { model.sheet = .guide(step: 2) }
-                    .help("Where wm finds your repos")
-                Spacer()
-                Button("Restart wm") { model.restart() }
+        TabView {
+            Form {
+                RepoFoldersView()
             }
-            Toggle("Use Option as Meta key in the terminal", isOn: $optionAsMeta)
-                .onChange(of: optionAsMeta) { _, on in model.terminal.view.optionAsMetaKey = on }
-            Text("On: Option+Enter and Option+letter shortcuts reach Claude. Off: Option types characters, as your "
-                 + "keyboard layout defines them.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
+            .tabItem { Label("Repos", systemImage: "folder") }
+
+            Form {
+                Toggle("Use Option as Meta key", isOn: $optionAsMeta)
+                    .onChange(of: optionAsMeta) { _, on in model.terminal.view.optionAsMetaKey = on }
+                Text("On: Option+Enter and Option+letter shortcuts reach Claude. Off: Option types characters, as "
+                     + "your keyboard layout defines them.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .tabItem { Label("Terminal", systemImage: "terminal") }
+
+            Form {
+                TextField("wm executable", text: $wmPath, prompt: Text("found on your PATH"))
+                Text("Leave empty to use the wm of the checkout the app was built from, else the one on your "
+                     + "login shell's PATH. It needs a wm with the app server (`wm app-server`).")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                HStack {
+                    Spacer()
+                    Button("Restart wm") { model.restart() }
+                }
+            }
+            .tabItem { Label("wm", systemImage: "gearshape") }
         }
         .padding(20)
-        .frame(width: 460)
+        .frame(width: 520)
     }
 }

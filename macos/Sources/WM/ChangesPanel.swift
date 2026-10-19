@@ -28,6 +28,7 @@ struct ChangesPanel: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .tourStop(.changes, model: model, anchor: UnitPoint(x: 0, y: 0.3), edge: .leading)
     }
 
     private func content(ws: Workstream, diff: DiffResult) -> some View {

@@ -8,12 +8,12 @@ struct ContentView: View {
         NavigationSplitView {
             SidebarView()
                 .navigationSplitViewColumnWidth(min: 250, ideal: 300, max: 440)
+
         } detail: {
             DetailView()
         }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
-            case .guide(let step): WelcomeGuide(step: step)
             case .new: NewWorkstreamSheet()
             case .addRepo(let key, let repos): AddRepoSheet(key: key, repos: repos)
             case .rebase(let key, let plan): RebaseSheet(key: key, plan: plan)
@@ -53,10 +53,11 @@ struct DetailView: View {
         @Bindable var model = model
         content
             .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .tourStop(.session, model: model, anchor: UnitPoint(x: 0.5, y: 0.35), edge: .top)
             .navigationTitle(model.selected?.label ?? "Workstreams")
             .navigationSubtitle(subtitle)
             .toolbar {
-                if let ws = model.selected, ws.status != .archived, !ws.repos.isEmpty {
+                if let ws = model.selected, ws.status != .archived {
                     ToolbarItem(placement: .automatic) { RepoChips(ws: ws) }
                 }
                 ToolbarItemGroup(placement: .primaryAction) {
@@ -236,6 +237,15 @@ struct RepoChips: View {
                 .fixedSize()
                 .padding(.horizontal, 6)
             }
+            Button {
+                Task { await model.startAddRepo(ws.key) }
+            } label: {
+                Image(systemName: "plus").frame(width: 24, height: 24).contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .accessibilityLabel("Add a repo")
+            .help("Attach another repo: wm makes its worktree on the workstream's branch (⇧⌘A)")
         }
     }
 

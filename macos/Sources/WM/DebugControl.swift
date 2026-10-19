@@ -7,7 +7,7 @@ import SwiftUI
 ///   snap NAME · select KEY · select-archived KEY · select-row N · repo NAME|all (a top-bar chip)
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
-///   appearance dark|light · guide [STEP]
+///   appearance dark|light · tour [STOP] · onscreen
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -42,6 +42,10 @@ enum DebugControl {
             let name = rest.first ?? "snap"
             snapshot(window, to: "\(dir)/\(name).png")
             if let sheet = window.attachedSheet { snapshot(sheet, to: "\(dir)/\(name)-sheet.png") }
+            let popovers = NSApp.windows.filter { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
+            if !popovers.isEmpty { composite([window] + popovers, to: "\(dir)/\(name)-tour.png") }
+        case "onscreen":
+            window?.setFrameOrigin(NSPoint(x: 60, y: 60))
         case "select":
             model.showArchived = false
             model.selection = rest[0]
@@ -83,10 +87,22 @@ enum DebugControl {
             let out = ["selection=\(model.selection ?? "nil") solo=\(model.soloRepo ?? "all")",
                        "selected=\(model.selected?.key ?? "nil") terminal=\(model.terminal.key ?? "nil")",
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
+                       "tour=\(model.tourStop.map { "\($0)" } ?? "nil") setup=\(model.setup != nil)",
+                       "windows=\(NSApp.windows.filter(\.isVisible).map { String(describing: type(of: $0)) })",
                        "rows=\(model.state.workstreams.map(\.key))"].joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
-        case "guide":
-            model.sheet = .guide(step: Int(rest.first ?? "0") ?? 0)
+        case "settings":  // renders Settings in a scratch window and snapshots it as NAME-settings.png
+            let host = NSWindow(contentViewController: NSHostingController(rootView: SettingsView().environment(model)))
+            host.setFrameOrigin(NSPoint(x: -4000, y: 300))
+            host.orderFront(nil)
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2) {
+                snapshot(host, to: "\(dir)/\(rest.first ?? "snap")-settings.png")
+                host.close()
+            }
+        case "tour-next":  // as the box's Next button
+            model.nextTourStop()
+        case "tour":
+            model.tourStop = TourStop(rawValue: Int(rest.first ?? "0") ?? 0)
         case "restart":
             model.restart()
         case "toast":
@@ -126,6 +142,22 @@ enum DebugControl {
 
     /// Through the window server, so materials render as on screen. An app may capture its own windows without
     /// screen-recording permission; the function is looked up at run time because newer SDKs hide it.
+    private typealias CreateFromArray = @convention(c) (CGRect, CFArray, UInt32) -> Unmanaged<CGImage>?
+
+    /// The main window with its popovers on top, as on screen.
+    private static func composite(_ windows: [NSWindow], to path: String) {
+        guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImageFromArray"),
+              let screen = NSScreen.screens.first else { return }
+        let create = unsafeBitCast(sym, to: CreateFromArray.self)
+        let frame = windows.map(\.frame).reduce(windows[0].frame) { $0.union($1) }
+        let bounds = CGRect(x: frame.minX, y: screen.frame.height - frame.maxY, width: frame.width, height: frame.height)
+        var ids = windows.reversed().map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }  // front first
+        guard let list = CFArrayCreate(nil, &ids, ids.count, nil),
+              let image = create(bounds, list, 1 << 3)?.takeRetainedValue() else { return }
+        try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
+            .write(to: URL(fileURLWithPath: path))
+    }
+
     private static func firstTable(in view: NSView?) -> NSTableView? {
         guard let view else { return nil }
         if let table = view as? NSTableView { return table }

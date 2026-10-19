@@ -2,7 +2,6 @@ import AppKit
 import SwiftUI
 
 enum ActiveSheet: Identifiable {
-    case guide(step: Int)
     case new
     case addRepo(key: String, repos: [String])
     case rebase(key: String, plan: RebasePlan)
@@ -10,7 +9,6 @@ enum ActiveSheet: Identifiable {
 
     var id: String {
         switch self {
-        case .guide: return "guide"
         case .new: return "new"
         case .addRepo(let key, _): return "add-\(key)"
         case .rebase(let key, _): return "rebase-\(key)"
@@ -52,6 +50,8 @@ final class AppModel {
     var toasts: [Toast] = []
     var sheet: ActiveSheet?
     var terminalFailed: String?  // key whose tmux client exited right after attaching
+    var tourStop: TourStop?  // the tour box on screen, if any
+    var setup: SetupInfo?  // where repos come from, and the tools wm needs
 
     @ObservationIgnored let backend = Backend()
     @ObservationIgnored let terminal = TerminalController()
@@ -200,7 +200,7 @@ final class AppModel {
                 if let key { selection = key }
             }
             showChanges = UserDefaults.standard.object(forKey: "showChanges") as? Bool ?? true
-            if !UserDefaults.standard.bool(forKey: "guideSeen") { sheet = .guide(step: 0) }
+            Task { await loadSetup(first: true) }
         }
         syncTerminal()
     }
@@ -278,6 +278,38 @@ final class AppModel {
         } else {
             toast("Nothing needs you", .info)
         }
+    }
+
+    // MARK: - Setup and tour
+
+    /// At first: warn about missing tools, and start the tour on the very first launch.
+    func loadSetup(first: Bool = false) async {
+        guard let info: SetupInfo = try? await backend.call("setup") else { return }
+        setup = info
+        guard first else { return }
+        for hint in info.missingTools { toast(hint, .warning) }
+        if !UserDefaults.standard.bool(forKey: "tourSeen") { startTour() }
+    }
+
+    func startTour() {
+        showArchived = false
+        sheet = nil
+        tourStop = .sidebar
+    }
+
+    func nextTourStop() {
+        guard let stop = tourStop, let next = TourStop(rawValue: stop.rawValue + 1) else { endTour(); return }
+        if next == .changes && !showChanges { showChanges = true }
+        tourStop = nil  // one popover closes before the next opens
+        Task {
+            try? await Task.sleep(for: .milliseconds(150))
+            tourStop = next
+        }
+    }
+
+    func endTour() {
+        tourStop = nil
+        UserDefaults.standard.set(true, forKey: "tourSeen")
     }
 
     // MARK: - Changes panel

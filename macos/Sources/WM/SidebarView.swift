@@ -26,11 +26,16 @@ struct SidebarView: View {
         }
         .listStyle(.sidebar)
         .id(model.showArchived)  // a fresh list per mode: rows moving between the two lists leave ghosts
+
         .overlay {
             if model.phase == .ready && model.workstreams.isEmpty {
                 Text(model.showArchived ? "Nothing archived" : "No workstreams")
                     .foregroundStyle(.tertiary)
             }
+        }
+        .safeAreaInset(edge: .top, spacing: 0) {  // the tour's anchor: the list itself doesn't present popovers
+            Color.clear.frame(height: 1)
+                .tourStop(.sidebar, model: model, anchor: UnitPoint(x: 0.85, y: 1), edge: .trailing)
         }
         .safeAreaInset(edge: .bottom, spacing: 0) { footer }
         .toolbar {
@@ -52,6 +57,7 @@ struct SidebarView: View {
             }
             .buttonStyle(.borderless)
             .help(model.showArchived ? "Back to active workstreams" : "Show archived workstreams")
+            .tourStop(.archive, model: model, edge: .top)
             Spacer()
             if model.state.origin.repos > 0 {
                 TimelineView(.periodic(from: .now, by: 15)) { context in
