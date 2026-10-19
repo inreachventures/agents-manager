@@ -157,8 +157,9 @@ still live in `wm`'s tmux server and every action goes through `wm`, so the guar
 Optional config in `~/.agents-manager/config.toml`:
 
 ```toml
-code_roots = ["~/code"]            # where your repos live; their checkouts are protected
-workstreams_dir = "~/workstreams"  # where workstream folders are created
+code_roots = ["~/code"]                # folders holding your repos; their checkouts are protected
+repos = ["~/elsewhere/side-project"]   # single repos kept elsewhere, protected the same way
+workstreams_dir = "~/workstreams"      # where workstream folders are created
 ```
 
 ## Limits

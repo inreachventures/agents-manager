@@ -7,7 +7,7 @@ import SwiftUI
 ///   snap NAME · select KEY · select-archived KEY · select-row N · repo NAME|all (a top-bar chip)
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
-///   appearance dark|light
+///   appearance dark|light · guide [STEP]
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -85,6 +85,8 @@ enum DebugControl {
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
                        "rows=\(model.state.workstreams.map(\.key))"].joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+        case "guide":
+            model.sheet = .guide(step: Int(rest.first ?? "0") ?? 0)
         case "restart":
             model.restart()
         case "toast":

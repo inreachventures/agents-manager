@@ -75,6 +75,9 @@ struct WMCommands: Commands {
                 if let ws = model.selected { model.reveal(ws.folder) }
             }
         }
+        CommandGroup(replacing: .help) {
+            Button("Welcome Guide") { model.sheet = .guide(step: 0) }
+        }
         CommandGroup(after: .sidebar) {
             Button("Toggle Changes") { model.showChanges.toggle() }
                 .keyboardShortcut("0", modifiers: [.command, .option])
@@ -114,6 +117,8 @@ struct SettingsView: View {
                 .font(.caption)
                 .foregroundStyle(.secondary)
             HStack {
+                Button("Repo Folders…") { model.sheet = .guide(step: 2) }
+                    .help("Where wm finds your repos")
                 Spacer()
                 Button("Restart wm") { model.restart() }
             }

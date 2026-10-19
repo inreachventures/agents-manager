@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 
 enum ActiveSheet: Identifiable {
+    case guide(step: Int)
     case new
     case addRepo(key: String, repos: [String])
     case rebase(key: String, plan: RebasePlan)
@@ -9,6 +10,7 @@ enum ActiveSheet: Identifiable {
 
     var id: String {
         switch self {
+        case .guide: return "guide"
         case .new: return "new"
         case .addRepo(let key, _): return "add-\(key)"
         case .rebase(let key, _): return "rebase-\(key)"
@@ -198,6 +200,7 @@ final class AppModel {
                 if let key { selection = key }
             }
             showChanges = UserDefaults.standard.object(forKey: "showChanges") as? Bool ?? true
+            if !UserDefaults.standard.bool(forKey: "guideSeen") { sheet = .guide(step: 0) }
         }
         syncTerminal()
     }

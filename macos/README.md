@@ -3,6 +3,9 @@
 The TUI dashboard as a Mac app: workstreams in the sidebar, the selected one's Claude session in the middle, its
 repos in the top bar and what their branches change on the right.
 
+- **Welcome guide**: on first launch, three pages: what a workstream is, how it spans repos, and where your repos
+  are (the folder that holds them, plus any repo kept elsewhere). Help → Welcome Guide shows it again; Settings →
+  Repo Folders… goes straight to the folders.
 - **Sidebar**: one row per workstream, in the same order and states as `wm`'s dashboard (needs you, working, your
   turn, intake, stopped). A spinner while Claude works, a pulsing dot when it waits for you (orange with `!` when
   it's blocked on a permission or a question), and a small dot per repo coloured by what it needs next; hover it

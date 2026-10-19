@@ -13,6 +13,7 @@ struct ContentView: View {
         }
         .sheet(item: $model.sheet) { sheet in
             switch sheet {
+            case .guide(let step): WelcomeGuide(step: step)
             case .new: NewWorkstreamSheet()
             case .addRepo(let key, let repos): AddRepoSheet(key: key, repos: repos)
             case .rebase(let key, let plan): RebaseSheet(key: key, plan: plan)
