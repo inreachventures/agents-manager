@@ -76,11 +76,27 @@ struct SidebarView: View {
 }
 
 struct WorkstreamRow: View {
+    @Environment(AppModel.self) private var model
     let ws: Workstream
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            StatusIndicator(status: ws.status)
+            if ws.offersArchive {
+                Button {
+                    Task { await model.startArchive(ws.key) }
+                } label: {
+                    Image(systemName: "archivebox.fill")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .frame(width: 24, height: 18)
+                        .background(Color.green, in: Capsule())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel("Archive \(ws.label)")
+                .help("Ready to archive: everything is merged. Click to check and archive it.")
+            } else {
+                StatusIndicator(status: ws.status)
+            }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {
                     Text(ws.ident).fontWeight(.semibold)

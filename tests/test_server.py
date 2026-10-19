@@ -4,7 +4,7 @@ import subprocess
 
 import pytest
 
-from agentmgr import db, server, tmux
+from agentmgr import db, server, tmux, view
 from agentmgr import workstream as ws_mod
 
 
@@ -187,3 +187,29 @@ def test_changes_to_one_workstream_wait_for_each_other(env, monkeypatch):
     srv.call(json.dumps({"id": 2, "method": "add_repo", "params": {"key": ws.key, "repo": "ml"}}))
     first.join()
     assert order == ["archive starts", "archive ends", "add repo"]
+
+
+def test_the_example_is_made_once_and_ready_to_archive(env):
+    srv = server.Server(io.StringIO())
+    assert ask(srv, "create_example")["result"] == {"key": "EXAMPLE-1"}
+    assert ask(srv, "create_example")["result"] == {"key": None}
+    [row] = server.state()["workstreams"]
+    assert (row["label"], row["ready_to_archive"], row["status_text"]) == (
+        "EXAMPLE-1 archive me", True, "example · ready to archive")
+    assert ask(srv, "archive_report", key="EXAMPLE-1")["result"]["blocked"] is False
+    ask(srv, "archive", key="EXAMPLE-1")
+    assert ask(srv, "create_example")["result"] == {"key": None}  # archived still counts: not made again
+    assert [r["key"] for r in server.state()["archived"]] == ["EXAMPLE-1"]
+
+
+def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
+    ws = db.Workstream("PROJ-1", "PROJ-1", "x", "s", "/w", db.YOUR_TURN, None, 0, 0, None)
+    link = db.RepoLink("PROJ-1", "r", "/r", "/w/r", "proj-1-x", "origin/main", True, 0)
+
+    def ready(base_ci, merged=True):
+        row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
+                                                                          merged, base_ci)])
+        return server._row(row)["ready_to_archive"]
+
+    assert ready("pass") and ready(None)
+    assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)

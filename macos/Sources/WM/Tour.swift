@@ -25,8 +25,8 @@ enum TourStop: Int, CaseIterable {
             return "What each branch changes since it left its base, committed or not. Pick a repo above to see "
                 + "only its changes."
         case .archive:
-            return "Once a piece of work is done, archive its workstream. Archived ones are kept here, conversation "
-                + "included, ready to restore."
+            return "Once a piece of work is done, its dot turns into an archive button. Archived workstreams are "
+                + "kept here, conversation included. Try it on EXAMPLE-1."
         }
     }
 }

@@ -49,10 +49,14 @@ def _repo(rr: view.RepoRow) -> dict:
 
 def _row(r: view.Row) -> dict:
     ws = r.ws
+    example = workstream.is_example(ws) and r.status != db.ARCHIVED
     return {
         "key": ws.key, "ticket": ws.ticket, "name": ws.name, "label": ws.label, "status": r.status,
-        "status_text": r.status_text, "since": ws.archived_at or ws.status_at, "folder": ws.folder,
+        "status_text": "example · ready to archive" if example else r.status_text,
+        "since": ws.archived_at or ws.status_at, "folder": ws.folder,
         "intake": r.intake, "drift": ws.drift, "all_merged": r.all_merged, "base_ci": r.base_ci,
+        # everything merged and CI green on base, or no CI there: the TUI's "→ x archive"
+        "ready_to_archive": example or (r.all_merged and r.base_ci in ("pass", None)),
         "repos": [_repo(rr) for rr in r.repos],
     }
 
@@ -201,6 +205,10 @@ class Server:
 
     def rpc_repos(self) -> dict:
         return {"repos": [r.name for r in discover(get_config())]}
+
+    def rpc_create_example(self) -> dict:
+        ws = workstream.new_example()
+        return {"key": ws.key if ws else None}
 
     def rpc_new(self, ticket: str | None = None) -> dict:
         ws = workstream.new(ticket=ticket or None)

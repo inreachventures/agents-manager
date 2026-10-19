@@ -54,10 +54,14 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var drift: String?
     var allMerged: Bool
     var baseCi: String?
+    var readyToArchive: Bool?  // everything merged, CI green or none on base (or the example)
     var repos: [RepoState]
 
     var id: String { key }
     var ident: String { ticket ?? key }
+
+    /// Show the archive button instead of the status dot: done, and Claude isn't busy or waiting on a question.
+    var offersArchive: Bool { readyToArchive == true && (status == .yourTurn || status == .stopped) }
 
     /// The TUI's "merged → archive" hint, once every repo with work in it is merged.
     var mergeHint: (text: String, tone: String)? {
@@ -157,6 +161,7 @@ struct DiffLine: Decodable, Equatable {
 // MARK: - Action results
 
 struct NewResult: Decodable { var key: String }
+struct ExampleResult: Decodable { var key: String? }
 struct LogResult: Decodable { var log: [String] }
 struct AttachResult: Decodable { var argv: [String] }
 struct SwitchResult: Decodable { var switched: Bool }

@@ -288,7 +288,10 @@ final class AppModel {
         setup = info
         guard first else { return }
         for hint in info.missingTools { toast(hint, .warning) }
-        if !UserDefaults.standard.bool(forKey: "tourSeen") { startTour() }
+        guard !UserDefaults.standard.bool(forKey: "tourSeen") else { return }
+        // a workstream to try archiving on, made once ever
+        if let made: ExampleResult = try? await backend.call("create_example"), made.key != nil { await reloadState() }
+        startTour()
     }
 
     func startTour() {

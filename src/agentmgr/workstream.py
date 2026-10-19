@@ -151,6 +151,36 @@ def _rollback_new(conn, ws: db.Workstream) -> None:
     shutil.rmtree(ws.path, ignore_errors=True)
 
 
+# The native app's first-launch example: an empty workstream, ready to archive, to show how archiving works.
+EXAMPLE_KEY = "EXAMPLE-1"
+EXAMPLE_TASK = """\
+---
+key: EXAMPLE-1
+ticket: EXAMPLE-1
+name: archive me
+---
+## Goal
+Show how a finished workstream is archived. This one has no repos and no Claude session.
+## Done when
+- [ ] Archived from the sidebar; it then shows under Archived, where it could be restored.
+"""
+
+
+def is_example(ws: db.Workstream) -> bool:
+    return ws.key == EXAMPLE_KEY
+
+
+def new_example() -> db.Workstream | None:
+    """Create the example workstream, unless it was ever created (archived counts): None then."""
+    conn = _conn()
+    if db.get_workstream(conn, EXAMPLE_KEY):
+        return None
+    ws = new(ticket=EXAMPLE_KEY, name="archive me", launch=False)
+    (ws.path / templates.TASK_FILE).write_text(EXAMPLE_TASK)
+    regenerate(conn, ws)  # CLAUDE.md imports TASK.md now
+    return ws
+
+
 # ---------------------------------------------------------------------------- set
 
 
