@@ -308,19 +308,20 @@ def doctor() -> None:
     import shutil
     import subprocess
 
-    ok = True
-    for tool, args, required in (("git", ["--version"], True), ("tmux", ["-V"], True),
-                                 ("claude", ["--version"], True), ("gh", ["--version"], False)):
-        path = shutil.which(tool)
-        if not path:
-            ok = ok and not required
-            typer.secho(f"{'✗' if required else '!'} {tool}: not found", fg="red" if required else "yellow")
-            continue
-        out = subprocess.run([tool, *args], capture_output=True, text=True).stdout.splitlines()
-        typer.echo(f"✓ {tool}: {out[0] if out else path}")
     from .config import get_config
 
     cfg = get_config()
+    ok = True
+    for tool, cmd, args, required in (("git", "git", ["--version"], True), ("tmux", "tmux", ["-V"], True),
+                                      ("claude", cfg.claude_cmd, ["--version"], True),  # the command sessions run
+                                      ("gh", "gh", ["--version"], False)):
+        path = shutil.which(cmd)
+        if not path:
+            ok = ok and not required
+            typer.secho(f"{'✗' if required else '!'} {tool}: {cmd} not found", fg="red" if required else "yellow")
+            continue
+        out = subprocess.run([path, *args], capture_output=True, text=True).stdout.splitlines()
+        typer.echo(f"✓ {tool}: {out[0] if out else path}")
     typer.echo(f"  home: {cfg.home}\n  workstreams: {cfg.workstreams_dir}\n  code roots: "
                + ", ".join(map(str, cfg.code_roots))
                + (f"\n  single repos: {', '.join(map(str, cfg.repos))}" if cfg.repos else ""))
@@ -433,7 +434,7 @@ def app_server() -> None:
 
 
 def main() -> None:
-    app()
+    app(prog_name="wm")  # also when run as `python -m agentmgr`, as the Mac app's wm is
 
 
 if __name__ == "__main__":

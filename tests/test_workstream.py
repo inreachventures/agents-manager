@@ -43,6 +43,29 @@ def test_memory_is_shared_across_workstreams(env, monkeypatch):
     assert "## Memory" in (ws.path / "CLAUDE.md").read_text()
 
 
+def test_no_session_starts_without_claude_code(env, monkeypatch):
+    from agentmgr import config, server, tmux
+
+    monkeypatch.setattr(tmux, "available", lambda: True)
+    monkeypatch.setenv("AGENTMGR_CLAUDE_CMD", "claude-not-installed")
+    config.get_config.cache_clear()
+    with pytest.raises(WorkstreamError, match="Claude Code isn't installed: claude-not-installed not found"):
+        ws_mod.new(name="ship it", repo_queries=["web"])
+    assert db.list_workstreams(db.connect()) == [] and not (env.workstreams / "WS-1").exists()
+
+    ws = new()
+    monkeypatch.setattr(ws_mod, "session_alive", lambda ws: False)
+    with pytest.raises(WorkstreamError, match="isn't installed"):
+        ws_mod.resume(ws.key)
+    assert db.get_workstream(db.connect(), ws.key).status == db.INTAKE
+    assert server.setup()["tools"]["claude"] is None  # what the app warns about at launch
+
+    monkeypatch.setenv("AGENTMGR_CLAUDE_CMD", "claude")
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    config.get_config.cache_clear()
+    assert ws_mod.claude_missing() == "Claude Code isn't installed: see claude.com/claude-code"
+
+
 def test_add_repo_requires_name(env):
     ws = new()
     with pytest.raises(WorkstreamError, match="no name yet"):

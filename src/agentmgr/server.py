@@ -98,7 +98,8 @@ def setup() -> dict:
         "code_roots": [str(p) for p in cfg.code_roots], "repos": [str(p) for p in cfg.repos],
         "workstreams_dir": str(cfg.workstreams_dir), "config_file": str(cfg.config_file),
         "from_env": "AGENTMGR_CODE_ROOTS" in os.environ,  # the file's code_roots don't apply then
-        "tools": {tool: shutil.which(tool) for tool in ("tmux", "claude", "git", "gh")},
+        # claude: the command sessions run, as New and Resume check it
+        "tools": {"claude": shutil.which(cfg.claude_cmd), **{t: shutil.which(t) for t in ("tmux", "git", "gh")}},
         **_scan(cfg),
     }
 
@@ -136,6 +137,10 @@ class Server:
         try:
             tmux.reload_conf()
         except tmux.TmuxError:
+            traceback.print_exc()
+        try:
+            workstream.repoint_hooks()
+        except (workstream.WorkstreamError, OSError):
             traceback.print_exc()
         for fn, seconds in ((self.push_state, None), (self.refresh_prs, PR_REFRESH_SECONDS),
                             (self.fetch_bases, FETCH_SECONDS)):

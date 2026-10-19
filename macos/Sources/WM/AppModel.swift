@@ -108,6 +108,10 @@ final class AppModel {
             phase = .failed("Can't find `wm` on your PATH. Install it (see the README), or set its path in Settings.")
             return
         }
+        if wm == ShellEnvironment.bundledWM && ShellEnvironment.runningFromTemporaryPlace {
+            toast("Move Workstreams to Applications, then open it from there.\n"
+                  + "Your workstreams call wm inside the app, so it has to stay put.", .warning)
+        }
         var termEnv = env
         termEnv["TERM"] = "xterm-256color"
         terminal.environment = termEnv.map { "\($0.key)=\($0.value)" }
@@ -370,7 +374,10 @@ final class AppModel {
     }
 
     func resume(_ key: String) async {
-        guard let _: NewResult = await request("Resuming \(key)…", "resume", ["key": key]) else { return }
+        guard let _: NewResult = await request("Resuming \(key)…", "resume", ["key": key]) else {
+            await loadSetup()  // a missing tool shows where Resume is, too
+            return
+        }
         terminalFailed = nil
         await reloadState()
     }

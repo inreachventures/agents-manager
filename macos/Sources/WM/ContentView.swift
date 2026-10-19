@@ -119,7 +119,8 @@ struct DetailView: View {
                         .background(Color(nsColor: WMTerminalView.background))
                 } else {
                     Placeholder(symbol: "pause.circle", title: "Session stopped",
-                                text: "Resume picks up the same Claude conversation, with fresh git and PR state.") {
+                                text: model.setup?.claudeMissing == true ? SetupInfo.claudeHint
+                                    : "Resume picks up the same Claude conversation, with fresh git and PR state.") {
                         Button("Resume") { Task { await model.resume(ws.key) } }
                             .buttonStyle(.borderedProminent)
                             .keyboardShortcut(.defaultAction)

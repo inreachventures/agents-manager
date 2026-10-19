@@ -10,13 +10,17 @@ struct SetupInfo: Decodable {
     var found: [String]
     var problems: [String]
 
-    /// Required tools that aren't on PATH, with how to get them.
+    static let claudeHint = "Claude Code isn't installed: see claude.com/claude-code"
+
+    /// Required tools that aren't on PATH, with how to get them. claude: the command sessions run.
     var missingTools: [String] {
         [("tmux", "tmux isn't installed: brew install tmux"),
-         ("claude", "Claude Code isn't installed: see claude.com/claude-code"),
+         ("claude", Self.claudeHint),
          ("git", "git isn't installed: xcode-select --install")]
             .compactMap { tool, hint in (tools[tool] ?? nil) == nil ? hint : nil }
     }
+
+    var claudeMissing: Bool { (tools["claude"] ?? nil) == nil }
 }
 
 private struct ScanResult: Decodable {

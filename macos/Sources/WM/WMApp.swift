@@ -127,11 +127,20 @@ struct SettingsView: View {
             .tabItem { Label("Terminal", systemImage: "terminal") }
 
             Form {
-                TextField("wm executable", text: $wmPath, prompt: Text("found on your PATH"))
-                Text("Leave empty to use the wm of the checkout the app was built from, else the one on your "
-                     + "login shell's PATH. It needs a wm with the app server (`wm app-server`).")
+                let bundled = ShellEnvironment.bundledWM
+                TextField("wm executable", text: $wmPath,
+                          prompt: Text(bundled == nil ? "found on your PATH" : "the one inside this app"))
+                Text(bundled == nil
+                     ? "Leave empty to use the wm of the checkout the app was built from, else the one on your "
+                        + "login shell's PATH. It needs a wm with the app server (`wm app-server`)."
+                     : "Leave empty to use the wm inside this app. Another wm needs the app server "
+                        + "(`wm app-server`).")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                if let bundled {
+                    TerminalCommand(command: "sudo mkdir -p /usr/local/bin && sudo ln -sf "
+                                    + "'\(bundled)' /usr/local/bin/wm")
+                }
                 HStack {
                     Spacer()
                     Button("Restart wm") { model.restart() }
@@ -141,5 +150,26 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 520)
+    }
+}
+
+/// How to put the app's wm on PATH, to use it in Terminal as well.
+private struct TerminalCommand: View {
+    let command: String
+    @State private var copied = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            Text("To use wm in Terminal too:").font(.caption)
+            HStack(alignment: .firstTextBaseline) {
+                Text(command).font(.caption.monospaced()).textSelection(.enabled)
+                Spacer()
+                Button(copied ? "Copied" : "Copy") {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(command, forType: .string)
+                    copied = true
+                }
+            }
+        }
     }
 }

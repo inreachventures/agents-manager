@@ -339,6 +339,12 @@ for everything that matters: no daemon, no web server, sessions in the manager's
   staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded; symlinks not
   followed). Output flags are forced, so the user's diff config can't change the format the parser reads. Capped per
   file, per repo and in untracked files, so a lockfile or an un-ignored build folder can't flood the app.
+- **Self-contained release**: `build-app.sh --release` puts wm and a relocatable CPython (python-build-standalone,
+  checksummed; dependencies pinned with hashes) inside the app, one build per chip. Its launcher sets
+  `AGENTMGR_WM` to its own path, and `tmux.wm_executable()` prefers that over PATH, so hooks keep calling the copy
+  that wrote them; sessions it starts get its folder on PATH, as Claude runs `wm set`/`wm add-repo` by name. Hook
+  paths are absolute, so moving the app would leave hooks that can't run, which block nothing: the server repoints,
+  at start, workstreams whose hook wm is gone or is another copy of the app.
 
 ## Later (rough priority)
 

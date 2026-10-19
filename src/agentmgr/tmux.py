@@ -19,6 +19,7 @@ HOME_SESSION = "home"
 # <key>_app: there tmux's status line is off and the client detaches when Claude exits. Keys never contain "_".
 VIEW_SUFFIX = "_app"
 APP_ACTIVE = "@wm_app_active"  # global option: "1" while the native app is the frontmost app
+WM_ENV = "AGENTMGR_WM"  # set by the launcher of the wm inside the Mac app, to its own path
 
 
 class TmuxError(RuntimeError):
@@ -30,8 +31,14 @@ def available() -> bool:
 
 
 def wm_executable() -> str:
-    """Absolute path of `wm`, so tmux key bindings and hooks don't depend on PATH."""
-    return shutil.which("wm") or str(Path(sys.argv[0]).resolve())
+    """Absolute path of `wm`, so tmux key bindings and hooks don't depend on PATH. The wm inside the Mac app names
+    itself: hooks it writes keep calling it even when another wm is on PATH."""
+    return os.environ.get(WM_ENV) or shutil.which("wm") or str(Path(sys.argv[0]).resolve())
+
+
+def bundled() -> bool:
+    """This is the wm inside the Mac app, usually not on the user's PATH."""
+    return bool(os.environ.get(WM_ENV))
 
 
 def _base(cfg: Config) -> list[str]:

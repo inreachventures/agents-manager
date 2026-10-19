@@ -151,8 +151,9 @@ branch, **listed in the task's `CLAUDE.md` and covered by its guardrails**.
 
 **Prefer a Mac app?** `macos/scripts/build-app.sh --open` builds `Workstreams.app`: the same dashboard as a native
 window, with each workstream's Claude session next to it and a panel with what every repo's branch changes. Sessions
-still live in `wm`'s tmux server and every action goes through `wm`, so the guarantees above hold. See
-[`macos/README.md`](macos/README.md).
+still live in `wm`'s tmux server and every action goes through `wm`, so the guarantees above hold.
+`build-app.sh --release all` makes self-contained copies, `wm` and its Python inside, for Apple silicon and Intel.
+See [`macos/README.md`](macos/README.md).
 
 Optional config in `~/.agents-manager/config.toml`:
 

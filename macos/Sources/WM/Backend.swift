@@ -223,13 +223,28 @@ enum ShellEnvironment {
         return env
     }
 
-    /// `wm` to run: $WM_BIN, the path set in Settings, the checkout the app was built from (WMPath in
-    /// Info.plist, set by build-app.sh), then the first `wm` on PATH.
+    /// `wm` to run: $WM_BIN, the path set in Settings, the one inside the app (a release build), the checkout the
+    /// app was built from (WMPath in Info.plist, set by build-app.sh), then the first `wm` on PATH.
     static func findWM(in env: [String: String]) -> String? {
-        let candidates = [env["WM_BIN"], UserDefaults.standard.string(forKey: "wmPath"),
+        let candidates = [env["WM_BIN"], UserDefaults.standard.string(forKey: "wmPath"), bundledWM,
                           Bundle.main.object(forInfoDictionaryKey: "WMPath") as? String]
-        let found = candidates.compactMap { $0 }.first { FileManager.default.isExecutableFile(atPath: $0) }
+        let found = candidates.compactMap { $0 }.filter { !$0.isEmpty }
+            .first { FileManager.default.isExecutableFile(atPath: $0) }
         return found ?? which("wm", in: env)
+    }
+
+    /// wm with its own Python, put inside the app by `build-app.sh --release`.
+    static var bundledWM: String? {
+        guard let path = Bundle.main.resourceURL?.appendingPathComponent("wm/bin/wm").path,
+              FileManager.default.isExecutableFile(atPath: path) else { return nil }
+        return path
+    }
+
+    /// Run from the disk image, or from where macOS put a downloaded app it hasn't seen moved (App Translocation).
+    /// Hooks call the wm inside the app, so it should live somewhere that stays.
+    static var runningFromTemporaryPlace: Bool {
+        let path = Bundle.main.bundlePath
+        return path.hasPrefix("/Volumes/") || path.contains("/AppTranslocation/")
     }
 
     static func which(_ tool: String, in env: [String: String]) -> String? {
