@@ -82,18 +82,7 @@ struct WorkstreamRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             if ws.offersArchive {
-                Button {
-                    Task { await model.startArchive(ws.key) }
-                } label: {
-                    Image(systemName: "archivebox.fill")
-                        .font(.system(size: 10, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .frame(width: 24, height: 18)
-                        .background(Color.green, in: Capsule())
-                }
-                .buttonStyle(.plain)
-                .accessibilityLabel("Archive \(ws.label)")
-                .help("Ready to archive: everything is merged. Click to check and archive it.")
+                ArchiveButton(label: ws.label) { Task { await model.startArchive(ws.key) } }
             } else {
                 StatusIndicator(status: ws.status)
             }
@@ -132,6 +121,31 @@ struct WorkstreamRow: View {
         } else {
             Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
         }
+    }
+}
+
+/// Takes the status dot's place once a workstream is done: a quiet outline box that fills in under the pointer.
+private struct ArchiveButton: View {
+    var label: String
+    var action: () -> Void
+    @Environment(\.backgroundProminence) private var prominence  // .increased: on the selected row's accent color
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            Image(systemName: hovering ? "archivebox.fill" : "archivebox")
+                .font(.system(size: 11, weight: hovering ? .semibold : .regular))
+                .foregroundStyle(prominence == .increased ? Color.white.opacity(hovering ? 1 : 0.85)
+                                 : Color.green.opacity(hovering ? 1 : 0.7))
+                .frame(width: 18, height: 18)
+                .background(Color.primary.opacity(hovering ? 0.08 : 0), in: RoundedRectangle(cornerRadius: 5))
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+        .animation(.easeOut(duration: 0.12), value: hovering)
+        .accessibilityLabel("Archive \(label)")
+        .help("Archive")
     }
 }
 
