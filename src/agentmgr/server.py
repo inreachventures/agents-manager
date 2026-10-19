@@ -10,9 +10,11 @@ worktrees, branches and guardrails stay wm's job. Requests run in threads, so a 
 
 from __future__ import annotations
 
+import dataclasses
 import hashlib
 import json
 import os
+import shutil
 import sys
 import threading
 import traceback
@@ -21,7 +23,7 @@ from pathlib import Path
 from typing import TextIO
 
 from . import db, diffs, fetcher, gh, gitops, tmux, view, workstream
-from .config import get_config
+from .config import Config, get_config, save_paths
 from .naming import NamingError
 from .repos import RepoMatchError, discover
 
@@ -67,6 +69,33 @@ def state() -> dict:
         "origin": {"repos": len(oks), "checked_at": None if None in oks or not oks else min(oks)},
         # client pid -> the session it shows, so the app notices when tmux moved its terminal (C-b s, say)
         "clients": {str(pid): session for pid, session in tmux.client_sessions().items()},
+    }
+
+
+def _paths(values: list[str]) -> list[Path]:
+    return [Path(os.path.expanduser(v)).resolve() for v in values]
+
+
+def _scan(cfg: Config) -> dict:
+    """The repos `cfg` finds, and what is wrong with its folders."""
+    problems = [f"{p} is not a folder" for p in cfg.code_roots if not p.is_dir()]
+    problems += [f"{p} is not a git repository (no .git folder)" for p in cfg.repos if not (p / ".git").is_dir()]
+    found = discover(cfg)
+    names = {r.name: r.path for r in found}
+    problems += [f"{p}: a repo named {p.name} is already in {names[p.name].parent}" for p in cfg.repos
+                 if (p / ".git").is_dir() and names.get(p.name) != p]
+    return {"found": [r.name for r in found], "problems": problems}
+
+
+def setup() -> dict:
+    """What the welcome guide shows: where repos come from, what is found there, and the tools wm needs."""
+    cfg = get_config()
+    return {
+        "code_roots": [str(p) for p in cfg.code_roots], "repos": [str(p) for p in cfg.repos],
+        "workstreams_dir": str(cfg.workstreams_dir), "config_file": str(cfg.config_file),
+        "from_env": "AGENTMGR_CODE_ROOTS" in os.environ,  # the file's code_roots don't apply then
+        "tools": {tool: shutil.which(tool) for tool in ("tmux", "claude", "git", "gh")},
+        **_scan(cfg),
     }
 
 
@@ -213,6 +242,26 @@ class Server:
     def rpc_unarchive(self, key: str) -> dict:
         with self.locked(key):
             return {"log": workstream.unarchive(key)}
+
+    def rpc_setup(self) -> dict:
+        return setup()
+
+    def rpc_scan(self, code_roots: list[str], repos: list[str]) -> dict:
+        """Preview a choice of folders without saving it."""
+        return _scan(dataclasses.replace(get_config(), code_roots=tuple(_paths(code_roots)),
+                                         repos=tuple(_paths(repos))))
+
+    def rpc_save_setup(self, code_roots: list[str], repos: list[str]) -> dict:
+        """Save the folders to config.toml and rewrite each workstream's CLAUDE.md (its list of available repos)
+        and settings (the checkouts it may not edit)."""
+        roots, singles = _paths(code_roots), _paths(repos)
+        if problems := self.rpc_scan(code_roots, repos)["problems"]:
+            raise workstream.WorkstreamError("; ".join(problems))
+        save_paths(roots, singles)
+        conn = db.connect()
+        for ws in db.list_workstreams(conn):
+            workstream.regenerate(conn, ws)
+        return setup()
 
     def rpc_focus(self, active: bool) -> dict:
         """The app came to the front or went to the back: hooks notify only when nobody is looking (tmux.watched)."""

@@ -58,6 +58,7 @@ def _context(conn, ws: db.Workstream, payload: dict) -> guard.Context:
         folder=ws.path.resolve(),
         cwd=cwd,
         code_roots=list(cfg.code_roots),
+        repos=list(cfg.repos),
         branches={Path(r.worktree_path).name: r.branch for r in db.list_repos(conn, ws.key)},
         writable=[cfg.memory_dir, scratch_dir(ws)],
     )

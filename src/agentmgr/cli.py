@@ -322,7 +322,8 @@ def doctor() -> None:
 
     cfg = get_config()
     typer.echo(f"  home: {cfg.home}\n  workstreams: {cfg.workstreams_dir}\n  code roots: "
-               + ", ".join(map(str, cfg.code_roots)))
+               + ", ".join(map(str, cfg.code_roots))
+               + (f"\n  single repos: {', '.join(map(str, cfg.repos))}" if cfg.repos else ""))
     if not _trusted(cfg.workstreams_dir):
         typer.secho(
             f"! {cfg.workstreams_dir} is not trusted by Claude Code yet: every new workstream will show the trust "

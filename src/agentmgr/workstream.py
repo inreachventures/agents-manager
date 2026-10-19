@@ -58,7 +58,7 @@ def regenerate(conn, ws: db.Workstream, cfg: Config | None = None, pending_repos
         db.list_repos(conn, ws.key),
         [r.name for r in repos.discover(cfg)],
         tmux.wm_executable(),
-        [str(r) for r in cfg.code_roots],
+        [str(r) for r in cfg.checkouts],
         cfg.memory_dir,
         pending_repos,
     )
