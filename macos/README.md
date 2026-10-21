@@ -58,6 +58,13 @@ stopped-session view says so.
 Settings also has "Use Option as Meta key in the terminal": off by default, as in Terminal.app, so Option types the
 characters your keyboard layout puts there; on, Option+Enter and Option+letter shortcuts reach Claude instead.
 
+Claude Code's voice dictation works in the app: the first time it listens, macOS asks whether Workstreams may use
+the microphone. macOS goes by the app that started wm's tmux server, whatever window you dictate in: Workstreams
+when the app started it, Terminal when `wm` in Terminal did. A server started by a build without the microphone
+setting keeps sessions deaf until it restarts: `tmux -L agentmgr kill-server` stops every session, then Resume them.
+An ad hoc signature changes with every build, so after a rebuild macOS may stop honouring the old grant:
+`tccutil reset Microphone dev.agentsmanager.workstreams` makes it ask again.
+
 ## How it works
 
 The app is only a view. It never runs git, creates a worktree or starts a session itself:

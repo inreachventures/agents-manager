@@ -30,6 +30,8 @@ app() {
     swift scripts/make-icon.swift "$iconset"
     iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 
+    # NSMicrophoneUsageDescription: macOS counts the tmux server the app starts, and so every Claude session in it,
+    # as the app. Without a usage string it never asks, and Claude Code's voice dictation gets no microphone.
     cat > "$app/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -47,6 +49,7 @@ app() {
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
+    <key>NSMicrophoneUsageDescription</key><string>Claude Code's voice dictation, in your workstreams' sessions, uses the microphone.</string>
 $([ -n "$wm_path" ] && echo "    <key>WMPath</key><string>$wm_path</string>")
 </dict>
 </plist>
