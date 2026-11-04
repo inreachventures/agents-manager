@@ -151,7 +151,7 @@ def test_prompt_bar(env, monkeypatch, capsys, tmp_path):
     monkeypatch.setattr("agentmgr.notify.notify", lambda *a: None)
     shown = []
     monkeypatch.setattr("agentmgr.tmux.available", lambda: True)
-    monkeypatch.setattr("agentmgr.tmux.set_session_option", lambda *a: shown.append(a))
+    monkeypatch.setattr("agentmgr.tmux.set_window_option", lambda *a: shown.append(a))
     ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
     base = {"session_id": ws.session_id, "cwd": ws.folder}
 

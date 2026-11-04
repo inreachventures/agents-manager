@@ -24,6 +24,7 @@ class Context:
     code_roots: list[Path]
     branches: dict[str, str]  # worktree folder name -> expected branch
     writable: list[Path] = field(default_factory=list)  # also editable: shared memory, session scratchpad
+    repos: list[Path] = field(default_factory=list)  # single repos outside the code roots, read-only like them
 
 
 def _within(path: Path, root: Path) -> bool:
@@ -39,7 +40,7 @@ def _abs(p: str, cwd: Path) -> Path:
 
 
 def _in_code_roots(path: Path, ctx: Context) -> bool:
-    return not _within(path, ctx.folder) and any(_within(path, r) for r in ctx.code_roots)
+    return not _within(path, ctx.folder) and any(_within(path, r) for r in [*ctx.code_roots, *ctx.repos])
 
 
 READ_ONLY_GIT = {"log", "show", "diff", "status", "blame", "grep", "branch", "rev-parse", "ls-files", "remote"}
@@ -47,8 +48,9 @@ READ_ONLY_GIT = {"log", "show", "diff", "status", "blame", "grep", "branch", "re
 
 def redirect(path: Path, ctx: Context) -> str:
     """Tell Claude where to work instead of an original checkout (or how to attach the repo)."""
-    for root in ctx.code_roots:
-        if _within(path, root) and path != root:
+    places = [(r, None) for r in ctx.code_roots] + [(r.parent, r.name) for r in ctx.repos]  # (root, only repo)
+    for root, only in places:
+        if _within(path, root) and path != root and only in (None, path.relative_to(root).parts[0]):
             repo, *rest = path.relative_to(root).parts
             if repo in ctx.branches:
                 alt = ctx.folder / repo / Path(*rest) if rest else ctx.folder / repo

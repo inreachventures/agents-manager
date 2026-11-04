@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+import threading
 import time
 from collections.abc import Iterator
 from contextlib import contextmanager
@@ -130,8 +131,27 @@ class PR:
     head_sha: str | None = None
 
 
+_local = threading.local()  # .conn: (path, connection) of this thread
+
+
 def connect(path: Path | None = None) -> sqlite3.Connection:
-    path = path or get_config().db_path
+    """This thread's connection to the state database, opened and brought up to date on first use. One per thread
+    (a connection can't be shared between threads), kept open: a new one per call, closed only by the garbage
+    collector, had the app server holding dozens of open files on the database. Asking for another database
+    closes this thread's previous one."""
+    path = Path(path or get_config().db_path)
+    held = getattr(_local, "conn", None)
+    if held is not None:
+        if held[0] == path:
+            return held[1]
+        held[1].close()
+        _local.conn = None
+    conn = _open(path)
+    _local.conn = (path, conn)
+    return conn
+
+
+def _open(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(path, timeout=10, isolation_level=None)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")

@@ -22,7 +22,8 @@ class RepoMatchError(LookupError):
 
 
 def discover(cfg: Config) -> list[Repo]:
-    """Git repos directly under each code root (main checkouts only, not worktrees)."""
+    """Git repos directly under each code root, then the single repos of `cfg.repos` (main checkouts only, not
+    worktrees). On a name clash the first one found wins."""
     found: dict[str, Repo] = {}
     for root in cfg.code_roots:
         if not root.is_dir():
@@ -31,6 +32,9 @@ def discover(cfg: Config) -> list[Repo]:
             if child.name.startswith(".") or not (child / ".git").is_dir():
                 continue
             found.setdefault(child.name, Repo(child.name, child))
+    for path in cfg.repos:
+        if (path / ".git").is_dir():
+            found.setdefault(path.name, Repo(path.name, path))
     return sorted(found.values(), key=lambda r: r.name)
 
 

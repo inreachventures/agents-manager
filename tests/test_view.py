@@ -178,3 +178,31 @@ def test_old_database_gets_new_pr_columns(env):
     db.upsert_pr(conn, pr(merge_state="CLEAN"))
     assert db.get_prs(conn, "WS-1")["r"].merge_state == "CLEAN"
     db.connect(path)  # idempotent
+
+
+def test_dashboards_reuse_git_reads_until_git_files_change(env, monkeypatch):
+    ws = ws_mod.new(launch=False, ticket="PROJ-9", name="cache me", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    calls = []
+    real = gitops.git
+    monkeypatch.setattr(gitops, "git", lambda *a, **k: calls.append(a[1]) or real(*a, **k))
+
+    def git(max_age=60):
+        calls.clear()
+        [row] = [r for r in view.load(git_max_age=max_age) if r.ws.key == ws.key]
+        return row.repos[0].git
+
+    assert git() == "no changes yet" and calls
+    assert git() == "no changes yet" and not calls  # nothing changed: no git process at all
+    (wt / "f.txt").write_text("x")
+    assert git() == "no changes yet" and not calls  # an edit changes no git file: shown within max_age
+    assert git(max_age=0) == "✎ 1 uncommitted"
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-9 work")
+    assert git() == "↑ needs push (1)"  # a commit shows at once
+    (wt / "g.txt").write_text("y")
+    db.set_status(db.connect(), ws.key, db.YOUR_TURN)  # Claude stopped: read again
+    assert git() == "✎ 1 uncommitted"
+    sh(wt, "git", "push", "-q", "origin", "HEAD")
+    sh(wt, "git", "fetch", "-q", "origin")
+    assert git() == "✎ 1 uncommitted" and calls  # the remote branch appeared: read again

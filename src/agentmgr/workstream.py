@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import json
+import os
+import shlex
 import shutil
 import time
 import uuid
@@ -58,11 +60,33 @@ def regenerate(conn, ws: db.Workstream, cfg: Config | None = None, pending_repos
         db.list_repos(conn, ws.key),
         [r.name for r in repos.discover(cfg)],
         tmux.wm_executable(),
-        [str(r) for r in cfg.code_roots],
+        [str(r) for r in cfg.checkouts],
         cfg.memory_dir,
         pending_repos,
     )
     _update_symlink(ws, cfg)
+
+
+APP_WM = ".app/Contents/Resources/wm/bin/wm"  # where the Mac app keeps its wm
+
+
+def repoint_hooks() -> list[str]:
+    """Regenerate the workstreams whose hooks call a wm that is gone (the Mac app was moved, say): a hook that can't
+    run blocks nothing, so their guardrails would be off. From the Mac app, also those calling another copy of it
+    (the one on its disk image, soon ejected). Returns their keys."""
+    here = tmux.wm_executable()
+    conn = _conn()
+    fixed = []
+    for ws in db.list_workstreams(conn):
+        try:
+            hooks = json.loads((ws.path / ".claude" / "settings.json").read_text())["hooks"]
+            wm = shlex.split(next(iter(hooks.values()))[0]["hooks"][0]["command"])[0]
+        except (OSError, ValueError, KeyError, IndexError, StopIteration):
+            continue
+        if not os.access(wm, os.X_OK) or (tmux.bundled() and wm != here and wm.endswith(APP_WM)):
+            regenerate(conn, ws)
+            fixed.append(ws.key)
+    return fixed
 
 
 def _update_symlink(ws: db.Workstream, cfg: Config) -> None:
@@ -87,6 +111,8 @@ def is_intake(ws: db.Workstream, repo_count: int) -> bool:
 def new(ticket: str | None = None, name: str | None = None, repo_queries: list[str] | None = None,
         task: str | None = None, launch: bool = True) -> db.Workstream:
     cfg = get_config()
+    if launch:
+        _check_session_tools()  # before anything is made for a session that can't start
     conn = _conn()
     cfg.workstreams_dir.mkdir(parents=True, exist_ok=True)
     ticket = naming.normalize_ticket(ticket) if ticket else None
@@ -149,6 +175,36 @@ def _rollback_new(conn, ws: db.Workstream) -> None:
         if p.is_symlink() and p.resolve() == ws.path.resolve():
             p.unlink()
     shutil.rmtree(ws.path, ignore_errors=True)
+
+
+# The native app's first-launch example: an empty workstream, ready to archive, to show how archiving works.
+EXAMPLE_KEY = "EXAMPLE-1"
+EXAMPLE_TASK = """\
+---
+key: EXAMPLE-1
+ticket: EXAMPLE-1
+name: archive me
+---
+## Goal
+Show how a finished workstream is archived. This one has no repos and no Claude session.
+## Done when
+- [ ] Archived from the sidebar; it then shows under Archived, where it could be restored.
+"""
+
+
+def is_example(ws: db.Workstream) -> bool:
+    return ws.key == EXAMPLE_KEY
+
+
+def new_example() -> db.Workstream | None:
+    """Create the example workstream, unless it was ever created (archived counts): None then."""
+    conn = _conn()
+    if db.get_workstream(conn, EXAMPLE_KEY):
+        return None
+    ws = new(ticket=EXAMPLE_KEY, name="archive me", launch=False)
+    (ws.path / templates.TASK_FILE).write_text(EXAMPLE_TASK)
+    regenerate(conn, ws)  # CLAUDE.md imports TASK.md now
+    return ws
 
 
 # ---------------------------------------------------------------------------- set
@@ -431,11 +487,29 @@ def claude_command(ws: db.Workstream, *, resume: bool, initial_prompt: str | Non
     return cmd
 
 
-def start_session(ws: db.Workstream, initial_prompt: str | None = None, resume: bool = False) -> None:
+def claude_missing() -> str | None:
+    """Why no Claude session can start, if none can: the configured command isn't there. Without this check tmux
+    starts the session, the shell can't find the command and the session ends at once, with nothing said."""
+    cmd = get_config().claude_cmd
+    if shutil.which(cmd):
+        return None
+    if cmd == "claude":
+        return "Claude Code isn't installed: see claude.com/claude-code"
+    return f"Claude Code isn't installed: {cmd} not found"  # claude_cmd, set in config.toml or the environment
+
+
+def _check_session_tools() -> None:
     if not tmux.available():
         raise WorkstreamError("tmux is not installed (brew install tmux)")
+    if reason := claude_missing():
+        raise WorkstreamError(reason)
+
+
+def start_session(ws: db.Workstream, initial_prompt: str | None = None, resume: bool = False) -> None:
+    _check_session_tools()
     if tmux.has_session(ws.key):
         return
+    tmux.prune_views()  # an app view whose session was killed by an older wm still runs the previous Claude
     tmux.new_session(
         ws.key, ws.path, claude_command(ws, resume=resume, initial_prompt=initial_prompt),
         env={"AGENTMGR_WS": ws.key},

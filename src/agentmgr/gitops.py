@@ -12,12 +12,16 @@ class GitError(RuntimeError):
     pass
 
 
+class GitTimeout(GitError):
+    pass
+
+
 def git(repo: Path | str, *args: str, check: bool = True, timeout: float | None = None) -> str:
     try:
         proc = subprocess.run(["git", "-C", str(repo), *args], capture_output=True, text=True, timeout=timeout,
                               env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     except subprocess.TimeoutExpired as e:
-        raise GitError(f"git {' '.join(args)} timed out after {timeout:.0f}s in {repo}") from e
+        raise GitTimeout(f"git {' '.join(args)} timed out after {timeout:.0f}s in {repo}") from e
     if check and proc.returncode != 0:
         raise GitError(f"git {' '.join(args)} failed in {repo}: {proc.stderr.strip() or proc.stdout.strip()}")
     return proc.stdout.strip()
@@ -163,23 +167,44 @@ def count_commits(worktree: Path, rng: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+def left_right(worktree: Path, ref: str) -> tuple[int, int] | None:
+    """(commits on `ref` not on HEAD, commits on HEAD not on `ref`) in one git call; None if `ref` is unknown."""
+    counts = git(worktree, "rev-list", "--left-right", "--count", f"{ref}...HEAD", "--", check=False).split()
+    return (int(counts[0]), int(counts[1])) if len(counts) == 2 and all(c.isdigit() for c in counts) else None
+
+
 def status(worktree: Path, base: str) -> Status:
-    porcelain = git(worktree, "status", "--porcelain")
-    dirty = len([line for line in porcelain.splitlines() if line.strip()])
-    branch = current_branch(worktree)
-    candidates = [git(worktree, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}", check=False)]
-    if branch:
-        candidates.append(f"origin/{branch}")  # pushed without -u
-    # the configured upstream can be gone (remote branch deleted after a merge): then nothing counts as pushed
-    upstream = next((u for u in candidates if u and ref_exists(worktree, u)), None)
-    ahead = count_commits(worktree, f"{base}..HEAD")
+    """Two git calls in the usual case (the dashboard runs this for every repo every few seconds): `git status`
+    gives the branch, the changes and how far HEAD is from an upstream that still exists, one rev-list the rest."""
+    branch, upstream, unpushed, dirty = None, None, None, 0
+    for line in git(worktree, "status", "--porcelain=v2", "--branch").splitlines():
+        if line.startswith("# branch.head "):
+            head = line.removeprefix("# branch.head ")
+            branch = None if head == "(detached)" else head
+        elif line.startswith("# branch.upstream "):
+            upstream = line.removeprefix("# branch.upstream ")
+        elif line.startswith("# branch.ab "):  # only there when the upstream exists
+            ahead_of_upstream = line.split()[2].removeprefix("+")
+            unpushed = int(ahead_of_upstream) if ahead_of_upstream.isdigit() else None  # "+?": status.aheadBehind
+        elif line.strip() and not line.startswith("#"):
+            dirty += 1
+    if unpushed is None:
+        # no upstream, or the configured one is gone (remote branch deleted after a merge), or branch pushed
+        # without -u: then origin/<branch>, if there is one, counts as pushed
+        candidates = dict.fromkeys(u for u in (upstream, f"origin/{branch}" if branch else None) if u)
+        upstream = None
+        for candidate in candidates:
+            if counts := left_right(worktree, candidate):
+                upstream, unpushed = candidate, counts[1]
+                break
+    behind, ahead = left_right(worktree, base) or (0, 0)
     return Status(
         branch=branch,
         dirty=dirty,
         ahead_of_base=ahead,
-        behind_base=count_commits(worktree, f"HEAD..{base}"),
+        behind_base=behind,
         upstream=upstream,
-        unpushed=count_commits(worktree, f"{upstream}..HEAD") if upstream else ahead,
+        unpushed=ahead if unpushed is None else unpushed,
     )
 
 
@@ -198,17 +223,67 @@ def remote_url(repo: Path) -> str | None:
 
 
 def git_dir(worktree: Path) -> Path:
+    """The worktree's git directory: its .git folder, or where its .git file points (a linked worktree), read
+    without starting git; git is asked only for other layouts (a subfolder, say)."""
+    dot = Path(worktree).absolute() / ".git"
+    if dot.is_dir():
+        return dot
+    try:
+        pointer = dot.read_text()
+    except OSError:
+        pointer = ""
+    if pointer.startswith("gitdir: "):
+        return dot.parent / pointer.removeprefix("gitdir: ").strip()  # absolute, or relative to the worktree
     return Path(git(worktree, "rev-parse", "--absolute-git-dir"))
+
+
+def common_dir(gd: Path) -> Path:
+    """Where refs, packed-refs and config live: a linked worktree's git dir names it in its commondir file."""
+    try:
+        return gd / (gd / "commondir").read_text().strip()  # an absolute path replaces gd
+    except OSError:
+        return gd
+
+
+OPERATIONS = (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
+              ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("BISECT_LOG", "bisect"))
 
 
 def operation_in_progress(worktree: Path) -> str | None:
     """'merge' / 'rebase' / 'cherry-pick' / 'revert' / 'bisect' if one is in progress in this worktree."""
     gd = git_dir(worktree)
-    for marker, name in (("MERGE_HEAD", "merge"), ("rebase-merge", "rebase"), ("rebase-apply", "rebase"),
-                         ("CHERRY_PICK_HEAD", "cherry-pick"), ("REVERT_HEAD", "revert"), ("BISECT_LOG", "bisect")):
+    for marker, name in OPERATIONS:
         if (gd / marker).exists():
             return name
     return None
+
+
+def _stamp(path: Path) -> tuple[int, int, int] | None:
+    try:
+        st = path.stat()
+    except OSError:
+        return None
+    return st.st_mtime_ns, st.st_size, st.st_ino
+
+
+def fingerprint(worktree: Path, refs: list[str]) -> tuple | None:
+    """A cheap stamp (no git process) of the files git rewrites when the worktree's HEAD, index, `refs` (e.g.
+    "refs/remotes/origin/main"), packed refs, config or in-progress operation change. While it stays the same, so
+    does what status() and friends report, except for edits to the worktree's files themselves, which only
+    `git status` notices. None if the worktree has no git directory."""
+    if not (Path(worktree) / ".git").exists():
+        return None
+    try:
+        gd = git_dir(worktree)
+    except GitError:
+        return None
+    if not gd.is_dir():
+        return None
+    common = common_dir(gd)
+    paths = [gd / "HEAD", gd / "index", gd / "logs" / "HEAD", *(gd / marker for marker, _ in OPERATIONS),
+             common / "packed-refs", common / "config", common / "reftable" / "tables.list",
+             *(common / ref for ref in refs)]
+    return tuple(_stamp(p) for p in paths)
 
 
 def rebase(worktree: Path, onto: str) -> list[str]:

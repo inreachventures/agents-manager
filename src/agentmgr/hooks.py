@@ -40,7 +40,7 @@ def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None)
         return
     db.set_status(conn, ws.key, status, reason)
     if status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
-        if not tmux.clients(ws.key):  # nobody is looking at this session
+        if not tmux.watched(ws.key):  # nobody is looking at this session
             msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
             notify.notify(ws.label, msg)
 
@@ -58,6 +58,7 @@ def _context(conn, ws: db.Workstream, payload: dict) -> guard.Context:
         folder=ws.path.resolve(),
         cwd=cwd,
         code_roots=list(cfg.code_roots),
+        repos=list(cfg.repos),
         branches={Path(r.worktree_path).name: r.branch for r in db.list_repos(conn, ws.key)},
         writable=[cfg.memory_dir, scratch_dir(ws)],
     )
@@ -70,7 +71,7 @@ def _one_line(text: str) -> str:
 
 def _show_prompt(ws: db.Workstream, prompt: str) -> None:
     if prompt.strip() and tmux.available():
-        tmux.set_session_option(ws.key, PROMPT_OPTION, _one_line(prompt))
+        tmux.set_window_option(ws.key, PROMPT_OPTION, _one_line(prompt))
 
 
 def last_prompt(transcript: Path) -> str:

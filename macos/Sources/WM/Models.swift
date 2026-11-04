@@ -1,0 +1,214 @@
+import Foundation
+
+// What `wm app-server` sends. Field names arrive in snake_case and are decoded with .convertFromSnakeCase.
+
+struct DashboardState: Decodable, Equatable {
+    var workstreams: [Workstream]
+    var archived: [Workstream]
+    var origin: Origin
+    var clients: [String: String] = [:]  // tmux client pid -> the session it shows
+
+    struct Origin: Decodable, Equatable {
+        var repos: Int
+        var checkedAt: Double?
+    }
+
+    static let empty = DashboardState(workstreams: [], archived: [], origin: Origin(repos: 0, checkedAt: nil))
+
+    enum CodingKeys: String, CodingKey { case workstreams, archived, origin, clients }
+
+    init(workstreams: [Workstream], archived: [Workstream], origin: Origin) {
+        (self.workstreams, self.archived, self.origin) = (workstreams, archived, origin)
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        workstreams = try c.decode([Workstream].self, forKey: .workstreams)
+        archived = try c.decode([Workstream].self, forKey: .archived)
+        origin = try c.decode(Origin.self, forKey: .origin)
+        clients = try c.decodeIfPresent([String: String].self, forKey: .clients) ?? [:]
+    }
+}
+
+enum Status: String, Decodable {
+    case needsYou = "needs_you", working, yourTurn = "your_turn", stopped, archived
+    case unknown
+
+    init(from decoder: Decoder) throws {
+        self = Status(rawValue: try decoder.singleValueContainer().decode(String.self)) ?? .unknown
+    }
+
+    var isRunning: Bool { self == .needsYou || self == .working || self == .yourTurn }
+}
+
+struct Workstream: Decodable, Identifiable, Equatable {
+    var key: String
+    var ticket: String?
+    var name: String?
+    var label: String
+    var status: Status
+    var statusText: String
+    var since: Double
+    var folder: String
+    var intake: Bool
+    var drift: String?
+    var allMerged: Bool
+    var baseCi: String?
+    var readyToArchive: Bool?  // everything merged, CI green or none on base (or the example)
+    var repos: [RepoState]
+
+    var id: String { key }
+    var ident: String { ticket ?? key }
+
+    /// Show the archive button instead of the status dot: done, and Claude isn't busy or waiting on a question.
+    var offersArchive: Bool { readyToArchive == true && (status == .yourTurn || status == .stopped) }
+
+    /// The TUI's "merged → archive" hint, once every repo with work in it is merged.
+    var mergeHint: (text: String, tone: String)? {
+        guard allMerged else { return nil }
+        switch baseCi {
+        case "pass": return ("merged, CI green · ready to archive", "green")
+        case "fail": return ("merged, CI failing on base", "red")
+        case "pending": return ("merged, CI running on base…", "yellow")
+        case "n/a": return ("merged, CI unknown", "yellow")
+        default: return ("merged (no CI) · ready to archive", "purple")
+        }
+    }
+}
+
+struct RepoState: Decodable, Identifiable, Equatable {
+    var repo: String
+    var branch: String
+    var base: String
+    var worktree: String
+    var state: String  // what this repo needs next, e.g. "↑ needs push (2)"
+    var tone: String
+    var behind: Int
+    var behindWarn: Bool
+    var pr: String
+    var prUrl: String?
+    var merged: Bool
+    var fetchError: String?
+
+    var id: String { repo }
+
+    /// What its top-bar chip shows after the name: the PR number, else how far behind base once that matters.
+    var chipExtra: String? {
+        if let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") }) { return String(number) }
+        return behindWarn ? "\(behind)↓" : nil
+    }
+
+    /// Everything about it in a few lines, for tooltips.
+    var details: String {
+        var lines = ["\(repo) · \(branch) → \(base)", state, pr]
+        if behind > 0 { lines.append("\(behind) behind base") }
+        if let fetchError { lines.append("fetch failed: \(fetchError)") }
+        return lines.joined(separator: "\n")
+    }
+}
+
+// MARK: - Diffs
+
+struct DiffResult: Decodable, Equatable {
+    var key: String
+    var repos: [RepoDiff]
+    var digest: String?
+    var unchanged: Bool?  // the server's diff matches `digest` sent with the request
+}
+
+struct RepoDiff: Decodable, Equatable, Identifiable {
+    var repo: String
+    var branch: String
+    var base: String
+    var forkPoint: String?
+    var files: [FileDiff]
+    var additions: Int
+    var deletions: Int
+    var error: String?
+    var untrackedOmitted: Int?
+
+    var id: String { repo }
+}
+
+struct FileDiff: Decodable, Equatable, Identifiable {
+    var path: String
+    var oldPath: String?
+    var status: String
+    var untracked: Bool
+    var binary: Bool
+    var additions: Int
+    var deletions: Int
+    var truncated: Bool
+    var hunks: [Hunk]
+
+    // a path can show twice: deleted from git and back as an untracked file (`git rm --cached`)
+    var id: String { (untracked ? "untracked:" : "tracked:") + path }
+    var lineCount: Int { hunks.reduce(0) { $0 + $1.lines.count } }
+}
+
+struct Hunk: Decodable, Equatable {
+    var header: String
+    var lines: [DiffLine]
+}
+
+struct DiffLine: Decodable, Equatable {
+    var kind: String  // "+", "-" or " "
+    var old: Int?
+    var new: Int?
+    var text: String
+}
+
+// MARK: - Action results
+
+struct NewResult: Decodable { var key: String }
+struct ExampleResult: Decodable { var key: String? }
+struct LogResult: Decodable { var log: [String] }
+struct AttachResult: Decodable { var argv: [String] }
+struct SwitchResult: Decodable { var switched: Bool }
+struct ReposResult: Decodable { var repos: [String] }
+struct RefreshResult: Decodable { var failed: [String] }
+
+struct AddRepoResult: Decodable {
+    var repo: String
+    var branch: String
+    var createdBranch: Bool
+    var notes: [String]
+}
+
+struct RebasePlan: Decodable, Identifiable {
+    var label: String
+    var steps: [Step]
+    var id: String { label }
+
+    struct Step: Decodable, Identifiable {
+        var repo: String
+        var branch: String
+        var base: String
+        var behind: Int
+        var skip: String?
+        var push: Bool
+        var id: String { repo }
+    }
+}
+
+struct ArchiveReport: Decodable, Identifiable {
+    var label: String
+    var repos: [Repo]
+    var blocked: Bool
+    var id: String { label }
+
+    struct Repo: Decodable, Identifiable {
+        var repo: String
+        var branch: String
+        var state: String
+        var tone: String
+        var pr: String
+        var blockers: [String]
+        var id: String { repo }
+    }
+}
+
+struct Notice: Decodable {
+    var level: String
+    var message: String
+}

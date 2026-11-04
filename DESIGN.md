@@ -30,6 +30,7 @@ Assumptions: everything runs locally on macOS, Terminal.app, Claude Code CLI wit
 | D12 | **Every workstream has a key, a name and optionally a ticket ID.** Key = stable folder name (`PROJ-313` if given to `wm new`, else `WS-<n>`). Name = 3 words, chosen by Claude at intake. Ticket ID (e.g. `PROJ-313`) can be given at `wm new` or mentioned during intake. Branches are `<ticket-or-key>-<name-slug>`, e.g. `proj-313-dark-mode-toggle`. |
 | D13 | **Constraints are enforced, not just instructed**: the manager does all structural work itself, Claude Code permissions + a `PreToolUse` guard hook block violations, a `PostToolUse` check detects drift. See "Guardrails". |
 | D14 | **Workstreams start with a voice/text intake in their own session**: Claude writes `TASK.md` and attaches repos via `wm add-repo`, confirms, then works. |
+| D15 | **A native macOS app is a second view, not a second manager.** It talks to `wm app-server` and shows sessions through tmux; it never touches git or sessions itself. See "Native app". |
 
 ```
 ~/workstreams/WS-7/                       ← claude cwd, never renamed (outside ~/code on purpose, see Guardrails)
@@ -312,6 +313,38 @@ Single Python package (installed with `uv tool install`), no long-running proces
 
 Linear, web UI, last-message previews, collision detection, MCP tools, multiple sessions per workstream,
 merging repo-level Claude settings, PR creation by the manager, remote/cloud.
+
+## Native app (D15)
+
+`Workstreams.app` (SwiftUI, in `macos/`) is the dashboard as a Mac window: workstreams in a sidebar (a dot per repo
+for what it needs next), the selected one's repos in the top bar, its session in a terminal view and the branches'
+changes in a collapsible right panel, for every repo or the one picked in the top bar. D3 still holds
+for everything that matters: no daemon, no web server, sessions in the manager's tmux server.
+
+- **Backend**: the app runs `wm app-server`, JSON lines on stdin/stdout. Requests map one to one to the workstream
+  service (new, add repo, resume, rebase plan + rebase, archive report + archive, unarchive, refresh, diff); the
+  server pushes the dashboard state when it changes (`view.load`, every 2s, like the TUI) and runs the TUI's PR
+  refresh and base fetch loops. So the app gets every check for free and can't bypass one.
+- **Sessions**: tmux stays the session host. Its alternatives would be the app owning the PTYs (sessions die with
+  the app, and rebase conflicts need a new channel into Claude) or a new PTY daemon (tmux, rewritten). The app
+  embeds a terminal (SwiftTerm) running a tmux client on `<key>_app`, a session grouped with the workstream's: it
+  shares the window, so it is the same Claude, but has its own options (no status line; `detach-on-destroy on`, so
+  the client exits with Claude instead of jumping to another session). One client per app window, switched with
+  `switch-client`; if tmux moves it (`C-b s`, `C-b (`), the app moves it back. Notifications ask `tmux.watched()`:
+  a terminal shows the session, or the app shows it and is in front (the app sets `@wm_app_active`).
+  `kill_session` kills every session in the group, because a grouped session keeps the shared window, and so
+  Claude, alive; a view not grouped with its workstream's current session is stale and replaced or pruned. Changes
+  to one workstream wait for each other in the server. The last prompt is a window option so both sessions show it.
+- **Diff panel**: `diffs.repo_diff`, read-only: the working tree against `merge-base(base, HEAD)`, so committed,
+  staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded; symlinks not
+  followed). Output flags are forced, so the user's diff config can't change the format the parser reads. Capped per
+  file, per repo and in untracked files, so a lockfile or an un-ignored build folder can't flood the app.
+- **Self-contained release**: `build-app.sh --release` puts wm and a relocatable CPython (python-build-standalone,
+  checksummed; dependencies pinned with hashes) inside the app, one build per chip. Its launcher sets
+  `AGENTMGR_WM` to its own path, and `tmux.wm_executable()` prefers that over PATH, so hooks keep calling the copy
+  that wrote them; sessions it starts get its folder on PATH, as Claude runs `wm set`/`wm add-repo` by name. Hook
+  paths are absolute, so moving the app would leave hooks that can't run, which block nothing: the server repoints,
+  at start, workstreams whose hook wm is gone or is another copy of the app.
 
 ## Later (rough priority)
 

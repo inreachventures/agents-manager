@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -139,7 +140,61 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
     return "● ready to merge", "bold medium_purple1"
 
 
-def load(include_archived: bool = False, git_status: bool = True) -> list[Row]:
+GIT_MAX_AGE = 20  # seconds a repo's git state is reused while no git file changed (see _read_git)
+STOPPED_GIT_MAX_AGE = 300  # the same for a stopped workstream: no Claude there to edit files
+
+
+@dataclass
+class _GitRead:
+    stamp: tuple
+    at: float
+    st: gitops.Status | None
+    operation: str | None
+    after_pr: int
+    in_base: bool
+
+
+_git_reads: dict[str, _GitRead] = {}  # worktree path -> its last read, for the dashboards' load() every few seconds
+
+
+def _read_git(ws: db.Workstream, link: db.RepoLink, pr: db.PR | None,
+              max_age: float) -> tuple[gitops.Status | None, str | None, int, bool]:
+    """(status, operation in progress, commits after the merged PR, in base) for one repo: a few git processes, so
+    the last read is reused for up to `max_age` seconds while the worktree's git files (gitops.fingerprint), its PR
+    and its workstream's status are the same. Commits, checkouts, staging, fetches and rebases change those files and
+    show at once; edits to files in the worktree show within `max_age`, or when Claude stops (status changes)."""
+    wt = Path(link.worktree_path)
+    if not wt.is_dir():
+        return None, None, 0, False
+    pr_merged = bool(pr and pr.state == "merged")
+    refs = [f"refs/heads/{link.branch}", f"refs/remotes/origin/{link.branch}",
+            f"refs/remotes/{link.base}", f"refs/heads/{link.base}"]
+
+    def stamp() -> tuple | None:
+        fp = gitops.fingerprint(wt, refs)
+        return fp and (fp, link.branch, link.base, pr_merged, pr.head_sha if pr else None, ws.status, ws.status_at)
+
+    last = _git_reads.get(link.worktree_path)
+    now = time.time()
+    if last and now - last.at < max_age and last.stamp == stamp():
+        return last.st, last.operation, last.after_pr, last.in_base
+    try:
+        st = gitops.status(wt, link.base)
+        operation = gitops.operation_in_progress(wt)
+        after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
+        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+    except gitops.GitError:
+        st, operation, after_pr, in_base = None, None, 0, False
+    # stamped after reading: `git status` may rewrite the index itself (refreshing file times), which mustn't count
+    # as a change; a change made during the read shows within max_age
+    if after := stamp():
+        _git_reads[link.worktree_path] = _GitRead(after, now, st, operation, after_pr, in_base)
+    return st, operation, after_pr, in_base
+
+
+def load(include_archived: bool = False, git_status: bool = True, git_max_age: float = 0) -> list[Row]:
+    """`git_max_age`: for the dashboards, how long a repo's git state may be reused (see _read_git); 0 reads it all.
+    Stopped workstreams get STOPPED_GIT_MAX_AGE instead."""
     conn = db.connect()
     live = tmux.sessions()
     fetches = db.get_fetches(conn)
@@ -150,19 +205,13 @@ def load(include_archived: bool = False, git_status: bool = True) -> list[Row]:
         intake = not (ws.name and links and (ws.path / templates.TASK_FILE).exists())
         status, text = _status(ws, ws.key in live, intake)
         row = Row(ws, status, text, intake)
+        max_age = max(git_max_age, STOPPED_GIT_MAX_AGE) if git_max_age and status == db.STOPPED else git_max_age
         for link in links:
             pr = prs.get(link.repo)
             pr_merged = bool(pr and pr.state == "merged")
             merged, state, style, behind, untouched = pr_merged, "", "", 0, False
             if git_status and ws.status != db.ARCHIVED:
-                wt = Path(link.worktree_path)
-                try:
-                    st = gitops.status(wt, link.base)
-                    operation = gitops.operation_in_progress(wt)
-                    after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
-                    in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
-                except gitops.GitError:
-                    st, operation, after_pr, in_base = None, None, 0, False
+                st, operation, after_pr, in_base = _read_git(ws, link, pr, max_age)
                 state, style = git_state(link, st, pr, operation, after_pr, in_base)
                 merged = pr_merged or in_base  # in_base: e.g. landed by the last PR of a stack, from another branch
                 if st:

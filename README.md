@@ -149,11 +149,20 @@ Anywhere in `wm`'s tmux: `C-b h` back to the dashboard · `C-b n` next session w
 Whichever way a repo joins, `wm` guarantees it **lives as a worktree inside the workstream folder**, on the task's
 branch, **listed in the task's `CLAUDE.md` and covered by its guardrails**.
 
+**Prefer a Mac app?** `Workstreams.app` is the same dashboard as a native window, with each workstream's Claude
+session next to it and a panel with what every repo's branch changes. Sessions still live in `wm`'s tmux server and
+every action goes through `wm`, so the guarantees above hold. Download it from
+[Releases](https://github.com/inreachventures/agents-manager/releases): self-contained, `wm` and its Python inside,
+for Apple silicon and Intel. It isn't signed with an Apple Developer ID, so the first launch needs **Open Anyway** in
+System Settings → Privacy & Security (the release notes explain). Or build it: `macos/scripts/build-app.sh --open`.
+See [`macos/README.md`](macos/README.md).
+
 Optional config in `~/.agents-manager/config.toml`:
 
 ```toml
-code_roots = ["~/code"]            # where your repos live; their checkouts are protected
-workstreams_dir = "~/workstreams"  # where workstream folders are created
+code_roots = ["~/code"]                # folders holding your repos; their checkouts are protected
+repos = ["~/elsewhere/side-project"]   # single repos kept elsewhere, protected the same way
+workstreams_dir = "~/workstreams"      # where workstream folders are created
 ```
 
 ## Limits
@@ -163,7 +172,7 @@ workstreams_dir = "~/workstreams"  # where workstream folders are created
   catches the result, not the attempt. There's no OS-level sandbox yet.
 - **Repo-level Claude settings don't apply.** Each repo's `CLAUDE.md` is loaded, but its `.claude/settings.json` and
   `.mcp.json` are not, because Claude Code only reads those from the working directory.
-- **No diff viewer.** Review in your editor or on the PR. PR and CI state needs `gh` and GitHub.
+- **The diff view is read-only and app-only.** Review and comment on the PR. PR and CI state needs `gh` and GitHub.
 
 ## Disclaimer
 
@@ -178,6 +187,11 @@ your work committed and pushed, and keep backups.
 ```sh
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests
+cd macos && swift build                 # the native app
 ```
+
+CI (`.github/workflows/ci.yml`) runs the tests and builds the app's disk images on every push and pull request to
+`main`. To release, bump `version` in `pyproject.toml` and push a matching tag (`v0.2.0`): CI publishes the disk
+images as a GitHub release.
 
 `DESIGN.md` explains the reasoning behind each design decision. MIT licensed, see `LICENSE`.
