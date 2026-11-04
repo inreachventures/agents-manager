@@ -14,32 +14,47 @@ one conversation, N PRs and one definition of done.
 - 🚦 **One dashboard for every task.** Who is waiting on you, and **what each repo needs next**, from "needs push"
   to "ready to merge".
 - 🧹 **Archive that never loses work.** It refuses while anything is uncommitted or unpushed.
-- 💻 **The real `claude` CLI on your subscription.** Local and terminal-native: no API keys, no cloud, no daemon.
+- 💻 **The real `claude` CLI on your subscription**, in a native Mac app or your terminal. Local: no API keys, no
+  cloud.
 
-![The wm dashboard: ten workstreams with their status, and the git, PR and CI state of every repo](assets/dashboard.png)
+![Workstreams.app: every workstream and its state in the sidebar, the selected one's Claude session in the middle and what its branches change on the right](assets/app.png)
+
+## Install
+
+**Workstreams.app** is `wm` as a native Mac app: your workstreams in the sidebar, the selected one's Claude session
+in the middle, and what its branches change on the right. It carries `wm` and a Python of its own.
+
+1. Install what it drives: git, tmux and Claude Code (logged in), plus `gh` for PR and CI status:
+
+   ```sh
+   brew install tmux gh && gh auth login
+   ```
+
+2. Download the disk image for your Mac from the
+   [latest release](https://github.com/inreachventures/agents-manager/releases/latest): `apple-silicon` for M-series
+   chips, `intel` for Intel. Open it and drag Workstreams to Applications. It needs macOS 14 or later.
+3. Open it. The app isn't signed with an Apple Developer ID, so the first time macOS blocks it as from an
+   unidentified developer. Close the warning, then click **Open Anyway** in System Settings → Privacy & Security (on
+   macOS 14: Control-click the app and choose **Open**). Or, in Terminal:
+   `xattr -dr com.apple.quarantine /Applications/Workstreams.app`.
+
+A short tour points at each part of the window. `wm` looks for your repos in `~/code`; Settings → Repos changes that.
+
+**Prefer the terminal?** The same dashboard runs as `wm`, and both work on the same sessions, so you can use either
+or both. Settings → wm shows the command that puts the app's `wm` on your PATH; to install it from source, see
+[wm in the terminal](docs/cli.md).
 
 ## Quick start
 
-Requires macOS, git, tmux, Claude Code, and optionally `gh` for PR and CI status.
-
-```sh
-brew install tmux
-git clone https://github.com/inreachventures/agents-manager.git ~/code/agents-manager && cd ~/code/agents-manager
-python3.12 -m venv .venv && .venv/bin/pip install -e .   # or: uv tool install -e .
-ln -sf "$PWD/.venv/bin/wm" ~/.local/bin/wm               # Claude sessions call `wm` during intake
-wm doctor                                                # checks tools, PATH and Claude folder trust
-
-wm                                                       # opens the dashboard
-```
-
-Press `n` in the dashboard and describe the task in the Claude session that opens:
+Click **+** (⌘N) and describe the task in the Claude session that opens, by voice or text:
 
 > "This is PROJ-313. Add a dark mode toggle: acme-api needs to store the preference and the web UI needs the
 > toggle. Done when both are merged."
 
 Claude names the workstream (`PROJ-313 dark mode toggle`), writes `TASK.md`, attaches `acme-api` and `acme-web` as
-worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits for your **"go"**. Then press `C-b h` to go
-back to the dashboard and get on with other work. When the PRs are merged, press `x` to archive.
+worktrees on `proj-313-dark-mode-toggle`, summarises the plan and waits for your **"go"**. Then pick another
+workstream and get on with other work: the sidebar shows which ones wait on you and ⌘J jumps to the next. When the
+PRs are merged, archive it (⌘⌫).
 
 ## How wm compares
 
@@ -122,23 +137,24 @@ needs another repo it runs `wm add-repo`, and `wm` creates the worktree and the 
 
 ## Usage
 
-You only need two places: the dashboard (run `wm`) and the Claude sessions it opens.
+You only need two places: the dashboard and the Claude sessions it opens.
 
-**From the dashboard:**
+**From the app:** select a workstream to see its session. Every action is in the toolbar's `…` menu and when you
+right-click a workstream:
 
-| Key | What it does |
+| Shortcut | What it does |
 |---|---|
-| `n` | New workstream: a Claude session opens and you describe the task |
-| `enter` | Jump into the selected workstream's Claude session |
-| `a` | Attach another repo to the selected workstream |
-| `r` | Resume a stopped session, in the same conversation (after a reboot, say) |
-| `b` | Rebase every branch of the task that is behind its base; conflicts go to Claude |
-| `x` | Archive: safety check, then stop the session and remove the worktrees |
-| `v` | Show archived workstreams; `u` restores one with its worktrees and conversation |
-| `p` | Refresh git, PR and CI state now |
-| `q` | Leave the dashboard; sessions keep running |
+| ⌘N | New workstream: a Claude session opens and you describe the task |
+| ⇧⌘A | Attach another repo to the selected workstream |
+| ⇧⌘↩ | Resume a stopped session, in the same conversation (after a reboot, say) |
+| ⇧⌘B | Rebase every branch of the task that is behind its base; conflicts go to Claude |
+| ⌘⌫ | Archive: safety check, then stop the session and remove the worktrees |
+| ⌥⌘A | Show archived workstreams, to restore one with its worktrees and conversation |
+| ⌘R | Refresh git, PR and CI state now |
+| ⌘J | Next workstream waiting on you |
 
-Anywhere in `wm`'s tmux: `C-b h` back to the dashboard · `C-b n` next session waiting on you · `C-b d` detach.
+Quitting the app leaves the sessions running. [`macos/README.md`](macos/README.md) covers the rest of the window;
+[wm in the terminal](docs/cli.md) has the dashboard's keys and the commands.
 
 **From the chat:** ask Claude, and it runs `wm` for you.
 
@@ -149,15 +165,10 @@ Anywhere in `wm`'s tmux: `C-b h` back to the dashboard · `C-b n` next session w
 Whichever way a repo joins, `wm` guarantees it **lives as a worktree inside the workstream folder**, on the task's
 branch, **listed in the task's `CLAUDE.md` and covered by its guardrails**.
 
-**Prefer a Mac app?** `Workstreams.app` is the same dashboard as a native window, with each workstream's Claude
-session next to it and a panel with what every repo's branch changes. Sessions still live in `wm`'s tmux server and
-every action goes through `wm`, so the guarantees above hold. Download it from
-[Releases](https://github.com/inreachventures/agents-manager/releases): self-contained, `wm` and its Python inside,
-for Apple silicon and Intel. It isn't signed with an Apple Developer ID, so the first launch needs **Open Anyway** in
-System Settings → Privacy & Security (the release notes explain). Or build it: `macos/scripts/build-app.sh --open`.
-See [`macos/README.md`](macos/README.md).
+The app is only a view: sessions live in `wm`'s tmux server and every action goes through `wm`, so the guarantees
+above hold whichever you use.
 
-Optional config in `~/.agents-manager/config.toml`:
+Optional config in `~/.agents-manager/config.toml` (Settings → Repos edits the first two):
 
 ```toml
 code_roots = ["~/code"]                # folders holding your repos; their checkouts are protected
@@ -187,11 +198,11 @@ your work committed and pushed, and keep backups.
 ```sh
 .venv/bin/pytest -q
 .venv/bin/ruff check src tests
-cd macos && swift build                 # the native app
+macos/scripts/build-app.sh --open      # build the native app for this Mac and open it
 ```
 
 CI (`.github/workflows/ci.yml`) runs the tests and builds the app's disk images on every push and pull request to
 `main`. To release, bump `version` in `pyproject.toml` and push a matching tag (`v0.2.0`): CI publishes the disk
-images as a GitHub release.
+images as a GitHub release. See [`macos/README.md`](macos/README.md) for how the app is built and works.
 
 `DESIGN.md` explains the reasoning behind each design decision. MIT licensed, see `LICENSE`.
