@@ -83,10 +83,21 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
     else:
         out.append("(none attached yet)")
     ident = ws.ticket or key
+    # Also during intake: the first session starts then and usually carries on with the task, and a running session
+    # doesn't re-read this file, so a rule added only once TASK.md exists would miss the session that does the work.
+    scope = (f"This session is for {title} only." if has_task
+             else "Once intake has set this workstream's task, this session is for that task only.")
     out += [
         "",
         "## Rules",
         "",
+        f"- {scope}",
+        "  Several workstreams run side by side and the user switches between them, so a message can land in",
+        f"  the wrong session. Before acting on a request, check that it fits this workstream's goal in {TASK_FILE}.",
+        "  If it is about another workstream's work (its repos, branches, PRs, artifacts or anything in another",
+        "  workstream folder) or plainly unrelated to this task, don't act on it: say it looks meant for another",
+        "  workstream (name it if you can tell, `wm ls` lists them) and go ahead here only if the user confirms.",
+        "  Quick general questions are fine to answer.",
         f"- Only modify files inside the repo subfolders above and {TASK_FILE} (plus your memory folder and your",
         "  scratchpad). The original checkouts are read-only reference.",
         "- Never create, remove or move git worktrees, and never switch branches in these worktrees.",
