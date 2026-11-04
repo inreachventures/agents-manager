@@ -2,7 +2,8 @@
 
 The app sends `{"id": 1, "method": "archive", "params": {"key": "WS-7"}}` and gets back `{"id": 1, "result": ...}` or
 `{"id": 1, "error": "..."}`. Unprompted, the server sends `{"event": "state", "data": ...}` whenever the dashboard
-state changes (checked every 2s, like the TUI) and `{"event": "notice", "data": {"level": ..., "message": ...}}`.
+state changes (checked every 2s, like the TUI; every 10s while the app is in the background) and
+`{"event": "notice", "data": {"level": ..., "message": ...}}`.
 
 The app is only a view: every change goes through the workstream service, exactly as from the CLI and the TUI, so
 worktrees, branches and guardrails stay wm's job. Requests run in threads, so a slow archive doesn't hold up the rest.
@@ -28,9 +29,14 @@ from .naming import NamingError
 from .repos import RepoMatchError, discover
 
 STATE_SECONDS = 2
+BACKGROUND_STATE_SECONDS = 10  # while the app is behind other apps, when only its dock badge shows
+BACKGROUND_GIT_MAX_AGE = 60  # view.GIT_MAX_AGE while the app is in the background
 PR_REFRESH_SECONDS = 60
 FETCH_SECONDS = 30  # each repo is actually fetched at most every fetcher.DASHBOARD_MAX_AGE
 EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError)
+# Requests that change nothing the dashboard shows, so no state push after them: the app asks for a diff every 3s,
+# and pushing the state after each one kept the state loop (git in every repo) running without a pause.
+QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "scan", "diff", "focus"})
 
 # view.git_state's rich styles, as colour names the app maps to its palette
 TONES = {"bold red": "red", "yellow": "yellow", view.BLUE: "blue", "bold green": "green", "grey50": "grey",
@@ -61,10 +67,11 @@ def _row(r: view.Row) -> dict:
     }
 
 
-def state() -> dict:
-    """Everything the dashboard shows, in the TUI's order: needs you, working, your turn, intake, stopped."""
+def state(git_max_age: float = 0) -> dict:
+    """Everything the dashboard shows, in the TUI's order: needs you, working, your turn, intake, stopped.
+    `git_max_age`: see view.load."""
     tmux.prune_views()
-    rows = view.load(include_archived=True)
+    rows = view.load(include_archived=True, git_max_age=git_max_age)
     active = [r for r in rows if r.status != db.ARCHIVED]
     oks = [rr.fetched_ok_at for r in active for rr in r.repos]
     return {
@@ -112,6 +119,8 @@ class Server:
         self.done = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wm-request")
         self.last_state: dict | None = None
+        self.app_active = True  # the app is the frontmost app (rpc_focus)
+        self.fresh = False  # the next state push reads every repo's git state again (rpc_refresh)
         self.locks: dict[str, threading.Lock] = {}  # per workstream: one change at a time (an add-repo during an
         self.locks_lock = threading.Lock()  # archive would leave a worktree behind)
 
@@ -157,14 +166,18 @@ class Server:
                 fn()
             except Exception:  # noqa: BLE001 — keep the loop alive; the next tick tries again
                 traceback.print_exc()
-            if seconds is None:  # the state loop: every STATE_SECONDS, or sooner when woken
-                self.wake.wait(STATE_SECONDS)
+            if seconds is None:  # the state loop: every STATE_SECONDS (slower in the background), or when woken
+                self.wake.wait(STATE_SECONDS if self.app_active else BACKGROUND_STATE_SECONDS)
                 self.wake.clear()
             else:
                 self.done.wait(seconds)
 
+    def git_max_age(self) -> float:
+        return view.GIT_MAX_AGE if self.app_active else BACKGROUND_GIT_MAX_AGE
+
     def push_state(self) -> None:
-        data = state()
+        fresh, self.fresh = self.fresh, False
+        data = state(git_max_age=0 if fresh else self.git_max_age())
         if data != self.last_state:
             self.last_state = data
             self.send({"event": "state", "data": data})
@@ -172,7 +185,7 @@ class Server:
     def call(self, line: str) -> None:
         try:
             req = json.loads(line)
-            rid, method, params = req.get("id"), req.get("method", ""), req.get("params") or {}
+            rid, method, params = req.get("id"), str(req.get("method", "")), req.get("params") or {}
         except (ValueError, AttributeError):
             return
         try:
@@ -186,7 +199,8 @@ class Server:
             traceback.print_exc()
             self.send({"id": rid, "error": f"{type(e).__name__}: {e}"})
         finally:
-            self.wake.set()  # show the effect of the request right away
+            if method not in QUIET:
+                self.wake.set()  # show the effect of the request right away
 
     def refresh_prs(self) -> None:
         conn = db.connect()
@@ -206,7 +220,7 @@ class Server:
     # ------------------------------------------------------------------ requests (rpc_<method>)
 
     def rpc_state(self) -> dict:
-        return state()
+        return state(git_max_age=self.git_max_age())
 
     def rpc_repos(self) -> dict:
         return {"repos": [r.name for r in discover(get_config())]}
@@ -279,9 +293,13 @@ class Server:
     def rpc_focus(self, active: bool) -> dict:
         """The app came to the front or went to the back: hooks notify only when nobody is looking (tmux.watched)."""
         tmux.set_app_active(active)
+        self.app_active = active
+        if active:
+            self.wake.set()  # catch up now, not at the end of the slower background tick
         return {}
 
     def rpc_refresh(self) -> dict:
+        self.fresh = True
         self.refresh_prs()
         return {"failed": self.fetch_bases(max_age=0)}
 

@@ -213,3 +213,33 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)
+
+
+def test_only_requests_that_change_something_push_the_state(env, monkeypatch):
+    monkeypatch.setattr(tmux, "set_app_active", lambda active: None)
+    srv = server.Server(io.StringIO())
+    ws = ws_mod.new(launch=False, name="quiet", repo_queries=["web"])
+    for method, params in (("state", {}), ("repos", {}), ("diff", {"key": ws.key}), ("setup", {}),
+                           ("archive_report", {"key": ws.key}), ("rebase_plan", {"key": ws.key}),
+                           ("focus", {"active": False})):
+        ask(srv, method, **params)
+        assert not srv.wake.is_set(), method  # the app asks for a diff every 3s: that mustn't rerun the state loop
+    assert not srv.app_active
+    ask(srv, "focus", active=True)  # back in front: catch up at once
+    assert srv.app_active and srv.wake.is_set()
+    srv.wake.clear()
+    ask(srv, "archive", key=ws.key)
+    assert srv.wake.is_set()
+
+
+def test_the_state_loop_reads_git_less_often_in_the_background(env, monkeypatch):
+    ages = []
+    monkeypatch.setattr(server, "state", lambda git_max_age=0: ages.append(git_max_age) or {"push": len(ages)})
+    srv = server.Server(io.StringIO())
+    srv.push_state()
+    srv.app_active = False
+    srv.push_state()
+    ask(srv, "refresh")  # the refresh button: every repo is read again
+    srv.push_state()
+    srv.push_state()
+    assert ages == [view.GIT_MAX_AGE, server.BACKGROUND_GIT_MAX_AGE, 0, server.BACKGROUND_GIT_MAX_AGE]

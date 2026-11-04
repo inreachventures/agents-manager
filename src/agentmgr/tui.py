@@ -137,7 +137,7 @@ class Dashboard(App):
             self.last_pr_refresh = time.time()
             self.refresh_prs()
         archived = self.show_archived
-        rows = view.load(include_archived=archived, git_status=not archived)
+        rows = view.load(include_archived=archived, git_status=not archived, git_max_age=view.GIT_MAX_AGE)
         rows = [r for r in rows if (r.status == db.ARCHIVED) == archived]
         self.call_from_thread(self.render_rows, rows, archived)
 

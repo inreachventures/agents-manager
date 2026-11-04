@@ -301,3 +301,27 @@ def test_unarchive_is_all_or_nothing(env, monkeypatch):
     sh(env.code / "release-tools", "git", "switch", "-q", "main")
     with pytest.raises(WorkstreamError, match="already used"):
         ws_mod.unarchive(ws.key)
+
+
+def test_a_failed_fetch_is_tried_once_more(env, monkeypatch):
+    from agentmgr import fetcher
+
+    new(name="flaky remote", repo_queries=["web"])
+    monkeypatch.setattr(fetcher, "RETRY_DELAY", 0)
+    calls = []
+
+    def flaky(repo, base, timeout):
+        calls.append(repo)
+        if len(calls) == 1:
+            raise gitops.GitError("git@ssh.github.com: Permission denied (publickey).")
+
+    monkeypatch.setattr(gitops, "fetch_base", flaky)
+    assert fetcher.fetch_stale(0) == {str(env.code / "acme-web"): None} and len(calls) == 2
+
+    def slow(repo, base, timeout):
+        calls.append(repo)
+        raise gitops.GitTimeout("timed out")
+
+    calls.clear()
+    monkeypatch.setattr(gitops, "fetch_base", slow)
+    assert fetcher.fetch_stale(0) == {str(env.code / "acme-web"): "timed out"} and len(calls) == 1  # not again

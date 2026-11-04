@@ -14,6 +14,7 @@ from . import db, gitops
 DASHBOARD_MAX_AGE = 300  # seconds between background fetches of the same repo
 SESSION_START_MAX_AGE = 60
 BEHIND_WARN = 20  # highlight a branch this many commits behind its base
+RETRY_DELAY = 1  # seconds before fetching a repo again after a failure
 
 
 def _targets(conn, ws_key: str | None) -> dict[str, str]:
@@ -28,7 +29,9 @@ def _targets(conn, ws_key: str | None) -> dict[str, str]:
 
 def fetch_stale(max_age: float, timeout: float = 20, ws_key: str | None = None) -> dict[str, str | None]:
     """Fetch the base of every repo not fetched in the last `max_age` seconds, in parallel.
-    Returns repo_path -> error (None on success) for the repos it fetched."""
+    Returns repo_path -> error (None on success) for the repos it fetched. A failed fetch is tried once more
+    before it counts (GitHub sometimes refuses a key it accepts a second later), unless it timed out: the network
+    is down or slow, and trying again would only double the wait (a session start waits for these)."""
     conn = db.connect()
     last = db.get_fetches(conn)
     now = time.time()
@@ -39,11 +42,16 @@ def fetch_stale(max_age: float, timeout: float = 20, ws_key: str | None = None) 
 
     def one(item: tuple[str, str]) -> tuple[str, str | None]:
         path, base = item
-        try:
-            gitops.fetch_base(Path(path), base, timeout=timeout)
-            return path, None
-        except gitops.GitError as e:
-            return path, str(e)
+        for attempt in (1, 2):
+            try:
+                gitops.fetch_base(Path(path), base, timeout=timeout)
+                return path, None
+            except gitops.GitTimeout as e:
+                return path, str(e)
+            except gitops.GitError as e:
+                if attempt == 2:
+                    return path, str(e)
+                time.sleep(RETRY_DELAY)
 
     with ThreadPoolExecutor(max_workers=min(8, len(due))) as pool:
         results = dict(pool.map(one, due.items()))
