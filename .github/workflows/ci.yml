@@ -1,0 +1,76 @@
+# Tests on every push and pull request to main, then builds Workstreams.app for Apple silicon and Intel (the disk
+# images are attached to the run). A tag like v0.2.0 also publishes them as a GitHub release; the tag has to match
+# the version in pyproject.toml. The app is signed ad hoc, not with a Developer ID: see .github/release-notes.md.
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  test:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag matches the version in pyproject.toml
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          version=$(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)
+          [ "$GITHUB_REF_NAME" = "v$version" ] || { echo "::error::tag $GITHUB_REF_NAME, but pyproject.toml says $version"; exit 1; }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install tmux
+        run: brew install tmux
+      - name: Install wm
+        run: |
+          python -m venv .venv
+          .venv/bin/pip install --quiet --upgrade pip
+          .venv/bin/pip install --quiet -e . --group dev
+      - name: Lint
+        run: .venv/bin/ruff check src tests
+      - name: Test
+        run: .venv/bin/pytest -q
+
+  build:
+    needs: test
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build Workstreams.app for Apple silicon and Intel
+        run: macos/scripts/build-app.sh --release all
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Workstreams-disk-images
+          path: macos/build/Workstreams-*.dmg
+          if-no-files-found: error
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: Workstreams-disk-images
+          path: dist
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" dist/*.dmg --title "$GITHUB_REF_NAME" \
+            --notes-file .github/release-notes.md
