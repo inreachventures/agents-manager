@@ -20,6 +20,8 @@ def test_new_without_arguments_starts_intake(env):
     assert ws.path == env.workstreams / "WS-1"
     md = (ws.path / "CLAUDE.md").read_text()
     assert "## Intake" in md and "wm set WS-1" in md and "acme-ml-pipeline" in md
+    # the guardrail is there from the first session, which does the intake and usually the work too
+    assert "Once intake has set this workstream's task, this session is for that task only." in md
     settings = json.loads((ws.path / ".claude" / "settings.json").read_text())
     assert set(settings["hooks"]) >= {"SessionStart", "PreToolUse", "PostToolUse", "Notification", "Stop"}
     assert "EnterWorktree" in settings["permissions"]["deny"]
@@ -68,6 +70,8 @@ def test_intake_flow_creates_id_prefixed_worktrees(env):
     ws_mod.set_(ws.key, name="dark mode toggle")
     md = (ws.path / "CLAUDE.md").read_text()
     assert "@TASK.md" in md and "## Intake" not in md
+    # a message typed into the wrong workstream's session gets pushed back
+    assert "This session is for WS-1 · PROJ-313 · dark mode toggle only" in md
 
 
 def test_new_with_ticket_name_and_repos(env):
