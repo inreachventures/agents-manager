@@ -63,7 +63,7 @@ def _row(r: view.Row) -> dict:
         "status_text": "example · ready to archive" if example else r.status_text,
         "since": ws.archived_at or ws.status_at, "folder": ws.folder,
         "intake": r.intake, "drift": ws.drift, "all_merged": r.all_merged, "base_ci": r.base_ci,
-        # everything merged and CI green on base, or no CI there: the TUI's "→ x archive"
+        # everything merged and CI passed on base, or no CI there: the TUI's "→ x archive"
         "ready_to_archive": example or (r.all_merged and r.base_ci in ("pass", None)),
         "repos": [_repo(rr) for rr in r.repos],
     }

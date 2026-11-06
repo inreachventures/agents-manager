@@ -54,7 +54,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var drift: String?
     var allMerged: Bool
     var baseCi: String?
-    var readyToArchive: Bool?  // everything merged, CI green or none on base (or the example)
+    var readyToArchive: Bool?  // everything merged, CI passed or none on base (or the example)
     var repos: [RepoState]
 
     var id: String { key }
@@ -63,15 +63,16 @@ struct Workstream: Decodable, Identifiable, Equatable {
     /// Show the archive button instead of the status dot: done, and Claude isn't busy or waiting on a question.
     var offersArchive: Bool { readyToArchive == true && (status == .yourTurn || status == .stopped) }
 
-    /// The TUI's "merged → archive" hint, once every repo with work in it is merged.
+    /// The TUI's "merged → archive" hint, once every repo with work in it is merged. It starts with "merged", shown in
+    /// purple as on GitHub; `tone` colours the rest: grey when there's nothing left but to archive.
     var mergeHint: (text: String, tone: String)? {
         guard allMerged else { return nil }
         switch baseCi {
-        case "pass": return ("merged, CI green · ready to archive", "purple")
+        case "pass": return ("merged, CI passed · ready to archive", "grey")
         case "fail": return ("merged, CI failing on base", "red")
         case "pending": return ("merged, CI running on base…", "yellow")
         case "n/a": return ("merged, CI unknown", "yellow")
-        default: return ("merged (no CI) · ready to archive", "purple")
+        default: return ("merged (no CI) · ready to archive", "grey")
         }
     }
 }

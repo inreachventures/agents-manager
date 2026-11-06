@@ -117,7 +117,8 @@ struct WorkstreamRow: View {
 
     @ViewBuilder private var subtitle: some View {
         if let hint = ws.mergeHint, ws.status != .needsYou {
-            Text(hint.text).foregroundStyle(Color.tone(hint.tone))
+            Text("merged").foregroundStyle(Color.tone("purple"))
+                + Text(hint.text.dropFirst("merged".count)).foregroundStyle(Color.tone(hint.tone))
         } else {
             Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
         }
