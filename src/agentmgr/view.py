@@ -83,6 +83,7 @@ def _status(ws: db.Workstream, alive: bool, intake: bool) -> tuple[str, str]:
 
 
 BLUE = "dodger_blue1"  # waiting on someone else (CI, reviewers)
+PURPLE = "bold medium_purple1"  # merged, as on GitHub; green is for an open PR that can be merged
 
 
 def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
@@ -113,7 +114,7 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
     if in_base:
         if st.dirty:
             return f"already in {base} · {st.dirty} uncommitted", "yellow"
-        return _pr_state(open_pr, base) if open_pr else (f"✓ already in {base}", "bold green")
+        return _pr_state(open_pr, base) if open_pr else (f"✓ already in {base}", PURPLE)
     if open_pr:
         pr, state = open_pr, "open"  # the branch's own PR is closed or missing: the open one is what's next
     elif last and not st.ahead_of_base:  # nothing of its own: the work landed through other branches
@@ -139,7 +140,7 @@ def _merged(checks: str | None, base: str) -> tuple[str, str]:
         "fail": (f"✗ merged · CI failing on {base}", "bold red"),
         "pending": (f"… merged · CI running on {base}", BLUE),
         "n/a": ("merged · CI unknown", "yellow"),
-    }.get(checks, ("✓ merged", "bold green"))
+    }.get(checks, ("✓ merged", PURPLE))
 
 
 def _pr_state(pr: db.PR, base: str) -> tuple[str, str]:
@@ -160,7 +161,7 @@ def _pr_state(pr: db.PR, base: str) -> tuple[str, str]:
         return "awaiting review", BLUE
     if pr.merge_state == "BLOCKED":
         return "blocked by branch rules", BLUE
-    return "● ready to merge", "bold medium_purple1"
+    return "● ready to merge", "bold green"
 
 
 GIT_MAX_AGE = 20  # seconds a repo's git state is reused while no git file changed (see _read_git)

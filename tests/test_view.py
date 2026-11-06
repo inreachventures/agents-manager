@@ -31,10 +31,10 @@ def pr(state="open", checks=None, draft=False, review=None, mergeable=None, merg
     (st(), pr("merged", "fail"), {}, "✗ merged · CI failing on main", "bold red"),
     (st(), pr("merged", "pending"), {}, "… merged · CI running on main", view.BLUE),
     (st(), pr("merged", "n/a"), {}, "merged · CI unknown", "yellow"),
-    (st(unpushed=3, behind=4), pr("merged", "pass"), {}, "✓ merged", "bold green"),
-    (st(), pr("merged", None), {}, "✓ merged", "bold green"),
+    (st(unpushed=3, behind=4), pr("merged", "pass"), {}, "✓ merged", "bold medium_purple1"),
+    (st(), pr("merged", None), {}, "✓ merged", "bold medium_purple1"),
     # the branch's changes reached main some other way, e.g. the last PR of a stack, opened from another branch
-    (st(unpushed=3, behind=4), pr("closed"), {"in_base": True}, "✓ already in main", "bold green"),
+    (st(unpushed=3, behind=4), pr("closed"), {"in_base": True}, "✓ already in main", "bold medium_purple1"),
     (st(dirty=2), None, {"in_base": True}, "already in main · 2 uncommitted", "yellow"),
     (st(), pr("closed"), {}, "PR closed, not merged", "grey50"),
     # local work beats the open PR's state
@@ -52,8 +52,8 @@ def pr(state="open", checks=None, draft=False, review=None, mergeable=None, merg
     (st(), pr(checks="pass", merge_state="BEHIND"), {}, "needs update from main", "yellow"),
     (st(), pr(checks="pass", review="REVIEW_REQUIRED", merge_state="BLOCKED"), {}, "awaiting review", view.BLUE),
     (st(), pr(checks="pass", merge_state="BLOCKED"), {}, "blocked by branch rules", view.BLUE),
-    (st(), pr(checks="pass", review="APPROVED", merge_state="CLEAN"), {}, "● ready to merge", "bold medium_purple1"),
-    (st(), pr(checks=None, merge_state="UNKNOWN"), {}, "● ready to merge", "bold medium_purple1"),
+    (st(), pr(checks="pass", review="APPROVED", merge_state="CLEAN"), {}, "● ready to merge", "bold green"),
+    (st(), pr(checks=None, merge_state="UNKNOWN"), {}, "● ready to merge", "bold green"),
 ])
 def test_git_state(status, pull, kw, label, style):
     assert view.git_state(LINK, status, pull, **kw) == (label, style)
@@ -68,7 +68,7 @@ def other(number, state, checks=None, base="main", **kw):
 @pytest.mark.parametrize(("status", "pull", "others", "kw", "label", "style"), [
     # the branch's own PR is closed or missing: an open one from another branch says what's next
     (st(), pr("closed"), [other(8, "open", "pass", review="APPROVED", merge_state="CLEAN")], {},
-     "● ready to merge", "bold medium_purple1"),
+     "● ready to merge", "bold green"),
     (st(ahead=0), pr("none"), [other(8, "open", "fail")], {}, "✗ CI failing", "bold red"),
     (st(unpushed=2), None, [other(8, "open", "pass")], {}, "↑ needs push (2)", "yellow"),  # local work first
     # the bottom of a stack (into main) goes first
@@ -82,7 +82,7 @@ def other(number, state, checks=None, base="main", **kw):
     # nothing of its own: a merged PR from another branch is the work landing; its merge's CI is the base's
     (st(ahead=0), pr("none"), [other(8, "merged", "fail")], {}, "✗ merged · CI failing on main", "bold red"),
     (st(ahead=0), pr("closed"), [other(8, "merged", None), other(9, "merged", "pass", merged_at=2)], {},
-     "✓ merged", "bold green"),
+     "✓ merged", "bold medium_purple1"),
     (st(ahead=0, dirty=2), None, [other(8, "merged", "pass")], {}, "merged · 2 uncommitted", "yellow"),
     # commits of its own that didn't land: the other branch's merge doesn't cover them
     (st(), pr("closed"), [other(8, "merged", "pass")], {}, "PR closed, not merged", "grey50"),

@@ -40,7 +40,7 @@ QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "
 
 # view.git_state's rich styles, as colour names the app maps to its palette
 TONES = {"bold red": "red", "yellow": "yellow", view.BLUE: "blue", "bold green": "green", "grey50": "grey",
-         "cyan": "cyan", "dark_orange": "orange", "bold medium_purple1": "purple"}
+         "cyan": "cyan", "dark_orange": "orange", view.PURPLE: "purple"}
 
 
 def _repo(rr: view.RepoRow) -> dict:

@@ -165,11 +165,11 @@ class Dashboard(App):
             status = f"[{style}]{r.status_text}[/]" if style else r.status_text
             if r.all_merged:
                 status += {
-                    "pass": " [bold green]· merged, CI green → x archive[/]",
+                    "pass": f" [{view.PURPLE}]· merged, CI green → x archive[/]",
                     "fail": " [bold red]· merged, CI failing on base[/]",
                     "pending": " [yellow]· merged, CI running on base…[/]",
                     "n/a": " [yellow]· merged, CI unknown[/]",
-                }.get(r.base_ci, " [magenta]· merged (no CI) → x archive[/]")
+                }.get(r.base_ci, f" [{view.PURPLE}]· merged (no CI) → x archive[/]")
             # One (multi-line) row per workstream, one line per repo, so the cursor moves workstream by workstream.
             repo_lines = [self._repo_cells(rr) for rr in r.repos] or [self._repo_cells(None)]
             age = ago(r.ws.archived_at or r.ws.status_at)

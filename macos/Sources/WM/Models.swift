@@ -67,7 +67,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var mergeHint: (text: String, tone: String)? {
         guard allMerged else { return nil }
         switch baseCi {
-        case "pass": return ("merged, CI green · ready to archive", "green")
+        case "pass": return ("merged, CI green · ready to archive", "purple")
         case "fail": return ("merged, CI failing on base", "red")
         case "pending": return ("merged, CI running on base…", "yellow")
         case "n/a": return ("merged, CI unknown", "yellow")
