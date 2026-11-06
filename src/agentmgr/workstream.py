@@ -649,10 +649,17 @@ def _ask_claude_to_rebase(ws: db.Workstream, conflicts: list[tuple[db.RepoLink, 
 class RepoReport:
     link: db.RepoLink
     status: gitops.Status | None
-    merged: bool  # PR merged, or the branch's changes are already in base
-    pr: db.PR | None
+    merged: bool  # the work reached base (gh.RepoPRs.landed)
+    pr: db.PR | None  # the worktree branch's PR
     blockers: list[str]
     after_pr: int = 0  # local commits made after the merged PR's head
+    in_base: bool = False  # the branch's changes are in base, whatever its PR says (gitops.in_base)
+    others: list[db.PR] = field(default_factory=list)  # PRs from the workstream's other branches
+
+    def describe_prs(self) -> str:
+        from . import gh
+
+        return gh.RepoPRs(self.link.base.removeprefix("origin/"), self.pr, self.others).describe()
 
 
 def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, list[RepoReport]]:
@@ -662,13 +669,14 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
     ws = require(conn, key)
     if refresh_prs:
         gh.refresh(conn, ws.key)
-    prs = db.get_prs(conn, ws.key)
+    prs, branch_prs = db.get_prs(conn, ws.key), db.get_branch_prs(conn, ws.key)
     reports = []
     for link in db.list_repos(conn, ws.key):
         wt = Path(link.worktree_path)
-        pr = prs.get(link.repo)
+        rp = gh.repo_prs(link, prs.get(link.repo), branch_prs.get(link.repo, []))
+        pr = rp.own
         if not wt.exists():
-            reports.append(RepoReport(link, None, False, pr, []))
+            reports.append(RepoReport(link, None, False, pr, [], others=rp.others))
             continue
         try:
             gitops.fetch(Path(link.repo_path))
@@ -676,16 +684,17 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
             pass
         st = gitops.status(wt, link.base)
         pr_merged = pr is not None and pr.state == "merged"
-        merged = pr_merged or (st.ahead_of_base > 0 and gitops.in_base(wt, link.base))
+        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+        merged = rp.landed(st.ahead_of_base, in_base)
         after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
         blockers = []
         if st.dirty:
             blockers.append(f"{st.dirty} uncommitted change(s)")
-        if st.unpushed and not merged:
+        if st.unpushed and not (pr_merged or in_base):  # its commits landed (`merged` also waits for open PRs)
             blockers.append(f"{st.unpushed} unpushed commit(s)")
         if after_pr:
             blockers.append(f"{after_pr} commit(s) made after PR #{pr.number} was merged")
-        reports.append(RepoReport(link, st, merged, pr, blockers, after_pr))
+        reports.append(RepoReport(link, st, merged, pr, blockers, after_pr, in_base, rp.others))
     return ws, reports
 
 

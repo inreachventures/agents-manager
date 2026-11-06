@@ -40,7 +40,7 @@ QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "
 
 # view.git_state's rich styles, as colour names the app maps to its palette
 TONES = {"bold red": "red", "yellow": "yellow", view.BLUE: "blue", "bold green": "green", "grey50": "grey",
-         "cyan": "cyan", "dark_orange": "orange", "bold medium_purple1": "purple"}
+         "cyan": "cyan", "dark_orange": "orange", view.PURPLE: "purple"}
 
 
 def _repo(rr: view.RepoRow) -> dict:
@@ -50,6 +50,8 @@ def _repo(rr: view.RepoRow) -> dict:
         "state": rr.state, "tone": TONES.get(rr.style, ""), "behind": rr.behind,
         "behind_warn": rr.behind >= fetcher.BEHIND_WARN, "pr": rr.pr, "pr_url": rr.pr_url, "merged": rr.merged,
         "fetch_error": rr.fetch_error,
+        # each PR the PR column lists, to link to; pr_url is the one that matters now
+        "prs": [{"number": p.number, "url": p.url, "label": gh.describe(p)} for p in rr.prs],
     }
 
 
@@ -61,7 +63,7 @@ def _row(r: view.Row) -> dict:
         "status_text": "example · ready to archive" if example else r.status_text,
         "since": ws.archived_at or ws.status_at, "folder": ws.folder,
         "intake": r.intake, "drift": ws.drift, "all_merged": r.all_merged, "base_ci": r.base_ci,
-        # everything merged and CI green on base, or no CI there: the TUI's "→ x archive"
+        # everything merged and CI passed on base, or no CI there: the TUI's "→ x archive"
         "ready_to_archive": example or (r.all_merged and r.base_ci in ("pass", None)),
         "repos": [_repo(rr) for rr in r.repos],
     }
@@ -257,9 +259,9 @@ class Server:
         ws, reports = workstream.cleanup_report(key)
         repos = []
         for r in reports:
-            label, style = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.merged)
+            label, style = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
             repos.append({"repo": r.link.repo, "branch": r.link.branch, "state": label,
-                          "tone": TONES.get(style, ""), "pr": gh.describe(r.pr), "blockers": r.blockers})
+                          "tone": TONES.get(style, ""), "pr": r.describe_prs(), "blockers": r.blockers})
         return {"label": ws.label, "repos": repos, "blocked": any(r.blockers for r in reports)}
 
     def rpc_archive(self, key: str, force: bool = False) -> dict:

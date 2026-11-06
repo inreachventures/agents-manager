@@ -13,6 +13,9 @@ def test_names_and_branches():
         naming.normalize_name("one two three four")
     assert naming.branch_name("WS-7", "PROJ-313", "dark mode toggle") == "proj-313-dark-mode-toggle"
     assert naming.branch_name("WS-7", None, "quick fix") == "ws-7-quick-fix"
+    assert naming.branch_prefixes("WS-7", None) == ["ws-7-"]
+    assert naming.branch_prefixes("PROJ-313", "PROJ-313") == ["proj-313-"]
+    assert naming.branch_prefixes("WS-7", "PROJ-313") == ["proj-313-", "ws-7-"]  # ticket set after the key
     assert naming.branch_carries_id("feat/PROJ-313-x", "WS-7", "PROJ-313")
     assert not naming.branch_carries_id("main", "WS-7", "PROJ-313")
     assert naming.symlink_name("WS-7", "PROJ-313", "a b") == "PROJ-313-a-b"

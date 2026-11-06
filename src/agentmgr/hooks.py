@@ -108,7 +108,7 @@ def on_session_start(conn, ws: db.Workstream, payload: dict) -> None:
     lines = [f"[wm] Live state of workstream {ws.label} (key {ws.key}):"]
     links = db.list_repos(conn, ws.key)
     errors = fetcher.fetch_stale(fetcher.SESSION_START_MAX_AGE, timeout=5, ws_key=ws.key)
-    prs = db.get_prs(conn, ws.key)
+    prs, branch_prs = db.get_prs(conn, ws.key), db.get_branch_prs(conn, ws.key)
     for link in links:
         try:
             st = gitops.status(Path(link.worktree_path), link.base)
@@ -121,7 +121,8 @@ def on_session_start(conn, ws: db.Workstream, payload: dict) -> None:
                 state += f" — consider rebasing onto {link.base}"
         except gitops.GitError as e:
             state = f"unavailable ({e})"
-        lines.append(f"- {Path(link.worktree_path).name}/: {state}; {gh.describe(prs.get(link.repo))}")
+        prs_text = gh.repo_prs(link, prs.get(link.repo), branch_prs.get(link.repo, [])).describe()
+        lines.append(f"- {Path(link.worktree_path).name}/: {state}; {prs_text}")
     if not links:
         lines.append("- no repos attached yet")
     if not (ws.path / "TASK.md").exists() or not ws.name or not links:

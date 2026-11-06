@@ -54,7 +54,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var drift: String?
     var allMerged: Bool
     var baseCi: String?
-    var readyToArchive: Bool?  // everything merged, CI green or none on base (or the example)
+    var readyToArchive: Bool?  // everything merged, CI passed or none on base (or the example)
     var repos: [RepoState]
 
     var id: String { key }
@@ -63,15 +63,16 @@ struct Workstream: Decodable, Identifiable, Equatable {
     /// Show the archive button instead of the status dot: done, and Claude isn't busy or waiting on a question.
     var offersArchive: Bool { readyToArchive == true && (status == .yourTurn || status == .stopped) }
 
-    /// The TUI's "merged → archive" hint, once every repo with work in it is merged.
+    /// The TUI's "merged → archive" hint, once every repo with work in it is merged. It starts with "merged", shown in
+    /// purple as on GitHub; `tone` colours the rest: grey when there's nothing left but to archive.
     var mergeHint: (text: String, tone: String)? {
         guard allMerged else { return nil }
         switch baseCi {
-        case "pass": return ("merged, CI green · ready to archive", "green")
+        case "pass": return ("merged, CI passed · ready to archive", "grey")
         case "fail": return ("merged, CI failing on base", "red")
         case "pending": return ("merged, CI running on base…", "yellow")
         case "n/a": return ("merged, CI unknown", "yellow")
-        default: return ("merged (no CI) · ready to archive", "purple")
+        default: return ("merged (no CI) · ready to archive", "grey")
         }
     }
 }
@@ -86,15 +87,32 @@ struct RepoState: Decodable, Identifiable, Equatable {
     var behind: Int
     var behindWarn: Bool
     var pr: String
-    var prUrl: String?
+    var prUrl: String?  // the PR that matters now: the open one, else the last merged
+    var prs: [PRLink]?  // every PR `pr` lists, the workstream's PRs from its other branches too; nil from an older wm
     var merged: Bool
     var fetchError: String?
 
     var id: String { repo }
 
-    /// What its top-bar chip shows after the name: the PR number, else how far behind base once that matters.
+    struct PRLink: Decodable, Equatable, Identifiable {
+        var number: Int
+        var url: String?
+        var label: String  // e.g. "PR #418 open ✓"
+        var id: Int { number }
+    }
+
+    /// The PRs to link to: those `pr` lists, or just `prUrl`'s from an older wm.
+    var prLinks: [PRLink] {
+        if let prs, !prs.isEmpty { return prs }
+        guard let prUrl, let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") })?.dropFirst(),
+              let n = Int(number) else { return [] }
+        return [PRLink(number: n, url: prUrl, label: pr)]
+    }
+
+    /// What its top-bar chip shows after the name: the number of the PR that matters now, else how far behind base
+    /// once that matters.
     var chipExtra: String? {
-        if let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") }) { return String(number) }
+        if let lead = prLinks.first(where: { $0.url == prUrl }) ?? prLinks.first { return "#\(lead.number)" }
         return behindWarn ? "\(behind)↓" : nil
     }
 

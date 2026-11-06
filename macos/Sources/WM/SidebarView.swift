@@ -117,7 +117,8 @@ struct WorkstreamRow: View {
 
     @ViewBuilder private var subtitle: some View {
         if let hint = ws.mergeHint, ws.status != .needsYou {
-            Text(hint.text).foregroundStyle(Color.tone(hint.tone))
+            Text("merged").foregroundStyle(Color.tone("purple"))
+                + Text(hint.text.dropFirst("merged".count)).foregroundStyle(Color.tone(hint.tone))
         } else {
             Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
         }
@@ -171,8 +172,8 @@ struct RepoMenu: View {
     let repo: RepoState
 
     var body: some View {
-        if let url = repo.prUrl {
-            Button("Open \(repo.pr.split(separator: " ").prefix(2).joined(separator: " "))") { model.open(url) }
+        ForEach(repo.prLinks) { pr in
+            if let url = pr.url { Button("Open PR #\(pr.number)") { model.open(url) } }
         }
         Button("Reveal Worktree in Finder") { model.reveal(repo.worktree) }
         Button("Copy Branch Name") {
