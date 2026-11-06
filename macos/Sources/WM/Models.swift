@@ -86,15 +86,32 @@ struct RepoState: Decodable, Identifiable, Equatable {
     var behind: Int
     var behindWarn: Bool
     var pr: String
-    var prUrl: String?
+    var prUrl: String?  // the PR that matters now: the open one, else the last merged
+    var prs: [PRLink]?  // every PR `pr` lists, the workstream's PRs from its other branches too; nil from an older wm
     var merged: Bool
     var fetchError: String?
 
     var id: String { repo }
 
-    /// What its top-bar chip shows after the name: the PR number, else how far behind base once that matters.
+    struct PRLink: Decodable, Equatable, Identifiable {
+        var number: Int
+        var url: String?
+        var label: String  // e.g. "PR #418 open ✓"
+        var id: Int { number }
+    }
+
+    /// The PRs to link to: those `pr` lists, or just `prUrl`'s from an older wm.
+    var prLinks: [PRLink] {
+        if let prs, !prs.isEmpty { return prs }
+        guard let prUrl, let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") })?.dropFirst(),
+              let n = Int(number) else { return [] }
+        return [PRLink(number: n, url: prUrl, label: pr)]
+    }
+
+    /// What its top-bar chip shows after the name: the number of the PR that matters now, else how far behind base
+    /// once that matters.
     var chipExtra: String? {
-        if let number = pr.split(separator: " ").first(where: { $0.hasPrefix("#") }) { return String(number) }
+        if let lead = prLinks.first(where: { $0.url == prUrl }) ?? prLinks.first { return "#\(lead.number)" }
         return behindWarn ? "\(behind)↓" : nil
     }
 

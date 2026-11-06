@@ -339,9 +339,9 @@ class Dashboard(App):
             ws, reports = result
             lines = [f"[b]Archive {ws.label}?[/b]", ""]
             for r in reports:
-                state, style = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.merged)
+                state, style = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
                 lines.append(f"{r.link.repo}  {escape(r.link.branch)}  [{style}]{escape(state)}[/]  "
-                             f"{gh.describe(r.pr)}")
+                             f"{r.describe_prs()}")
                 lines += [f"   [red]✗ {b}[/]" for b in r.blockers]
             blocked = any(r.blockers for r in reports)
             self.push_screen(Confirm("\n".join(lines), not blocked), archive)

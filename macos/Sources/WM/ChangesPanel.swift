@@ -176,12 +176,7 @@ private struct SoloHeader: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                if let state, let url = state.prUrl {
-                    Button(state.chipExtra ?? "PR") { model.open(url) }
-                        .buttonStyle(.link)
-                        .font(.caption)
-                        .help("Open \(state.pr)")
-                }
+                if let state { PRLinks(state: state) }
                 Spacer()
                 Button("All repos") { withAnimation(.snappy(duration: 0.2)) { model.pickRepo(nil) } }
                     .buttonStyle(.link)
@@ -191,6 +186,23 @@ private struct SoloHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+}
+
+/// A link per PR of the repo: "#415 #418", each opening it.
+private struct PRLinks: View {
+    @Environment(AppModel.self) private var model
+    let state: RepoState
+
+    var body: some View {
+        ForEach(state.prLinks) { pr in
+            if let url = pr.url {
+                Button("#\(pr.number)") { model.open(url) }
+                    .buttonStyle(.link)
+                    .font(.caption)
+                    .help("Open \(pr.label)")
+            }
+        }
     }
 }
 
@@ -215,13 +227,7 @@ private struct RepoHeader: View {
             }
             Spacer(minLength: 6)
             if let state {
-                if let url = state.prUrl {
-                    let number = state.pr.split(separator: " ").dropFirst().first.map(String.init)  // "PR #412 open"
-                    Button(number ?? "PR") { model.open(url) }
-                        .buttonStyle(.link)
-                        .font(.caption)
-                        .help("Open \(state.pr)")
-                }
+                PRLinks(state: state)
                 Text(state.state).font(.caption).foregroundStyle(Color.tone(state.tone)).lineLimit(1)
             }
         }

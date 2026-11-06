@@ -182,15 +182,15 @@ def archive(
     yes: Annotated[bool, typer.Option("--yes", "-y")] = False,
 ) -> None:
     """Stop the session and remove the worktrees (after a safety report)."""
-    from . import gh, view
+    from . import view
 
     svc = _service()
     ws = _run(svc.resolve, svc.db.connect(), ref)
     ws, reports = _run(svc.cleanup_report, ws.key)
     typer.echo(f"{ws.label}:")
     for r in reports:
-        state, _ = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.merged)
-        typer.echo(f"  {r.link.repo:<28} {r.link.branch:<40} {state} · {gh.describe(r.pr)}")
+        state, _ = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
+        typer.echo(f"  {r.link.repo:<28} {r.link.branch:<40} {state} · {r.describe_prs()}")
         for b in r.blockers:
             typer.secho(f"    ✗ {b}", fg="red")
     if any(r.blockers for r in reports) and not force:

@@ -50,6 +50,8 @@ def _repo(rr: view.RepoRow) -> dict:
         "state": rr.state, "tone": TONES.get(rr.style, ""), "behind": rr.behind,
         "behind_warn": rr.behind >= fetcher.BEHIND_WARN, "pr": rr.pr, "pr_url": rr.pr_url, "merged": rr.merged,
         "fetch_error": rr.fetch_error,
+        # each PR the PR column lists, to link to; pr_url is the one that matters now
+        "prs": [{"number": p.number, "url": p.url, "label": gh.describe(p)} for p in rr.prs],
     }
 
 
@@ -257,9 +259,9 @@ class Server:
         ws, reports = workstream.cleanup_report(key)
         repos = []
         for r in reports:
-            label, style = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.merged)
+            label, style = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
             repos.append({"repo": r.link.repo, "branch": r.link.branch, "state": label,
-                          "tone": TONES.get(style, ""), "pr": gh.describe(r.pr), "blockers": r.blockers})
+                          "tone": TONES.get(style, ""), "pr": r.describe_prs(), "blockers": r.blockers})
         return {"label": ws.label, "repos": repos, "blocked": any(r.blockers for r in reports)}
 
     def rpc_archive(self, key: str, force: bool = False) -> dict:

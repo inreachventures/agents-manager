@@ -1,4 +1,5 @@
 import sqlite3
+from dataclasses import replace
 
 import pytest
 
@@ -56,6 +57,42 @@ def pr(state="open", checks=None, draft=False, review=None, mergeable=None, merg
 ])
 def test_git_state(status, pull, kw, label, style):
     assert view.git_state(LINK, status, pull, **kw) == (label, style)
+
+
+def other(number, state, checks=None, base="main", **kw):
+    """A PR from another of the workstream's branches."""
+    return db.PR("WS-1", "r", number, state, False, kw.pop("review", None), checks, f"u{number}", 0,
+                 head=f"ws-1-{number}", base=base, **kw)
+
+
+@pytest.mark.parametrize(("status", "pull", "others", "kw", "label", "style"), [
+    # the branch's own PR is closed or missing: an open one from another branch says what's next
+    (st(), pr("closed"), [other(8, "open", "pass", review="APPROVED", merge_state="CLEAN")], {},
+     "● ready to merge", "bold medium_purple1"),
+    (st(ahead=0), pr("none"), [other(8, "open", "fail")], {}, "✗ CI failing", "bold red"),
+    (st(unpushed=2), None, [other(8, "open", "pass")], {}, "↑ needs push (2)", "yellow"),  # local work first
+    # the bottom of a stack (into main) goes first
+    (st(), pr("none"), [other(8, "open", "pending", base="ws-1-9"), other(9, "open", "fail")], {},
+     "✗ CI failing", "bold red"),
+    # own PR merged, or its changes in main, while another one is still open
+    (st(unpushed=3), pr("merged", "pass"), [other(8, "open", "pending")], {}, "… CI running", view.BLUE),
+    (st(), pr("closed"), [other(8, "open", "pass", review="REVIEW_REQUIRED")], {"in_base": True},
+     "awaiting review", view.BLUE),
+    (st(dirty=1), pr("merged", "pass"), [other(8, "open")], {}, "merged · 1 uncommitted", "yellow"),
+    # nothing of its own: a merged PR from another branch is the work landing; its merge's CI is the base's
+    (st(ahead=0), pr("none"), [other(8, "merged", "fail")], {}, "✗ merged · CI failing on main", "bold red"),
+    (st(ahead=0), pr("closed"), [other(8, "merged", None), other(9, "merged", "pass", merged_at=2)], {},
+     "✓ merged", "bold green"),
+    (st(ahead=0, dirty=2), None, [other(8, "merged", "pass")], {}, "merged · 2 uncommitted", "yellow"),
+    # commits of its own that didn't land: the other branch's merge doesn't cover them
+    (st(), pr("closed"), [other(8, "merged", "pass")], {}, "PR closed, not merged", "grey50"),
+    (st(), pr("none"), [other(8, "merged", "pass")], {}, "needs PR", "cyan"),
+    # own PR merged after the other one: its merge's CI is the base's
+    (st(), replace(pr("merged", "fail"), merged_at=2), [other(8, "merged", None, merged_at=1)], {},
+     "✗ merged · CI failing on main", "bold red"),
+])
+def test_git_state_with_other_branches(status, pull, others, kw, label, style):
+    assert view.git_state(LINK, status, pull, others=others, **kw) == (label, style)
 
 
 def _row(ws_key):
@@ -146,6 +183,41 @@ def test_landed_from_another_branch(env, monkeypatch):
     assert report.merged and not report.blockers  # local-only commits and the closed PR's head don't block
     ws_mod.archive(ws.key)
     assert not gitops.branch_exists(env.code / "acme-web", "proj-6-stack-me")
+
+
+def _set_branch_prs(ws_key, repo, *prs):
+    db.set_branch_prs(db.connect(), ws_key, repo, [
+        db.PR(ws_key, repo, n, state, False, None, checks, f"u{n}", 0, head=head, base="main", merged_at=n)
+        for n, head, state, checks in prs])
+
+
+def test_landed_through_other_branches(env, monkeypatch):
+    """The workstream branch has no commits of its own: the work goes through PRs from other proj-9-… branches."""
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-9", name="other branches", repo_queries=["web"])
+    _set_pr(ws.key, "acme-web", "none")
+    _set_branch_prs(ws.key, "acme-web", (11, "proj-9-part-1", "merged", None), (12, "proj-9-part-2", "open", "pass"))
+    [rr] = _row(ws.key).repos
+    assert (rr.git, rr.pr, rr.pr_url) == ("● ready to merge", "PRs #11 merged, #12 open ✓", "u12")
+    assert not _row(ws.key).all_merged and [p.number for p in rr.prs] == [11, 12]
+    assert not ws_mod.cleanup_report(ws.key, refresh_prs=False)[1][0].merged
+
+    _set_branch_prs(ws.key, "acme-web", (11, "proj-9-part-1", "merged", None),
+                    (12, "proj-9-part-2", "merged", "pending"), (13, "proj-9-abandoned", "closed", None))
+    row = _row(ws.key)
+    assert (row.repos[0].git, row.repos[0].pr) == ("… merged · CI running on main", "PRs #11 merged, #12 merged · CI …")
+    assert row.all_merged and row.base_ci == "pending"
+    _, [report] = ws_mod.cleanup_report(ws.key, refresh_prs=False)
+    assert report.merged and not report.blockers and report.describe_prs() == "PRs #11 merged, #12 merged · CI …"
+
+    # a commit of its own that no PR brought to main: not landed
+    wt = ws.path / "acme-web"
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "PROJ-9 more")
+    (wt / "f.txt").write_text("x")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-9 more")
+    row = _row(ws.key)
+    assert row.repos[0].git == "↑ needs push (2)" and not row.all_merged
 
 
 def test_conflicting_branch_is_not_in_base(env):

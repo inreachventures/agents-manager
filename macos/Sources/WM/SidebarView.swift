@@ -171,8 +171,8 @@ struct RepoMenu: View {
     let repo: RepoState
 
     var body: some View {
-        if let url = repo.prUrl {
-            Button("Open \(repo.pr.split(separator: " ").prefix(2).joined(separator: " "))") { model.open(url) }
+        ForEach(repo.prLinks) { pr in
+            if let url = pr.url { Button("Open PR #\(pr.number)") { model.open(url) } }
         }
         Button("Reveal Worktree in Finder") { model.reveal(repo.worktree) }
         Button("Copy Branch Name") {

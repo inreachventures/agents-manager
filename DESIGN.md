@@ -133,9 +133,18 @@ prompt when resuming a stopped session; Claude resolves, tests and pushes.
 
 ### PR status (D10)
 
-`gh pr list --repo <remote> --head <branch> --state all --json number,state,isDraft,reviewDecision,statusCheckRollup,url`,
-cached in SQLite, refreshed every ~60s while the dashboard is open and on demand. If `gh` isn't authenticated,
-show "PR: n/a" instead of failing. MVP doesn't create PRs; Claude does that via `gh` when asked.
+`gh pr list --state all --search "head:<ticket-or-key>-" --json number,state,isDraft,reviewDecision,statusCheckRollup,url,headRefName,baseRefName,…`
+per repo: GitHub's `head:` qualifier matches by prefix, so one search finds the PRs of the workstream branch and of
+any other branch whose name carries the workstream's prefix (a stack, a re-cut branch); the brief asks Claude to name
+such branches that way. A branch without the prefix (`--branch` on `add-repo`) is also looked up by name (`--head`),
+and a branch another workstream has in the same repo is left to that one. Cached in SQLite: `prs` holds the
+workstream branch's PR (open first, else the most recently updated; or none / n/a), `branch_prs` every PR found (a
+table of its own so an older `wm` reading the same database keeps working). Refreshed every ~60s while a dashboard is
+open and on demand. If `gh` isn't authenticated, show "PR n/a" instead of failing. MVP doesn't create PRs; Claude does
+that via `gh` when asked.
+
+The PR column lists them all but the closed ones (`PRs #415 merged, #418 open ✓`), or the one PR as before. Base CI
+is read for the last merged PR only: its merge commit is where the work's latest state landed.
 
 The Git column shows one state per repo, from git plus the cached PR (`view.git_state`, first match wins):
 broken (worktree missing, wrong branch, rebase/merge in progress) → merged (leftover uncommitted work or commits after
@@ -149,6 +158,14 @@ Only the PR whose head is the workstream branch is tracked, but work often reach
 last PR of a stack, a re-cut branch, a cherry-pick. So git decides too: if merging the branch into base would change
 nothing (`git merge-tree --write-tree base HEAD` equals base's tree, `gitops.in_base`), the repo is `✓ already in base`
 whatever its own PR says. It then counts as merged for archiving, and `wm rebase` skips it.
+
+PRs from the workstream's other branches (`gh.RepoPRs`) change three things. An open one is what's next once the
+branch's own PR is merged, closed or missing: after the local-work rules (which are about the worktree branch), the
+Git column shows that PR's state; with several, the one into the base branch (the bottom of a stack) goes first. A
+merged one stands for the branch's own when the branch has no commits of its own (`✓ merged`, with that merge's CI).
+And a repo only counts as merged for archiving once no PR is open: its own PR merged or its changes in base, or no
+commits of its own and a PR from another branch merged. Commits of its own that no PR brought to base still show
+(`PR closed, not merged`, `needs PR`).
 
 ### Workstream startup: voice intake, then work
 
@@ -354,12 +371,7 @@ for everything that matters: no daemon, no web server, sessions in the manager's
 3. **Merge repo settings**: each repo's `.claude/settings.json` / `.mcp.json` into the workstream's.
 4. **Collision badge**: `git merge-tree --write-tree` between active branches of the same repo (informational).
 5. launchd / login auto-start, other terminals (iTerm2 `-CC`, Ghostty).
-6. **Several PRs per repo** (stacks, re-cut branches). Only the PR whose head is the workstream branch is tracked
-   (`prs` holds one row per workstream and repo), so PRs opened from other branches are invisible: PROJ-313 shows
-   `PR #412 closed` while #415 and #418, from other `proj-313-…` branches, brought the work into main. `gitops.in_base`
-   already fixes the Git column once everything has landed; this would fix the PR column and show a stack while it is
-   open. Sketch: also list PRs whose head branch starts with `<ticket-or-key>-` (or whose title has the ident), store
-   them by number, show the stack in the PR column (e.g. `#415 merged · #418 open ✓`), and take the repo's state from the
-   open one closest to the base. Open questions: have the brief ask Claude to name stack branches
-   `<workstream-branch>-<suffix>` so matching is exact; which of `git_state`'s rules apply to a PR whose head isn't the
-   worktree's HEAD (e.g. local work vs that PR's checks).
+6. **Several PRs per repo, next steps.** PRs from branches named `<ticket-or-key>-…` are tracked (see PR status).
+   Not yet: PRs from branches without the prefix (matching the ident in the title, or `Closes PROJ-313`); a stack
+   shown as a stack (`#415 → #418`, from `baseRefName`) rather than a list; telling which branch each PR comes from in
+   the dashboard.

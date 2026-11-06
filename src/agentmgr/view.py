@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -16,14 +17,15 @@ class RepoRow:
     link: db.RepoLink
     state: str  # what this repo needs next (see git_state); empty when git status wasn't read
     pr: str
-    pr_url: str | None
-    merged: bool  # PR merged, or the branch's changes are already in base
-    base_ci: str | None = None  # merged PR: CI of the merge commit on the base branch (pass/fail/pending/None)
+    pr_url: str | None  # the PR to open: the open one, else the last merged (gh.RepoPRs.lead)
+    merged: bool  # the work reached base (gh.RepoPRs.landed)
+    base_ci: str | None = None  # last merged PR: CI of the merge commit on the base branch (pass/fail/pending/None)
     behind: int = 0  # commits on base the branch doesn't have; 0 once merged, where it no longer matters
     style: str = ""  # rich style for `state`
     untouched: bool = False  # no commits, changes or PR: doesn't hold up archiving the workstream
     fetched_ok_at: float | None = None
     fetch_error: str | None = None
+    prs: list[db.PR] = field(default_factory=list)  # the PRs the PR column lists (gh.RepoPRs.shown)
 
     @property
     def git(self) -> str:
@@ -56,7 +58,8 @@ class Row:
         return {
             "key": self.ws.key, "ticket": self.ws.ticket, "name": self.ws.name, "status": self.status,
             "status_text": self.status_text, "folder": self.ws.folder, "intake": self.intake,
-            "repos": [{"repo": r.link.repo, "branch": r.link.branch, "git": r.git, "pr": r.pr, "pr_url": r.pr_url}
+            "repos": [{"repo": r.link.repo, "branch": r.link.branch, "git": r.git, "pr": r.pr, "pr_url": r.pr_url,
+                       "prs": [{"number": p.number, "state": p.state, "url": p.url} for p in r.prs]}
                       for r in self.repos],
         }
 
@@ -83,10 +86,14 @@ BLUE = "dodger_blue1"  # waiting on someone else (CI, reviewers)
 
 
 def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
-              operation: str | None = None, after_pr: int = 0, in_base: bool = False) -> tuple[str, str]:
+              operation: str | None = None, after_pr: int = 0, in_base: bool = False,
+              others: Sequence[db.PR] = ()) -> tuple[str, str]:
     """What this repo needs next, as (label, rich style). First match wins: broken, merged, already in base, closed,
-    local work (which makes the PR's own checks stale), then the open PR. `after_pr`: local commits after a merged
-    PR's head. `in_base`: the branch's changes reached base some other way (see gitops.in_base)."""
+    local work (which makes the PR's own checks stale), then the open PR. `pr`: the worktree branch's PR. `after_pr`:
+    local commits after a merged PR's head. `in_base`: the branch's changes reached base some other way (see
+    gitops.in_base). `others`: PRs from the workstream's other branches (gh.RepoPRs): an open one says what's next
+    once the branch's own PR is merged, closed or missing, and a merged one counts as the branch's when the branch
+    has no commits of its own."""
     base = link.base.removeprefix("origin/")
     if st is None:
         return "⚠ worktree missing", "bold red"
@@ -94,21 +101,23 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
         return f"⚠ on {st.branch or 'detached HEAD'}", "bold red"
     if operation:
         return f"⚠ {operation} in progress", "bold red"
+    prs = gh.RepoPRs(base, pr, list(others))
+    open_pr, last = prs.open(), prs.last_merged()
     state = pr.state if pr else None
     if state == "merged":
         if st.dirty:
             return f"merged · {st.dirty} uncommitted", "yellow"
         if after_pr:
             return f"merged · {after_pr} commit{'s' * (after_pr != 1)} not in PR", "yellow"
-        return {
-            "fail": (f"✗ merged · CI failing on {base}", "bold red"),
-            "pending": (f"… merged · CI running on {base}", BLUE),
-            "n/a": ("merged · CI unknown", "yellow"),
-        }.get(pr.checks, ("✓ merged", "bold green"))
+        return _pr_state(open_pr, base) if open_pr else _merged(last.checks, base)
     if in_base:
         if st.dirty:
             return f"already in {base} · {st.dirty} uncommitted", "yellow"
-        return f"✓ already in {base}", "bold green"
+        return _pr_state(open_pr, base) if open_pr else (f"✓ already in {base}", "bold green")
+    if open_pr:
+        pr, state = open_pr, "open"  # the branch's own PR is closed or missing: the open one is what's next
+    elif last and not st.ahead_of_base:  # nothing of its own: the work landed through other branches
+        return (f"merged · {st.dirty} uncommitted", "yellow") if st.dirty else _merged(last.checks, base)
     if state == "closed":
         return "PR closed, not merged", "grey50"
     if st.dirty:
@@ -121,6 +130,20 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
         return "needs PR", "cyan"
     if state != "open":  # PR status not fetched yet, or gh failed
         return "pushed · PR ?", "grey50"
+    return _pr_state(pr, base)
+
+
+def _merged(checks: str | None, base: str) -> tuple[str, str]:
+    """The work is merged: what the base branch's CI says about it."""
+    return {
+        "fail": (f"✗ merged · CI failing on {base}", "bold red"),
+        "pending": (f"… merged · CI running on {base}", BLUE),
+        "n/a": ("merged · CI unknown", "yellow"),
+    }.get(checks, ("✓ merged", "bold green"))
+
+
+def _pr_state(pr: db.PR, base: str) -> tuple[str, str]:
+    """What an open PR is waiting for."""
     if pr.is_draft:
         return "draft PR", "grey50"
     if pr.checks == "fail":
@@ -201,26 +224,27 @@ def load(include_archived: bool = False, git_status: bool = True, git_max_age: f
     rows = []
     for ws in db.list_workstreams(conn, include_archived=include_archived):
         links = db.list_repos(conn, ws.key)
-        prs = db.get_prs(conn, ws.key)
+        prs, branch_prs = db.get_prs(conn, ws.key), db.get_branch_prs(conn, ws.key)
         intake = not (ws.name and links and (ws.path / templates.TASK_FILE).exists())
         status, text = _status(ws, ws.key in live, intake)
         row = Row(ws, status, text, intake)
         max_age = max(git_max_age, STOPPED_GIT_MAX_AGE) if git_max_age and status == db.STOPPED else git_max_age
         for link in links:
-            pr = prs.get(link.repo)
-            pr_merged = bool(pr and pr.state == "merged")
-            merged, state, style, behind, untouched = pr_merged, "", "", 0, False
+            rp = gh.repo_prs(link, prs.get(link.repo), branch_prs.get(link.repo, []))
+            pr = rp.own
+            merged, state, style, behind, untouched = rp.landed(None, False), "", "", 0, False
             if git_status and ws.status != db.ARCHIVED:
                 st, operation, after_pr, in_base = _read_git(ws, link, pr, max_age)
-                state, style = git_state(link, st, pr, operation, after_pr, in_base)
-                merged = pr_merged or in_base  # in_base: e.g. landed by the last PR of a stack, from another branch
+                state, style = git_state(link, st, pr, operation, after_pr, in_base, rp.others)
+                merged = rp.landed(st.ahead_of_base if st else None, in_base)
                 if st:
                     behind = 0 if merged else st.behind_base
-                    untouched = not (st.dirty or st.ahead_of_base) and not (pr and pr.state in ("open", "merged"))
+                    untouched = not (st.dirty or st.ahead_of_base) and not rp.active
             f = fetches.get(link.repo_path)
-            row.repos.append(RepoRow(link, state, gh.describe(pr), pr.url if pr else None, merged,
-                                     pr.checks if pr_merged else None, behind, style, untouched,
-                                     f["ok_at"] if f else None, f["error"] if f else None))
+            lead, last = rp.lead(), rp.last_merged()
+            row.repos.append(RepoRow(link, state, rp.describe(), lead.url if lead else None, merged,
+                                     last.checks if last else None, behind, style, untouched,
+                                     f["ok_at"] if f else None, f["error"] if f else None, rp.shown()))
         rows.append(row)
     rows.sort(key=lambda r: (SORT.get(r.status, 9), -r.ws.status_at))
     return rows

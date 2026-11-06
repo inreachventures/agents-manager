@@ -44,6 +44,12 @@ def branch_name(key: str, ticket: str | None, name: str) -> str:
     return f"{(ticket or key).lower()}-{slug(name)}"
 
 
+def branch_prefixes(key: str, ticket: str | None) -> list[str]:
+    """How the workstream's branches start: ['proj-313-'], or ['proj-313-', 'ws-7-'] when the ticket was set after the
+    key (branches made before then carry the key)."""
+    return list(dict.fromkeys(f"{ident.lower()}-" for ident in (ticket, key) if ident))
+
+
 def branch_carries_id(branch: str, key: str, ticket: str | None) -> bool:
     b = branch.lower()
     return any(ident.lower() in b for ident in (ticket, key) if ident)

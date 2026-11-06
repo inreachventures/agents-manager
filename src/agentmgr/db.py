@@ -52,6 +52,27 @@ CREATE TABLE IF NOT EXISTS prs (
     head_sha    TEXT,   -- PR head commit, to spot local commits made after a merge
     PRIMARY KEY (ws_key, repo)
 );
+-- Every PR from the workstream's branches in a repo: the worktree branch's (the one in prs) and those from its other
+-- branches, e.g. a stack or a re-cut branch (see gh.refresh). A table of its own, rather than more rows or columns in
+-- prs, so an older wm reading the same database still works.
+CREATE TABLE IF NOT EXISTS branch_prs (
+    ws_key      TEXT NOT NULL,
+    repo        TEXT NOT NULL,
+    number      INTEGER NOT NULL,
+    head        TEXT NOT NULL,
+    base        TEXT,
+    state       TEXT NOT NULL,
+    is_draft    INTEGER,
+    review      TEXT,
+    checks      TEXT,
+    url         TEXT,
+    fetched_at  REAL NOT NULL,
+    mergeable   TEXT,
+    merge_state TEXT,
+    head_sha    TEXT,
+    merged_at   REAL,
+    PRIMARY KEY (ws_key, repo, number)
+);
 CREATE TABLE IF NOT EXISTS fetches (
     repo_path  TEXT PRIMARY KEY,
     fetched_at REAL NOT NULL,   -- last attempt
@@ -129,6 +150,9 @@ class PR:
     mergeable: str | None = None
     merge_state: str | None = None
     head_sha: str | None = None
+    head: str | None = None  # head and base branch and merge time: only in branch_prs
+    base: str | None = None
+    merged_at: float | None = None
 
 
 _local = threading.local()  # .conn: (path, connection) of this thread
@@ -256,6 +280,13 @@ def insert_repo(conn: sqlite3.Connection, link: RepoLink) -> None:
 def delete_repo(conn: sqlite3.Connection, ws_key: str, repo: str) -> None:
     conn.execute("DELETE FROM repos WHERE ws_key = ? AND repo = ?", (ws_key, repo))
     conn.execute("DELETE FROM prs WHERE ws_key = ? AND repo = ?", (ws_key, repo))
+    conn.execute("DELETE FROM branch_prs WHERE ws_key = ? AND repo = ?", (ws_key, repo))
+
+
+def other_branches(conn: sqlite3.Connection, ws_key: str, repo_path: str) -> set[str]:
+    """Branches other workstreams have in the same repo."""
+    rows = conn.execute("SELECT branch FROM repos WHERE repo_path = ? AND ws_key != ?", (repo_path, ws_key))
+    return {r["branch"] for r in rows}
 
 
 def upsert_pr(conn: sqlite3.Connection, pr: PR) -> None:
@@ -270,6 +301,24 @@ def upsert_pr(conn: sqlite3.Connection, pr: PR) -> None:
 def get_prs(conn: sqlite3.Connection, ws_key: str) -> dict[str, PR]:
     rows = conn.execute("SELECT * FROM prs WHERE ws_key = ?", (ws_key,))
     return {r["repo"]: PR(**{**dict(r), "is_draft": bool(r["is_draft"])}) for r in rows}
+
+
+def set_branch_prs(conn: sqlite3.Connection, ws_key: str, repo: str, prs: list[PR]) -> None:
+    with transaction(conn):
+        conn.execute("DELETE FROM branch_prs WHERE ws_key = ? AND repo = ?", (ws_key, repo))
+        conn.executemany(
+            "INSERT INTO branch_prs (ws_key, repo, number, head, base, state, is_draft, review, checks, url, "
+            "fetched_at, mergeable, merge_state, head_sha, merged_at) VALUES (:ws_key, :repo, :number, :head, :base, "
+            ":state, :is_draft, :review, :checks, :url, :fetched_at, :mergeable, :merge_state, :head_sha, :merged_at)",
+            [{**pr.__dict__, "is_draft": int(pr.is_draft)} for pr in prs],
+        )
+
+
+def get_branch_prs(conn: sqlite3.Connection, ws_key: str) -> dict[str, list[PR]]:
+    out: dict[str, list[PR]] = {}
+    for r in conn.execute("SELECT * FROM branch_prs WHERE ws_key = ? ORDER BY number", (ws_key,)):
+        out.setdefault(r["repo"], []).append(PR(**{**dict(r), "is_draft": bool(r["is_draft"])}))
+    return out
 
 
 def record_fetch(conn: sqlite3.Connection, repo_path: str, error: str | None) -> None:
