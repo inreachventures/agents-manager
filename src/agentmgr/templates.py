@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -193,6 +194,19 @@ def settings_json(ws: Workstream, wm: str, checkouts: list[str]) -> str:
 
 def write(ws: Workstream, repos: list[RepoLink], available_repos: list[str], wm: str,
           checkouts: list[str], memory_dir: Path, pending_repos: list[str] | None = None) -> None:
-    (ws.path / "CLAUDE.md").write_text(claude_md(ws, repos, available_repos, memory_dir, pending_repos))
+    _replace(ws.path / "CLAUDE.md", claude_md(ws, repos, available_repos, memory_dir, pending_repos))
     (ws.path / ".claude").mkdir(exist_ok=True)
-    (ws.path / ".claude" / "settings.json").write_text(settings_json(ws, wm, checkouts))
+    _replace(ws.path / ".claude" / "settings.json", settings_json(ws, wm, checkouts))
+
+
+def _replace(path: Path, text: str) -> None:
+    """Write only a change, and in one step: Claude Code may be reading the file right then (it re-reads CLAUDE.md
+    after a compaction, and watches settings.json), and must never see it empty or half-written."""
+    try:
+        if path.read_text() == text:
+            return
+    except OSError:
+        pass
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)
