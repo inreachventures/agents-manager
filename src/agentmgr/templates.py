@@ -80,11 +80,19 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         for r in repos:
             folder = Path(r.worktree_path).name + "/"
             out.append(f"| {folder} | {r.repo} | {r.branch} | {r.base} | {r.repo_path} |")
+        imports = repo_instruction_imports(repos)
+        if imports:
+            # Claude Code loads a subfolder's CLAUDE.md only once Claude reads or edits a file there, and a compaction
+            # summarises it away until that happens again; imported here, it holds from the first message and is
+            # re-read from disk after every compaction, with the rest of this file.
+            out += ["", "Each repo's own instructions, which apply to all work in that repo:", ""]
+            out += [f"@{path}" for path in imports]
     else:
         out.append("(none attached yet)")
     ident = ws.ticket or key
     # Also during intake: the first session starts then and usually carries on with the task, and a running session
-    # doesn't re-read this file, so a rule added only once TASK.md exists would miss the session that does the work.
+    # re-reads this file only after a compaction, so a rule added only once TASK.md exists could miss the session that
+    # does the work.
     scope = (f"This session is for {title} only." if has_task
              else "Once intake has set this workstream's task, this session is for that task only.")
     out += [
@@ -141,6 +149,19 @@ HOOK_EVENTS = {
     "Stop": None,
     "SessionEnd": None,
 }
+
+
+REPO_INSTRUCTION_FILES = ("CLAUDE.md", ".claude/CLAUDE.md")
+
+
+def repo_instruction_imports(repos: list[RepoLink]) -> list[str]:
+    """`<folder>/CLAUDE.md` for each attached repo whose worktree has one. Only files that exist: Claude Code skips a
+    missing import silently, but Claude still sees the line and goes looking for the file."""
+    found = []
+    for r in repos:
+        wt = Path(r.worktree_path)
+        found += [f"{wt.name}/{name}" for name in REPO_INSTRUCTION_FILES if (wt / name).is_file()]
+    return found
 
 
 def allowed_tools(ws: Workstream, memory_dir: Path) -> list[str]:

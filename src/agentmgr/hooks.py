@@ -10,7 +10,7 @@ import os
 import sys
 from pathlib import Path
 
-from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
+from . import db, fetcher, gh, gitops, guard, naming, notify, tmux, workstream
 from .config import get_config
 
 PROMPT_OPTION = "@wm_prompt"  # shown in the pane's top border by tmux.conf
@@ -102,7 +102,13 @@ def last_prompt(transcript: Path) -> str:
 
 
 def on_session_start(conn, ws: db.Workstream, payload: dict) -> None:
-    _transition(conn, ws, db.YOUR_TURN, None)
+    if payload.get("source") == "compact":
+        # Auto-compaction happens mid-turn, so Claude is still working: leave the status alone. Claude Code re-reads
+        # CLAUDE.md from disk after a compaction, so bring its repo imports up to date (a repo may have gained a
+        # CLAUDE.md since it was attached); if this lands after that read, the next compaction or resume picks it up.
+        workstream.regenerate(conn, ws)
+    else:
+        _transition(conn, ws, db.YOUR_TURN, None)
     if payload.get("transcript_path"):  # resumed session: show the prompt the history ends with
         _show_prompt(ws, last_prompt(Path(payload["transcript_path"])))
     lines = [f"[wm] Live state of workstream {ws.label} (key {ws.key}):"]

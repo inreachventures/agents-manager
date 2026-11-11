@@ -329,3 +329,20 @@ def test_a_failed_fetch_is_tried_once_more(env, monkeypatch):
     calls.clear()
     monkeypatch.setattr(gitops, "fetch_base", slow)
     assert fetcher.fetch_stale(0) == {str(env.code / "acme-web"): "timed out"} and len(calls) == 1  # not again
+
+
+def test_claude_md_imports_each_repos_own_instructions(env):
+    # Claude Code would load a repo's CLAUDE.md only once Claude touches a file there, and lose it to the next
+    # compaction; imported from the workstream's CLAUDE.md it is there from the start and re-read after compaction
+    ws = new(name="x y", repo_queries=["web"])
+    worktree = ws.path / "acme-web"
+    md = (ws.path / "CLAUDE.md").read_text()
+    assert "@acme-web/" not in md  # no import of a file that isn't there
+
+    (worktree / "CLAUDE.md").write_text("# acme-web rules\n")
+    (worktree / ".claude").mkdir(exist_ok=True)
+    (worktree / ".claude" / "CLAUDE.md").write_text("# more rules\n")
+    ws_mod.regenerate(db.connect(), ws)
+    md = (ws.path / "CLAUDE.md").read_text()
+    assert "\n@acme-web/CLAUDE.md\n@acme-web/.claude/CLAUDE.md\n" in md
+    assert md.index("@acme-web/CLAUDE.md") < md.index("## Rules")
