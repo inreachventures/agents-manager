@@ -10,7 +10,9 @@ unidentified developer:
 - macOS 15 and later: open it once and close the warning, then in System Settings → Privacy & Security, scroll down
   and click **Open Anyway** next to "Workstreams" (it asks for your password once).
 - macOS 14: Control-click Workstreams in Applications and choose **Open**.
-- Or, in Terminal: `xattr -dr com.apple.quarantine /Applications/Workstreams.app`
+- Or, in Terminal: `/usr/bin/xattr -dr com.apple.quarantine /Applications/Workstreams.app`
+  (use the full path: a Python `xattr` installed with pip can shadow macOS's own on your PATH, and it doesn't know
+  `-r`)
 
 After that it opens normally. After an update macOS may ask again for the microphone (Claude Code's voice
 dictation), because each build is signed separately.
