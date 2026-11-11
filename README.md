@@ -36,7 +36,8 @@ in the middle, and what its branches change on the right. It carries `wm` and a 
 3. Open it. The app isn't signed with an Apple Developer ID, so the first time macOS blocks it as from an
    unidentified developer. Close the warning, then click **Open Anyway** in System Settings → Privacy & Security (on
    macOS 14: Control-click the app and choose **Open**). Or, in Terminal:
-   `xattr -dr com.apple.quarantine /Applications/Workstreams.app`.
+   `/usr/bin/xattr -dr com.apple.quarantine /Applications/Workstreams.app`. Use the full path: a Python `xattr`
+   installed with pip can shadow macOS's own on your PATH, and it doesn't know `-r`.
 
 A short tour points at each part of the window. `wm` looks for your repos in `~/code`; Settings → Repos changes that.
 
