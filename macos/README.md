@@ -15,6 +15,8 @@ repos in the top bar and what their branches change on the right.
   its worktree and its branch name. ⌘1–⌘9 pick the Nth repo, ⌘0 all of them.
 - **Session**: the real `claude` TUI, through a terminal view. Selecting a workstream switches to its session;
   stopped ones offer **Resume**, archived ones **Restore**.
+  Shift+Enter starts a new line in Claude's prompt; Enter sends it. Settings → Appearance keeps the app (terminal
+  included) light or dark whatever macOS is set to; Claude's own colours follow its `/theme`.
 - **Changes** (⌥⌘0): everything each branch changes since it forked from its base: commits, staged, unstaged and
   untracked files.
 - **Actions**: the `…` toolbar menu or the context menu, ⌘N new, ⇧⌘A add repo, ⇧⌘B rebase, ⌘⌫ archive, ⇧⌘↩

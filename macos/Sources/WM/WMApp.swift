@@ -29,6 +29,10 @@ struct WMApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppAppearance.saved.apply()  // before any window shows, so a light frame never flashes in Dark
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)  // also when run as a bare executable during development
         if ProcessInfo.processInfo.environment["WM_DEBUG_DIR"] == nil { NSApp.activate() }
@@ -108,6 +112,7 @@ struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @AppStorage("wmPath") private var wmPath = ""
     @AppStorage("optionAsMeta") private var optionAsMeta = false
+    @AppStorage(AppAppearance.key) private var appearance = AppAppearance.system
 
     var body: some View {
         TabView {
@@ -115,6 +120,19 @@ struct SettingsView: View {
                 RepoFoldersView()
             }
             .tabItem { Label("Repos", systemImage: "folder") }
+
+            Form {
+                Picker("Appearance", selection: $appearance) {
+                    ForEach(AppAppearance.allCases) { Text($0.label).tag($0) }
+                }
+                .pickerStyle(.segmented)
+                .onChange(of: appearance) { _, look in look.apply() }
+                Text("Light or Dark keeps the app, its terminal included, in that look whatever macOS is set to. "
+                     + "Claude's own colours are its theme: pick a matching one with /theme in a session.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .tabItem { Label("Appearance", systemImage: "circle.lefthalf.filled") }
 
             Form {
                 Toggle("Use Option as Meta key", isOn: $optionAsMeta)
@@ -150,6 +168,28 @@ struct SettingsView: View {
         }
         .padding(20)
         .frame(width: 520)
+    }
+}
+
+/// Settings › Appearance: follow macOS, or keep the app light or dark whatever macOS is set to.
+enum AppAppearance: String, CaseIterable, Identifiable {
+    case system, light, dark
+
+    static let key = "appearance"
+    static var saved: AppAppearance {
+        UserDefaults.standard.string(forKey: key).flatMap(AppAppearance.init(rawValue:)) ?? .system
+    }
+
+    var id: Self { self }
+    var label: String { rawValue.capitalized }
+
+    /// The terminal pane recolours itself when its effective appearance changes, so it follows too.
+    @MainActor func apply() {
+        switch self {
+        case .system: NSApp.appearance = nil
+        case .light: NSApp.appearance = NSAppearance(named: .aqua)
+        case .dark: NSApp.appearance = NSAppearance(named: .darkAqua)
+        }
     }
 }
 

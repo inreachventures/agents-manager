@@ -18,6 +18,28 @@ final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
     override init() {
         super.init()
         view.processDelegate = self
+        // Shift+Enter: a new line in Claude's prompt rather than submitting it. SwiftTerm sends a plain CR for it,
+        // the same as Enter, and its key handling can't be overridden (public, not open), so catch it before it
+        // gets there and send ESC CR (Meta+Enter), which Claude Code reads as a newline and tmux passes through.
+        NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard Self.isShiftReturn(event) else { return event }
+            // local monitors run on the main thread
+            let target = event.window
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard let self, let window = self.view.window, target === window,
+                      window.firstResponder === self.view, self.isAttached,
+                      !self.view.hasMarkedText() else { return false }  // an IME composing: let it commit
+                self.view.send(data: [0x1b, 0x0d])
+                return true
+            }
+            return handled ? nil : event
+        }
+    }
+
+    nonisolated static func isShiftReturn(_ event: NSEvent) -> Bool {
+        let returnKeys: Set<UInt16> = [36, 76]  // Return, keypad Enter
+        let mods = event.modifierFlags.intersection([.shift, .control, .option, .command])
+        return returnKeys.contains(event.keyCode) && mods == .shift
     }
 
     var isAttached: Bool { view.process.running }
