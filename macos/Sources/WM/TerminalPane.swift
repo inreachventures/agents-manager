@@ -27,7 +27,8 @@ final class TerminalController: NSObject, LocalProcessTerminalViewDelegate {
             let target = event.window
             let handled = MainActor.assumeIsolated { () -> Bool in
                 guard let self, let window = self.view.window, target === window,
-                      window.firstResponder === self.view, self.isAttached else { return false }
+                      window.firstResponder === self.view, self.isAttached,
+                      !self.view.hasMarkedText() else { return false }  // an IME composing: let it commit
                 self.view.send(data: [0x1b, 0x0d])
                 return true
             }

@@ -29,9 +29,12 @@ struct WMApp: App {
 }
 
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationWillFinishLaunching(_ notification: Notification) {
+        AppAppearance.saved.apply()  // before any window shows, so a light frame never flashes in Dark
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)  // also when run as a bare executable during development
-        AppAppearance.saved.apply()
         if ProcessInfo.processInfo.environment["WM_DEBUG_DIR"] == nil { NSApp.activate() }
     }
 
