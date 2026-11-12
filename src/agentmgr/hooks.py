@@ -102,7 +102,15 @@ def last_prompt(transcript: Path) -> str:
 
 
 def on_session_start(conn, ws: db.Workstream, payload: dict) -> None:
-    _transition(conn, ws, db.YOUR_TURN, None)
+    source = payload.get("source")
+    # Not on compaction: auto-compaction happens mid-turn, while Claude is still working. (A /compact typed by the user
+    # fires no UserPromptSubmit or Stop either, so an idle session stays "your turn".)
+    if source != "compact":
+        _transition(conn, ws, db.YOUR_TURN, None)
+    if source in ("compact", "clear"):
+        # Claude Code re-reads CLAUDE.md from disk now: bring its repo imports up to date (a repo may have gained a
+        # CLAUDE.md since it was attached). If this lands after that read, the next compaction or resume picks it up.
+        _regenerate(conn, ws)
     if payload.get("transcript_path"):  # resumed session: show the prompt the history ends with
         _show_prompt(ws, last_prompt(Path(payload["transcript_path"])))
     lines = [f"[wm] Live state of workstream {ws.label} (key {ws.key}):"]
@@ -128,6 +136,16 @@ def on_session_start(conn, ws: db.Workstream, payload: dict) -> None:
     if not (ws.path / "TASK.md").exists() or not ws.name or not links:
         lines.append("Intake is not complete — follow the Intake section of CLAUDE.md before changing code.")
     print("\n".join(lines))
+
+
+def _regenerate(conn, ws: db.Workstream) -> None:
+    """Without failing the hook: the live state printed after it is what Claude most needs after a compaction."""
+    try:
+        from . import workstream  # here, not at the top: it pulls in rapidfuzz, and every tool call runs a hook
+
+        workstream.regenerate(conn, ws)
+    except Exception as e:  # noqa: BLE001
+        _log(f"SessionStart: regenerate: {type(e).__name__}: {e}")
 
 
 def on_pre_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
@@ -228,9 +246,12 @@ def main(event: str) -> None:
         payload = json.loads(sys.stdin.read() or "{}")
         dispatch(event, payload)
     except Exception as e:  # noqa: BLE001
-        try:
-            log = get_config().home / "hooks.log"
-            with log.open("a") as f:
-                f.write(f"{event}: {type(e).__name__}: {e}\n")
-        except Exception:  # noqa: BLE001
-            pass
+        _log(f"{event}: {type(e).__name__}: {e}")
+
+
+def _log(line: str) -> None:
+    try:
+        with (get_config().home / "hooks.log").open("a") as f:
+            f.write(line + "\n")
+    except Exception:  # noqa: BLE001
+        pass

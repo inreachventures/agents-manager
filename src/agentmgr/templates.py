@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import shlex
 from pathlib import Path
 
@@ -80,11 +81,19 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         for r in repos:
             folder = Path(r.worktree_path).name + "/"
             out.append(f"| {folder} | {r.repo} | {r.branch} | {r.base} | {r.repo_path} |")
+        imports = repo_instruction_imports(repos)
+        if imports:
+            # Claude Code loads a subfolder's CLAUDE.md only once Claude reads or edits a file there, and a compaction
+            # summarises it away until that happens again; imported here, it holds from the first message and is
+            # re-read from disk after every compaction, with the rest of this file.
+            out += ["", "Each repo's own instructions, which apply to all work in that repo:", ""]
+            out += [f"@{path}" for path in imports]
     else:
         out.append("(none attached yet)")
     ident = ws.ticket or key
     # Also during intake: the first session starts then and usually carries on with the task, and a running session
-    # doesn't re-read this file, so a rule added only once TASK.md exists would miss the session that does the work.
+    # re-reads this file only after a compaction, so a rule added only once TASK.md exists could miss the session that
+    # does the work.
     scope = (f"This session is for {title} only." if has_task
              else "Once intake has set this workstream's task, this session is for that task only.")
     out += [
@@ -143,6 +152,19 @@ HOOK_EVENTS = {
 }
 
 
+REPO_INSTRUCTION_FILES = ("CLAUDE.md", ".claude/CLAUDE.md")
+
+
+def repo_instruction_imports(repos: list[RepoLink]) -> list[str]:
+    """`<folder>/CLAUDE.md` for each attached repo whose worktree has one. Only files that exist: Claude Code skips a
+    missing import silently, but Claude still sees the line and goes looking for the file."""
+    found = []
+    for r in repos:
+        wt = Path(r.worktree_path)
+        found += [f"{wt.name}/{name}" for name in REPO_INSTRUCTION_FILES if (wt / name).is_file()]
+    return found
+
+
 def allowed_tools(ws: Workstream, memory_dir: Path) -> list[str]:
     """Pre-approved tools, passed with --allowedTools rather than written to settings.json: project-level
     allow rules make Claude Code re-ask for folder trust on every new workstream folder."""
@@ -172,6 +194,19 @@ def settings_json(ws: Workstream, wm: str, checkouts: list[str]) -> str:
 
 def write(ws: Workstream, repos: list[RepoLink], available_repos: list[str], wm: str,
           checkouts: list[str], memory_dir: Path, pending_repos: list[str] | None = None) -> None:
-    (ws.path / "CLAUDE.md").write_text(claude_md(ws, repos, available_repos, memory_dir, pending_repos))
+    _replace(ws.path / "CLAUDE.md", claude_md(ws, repos, available_repos, memory_dir, pending_repos))
     (ws.path / ".claude").mkdir(exist_ok=True)
-    (ws.path / ".claude" / "settings.json").write_text(settings_json(ws, wm, checkouts))
+    _replace(ws.path / ".claude" / "settings.json", settings_json(ws, wm, checkouts))
+
+
+def _replace(path: Path, text: str) -> None:
+    """Write only a change, and in one step: Claude Code may be reading the file right then (it re-reads CLAUDE.md
+    after a compaction, and watches settings.json), and must never see it empty or half-written."""
+    try:
+        if path.read_text() == text:
+            return
+    except OSError:
+        pass
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    tmp.write_text(text)
+    os.replace(tmp, path)

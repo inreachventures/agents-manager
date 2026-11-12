@@ -172,3 +172,39 @@ def test_prompt_bar(env, monkeypatch, capsys, tmp_path):
 
     run_hook(monkeypatch, capsys, "SessionStart", {**base, "transcript_path": str(transcript)})
     assert shown[-1] == (ws.key, hooks.PROMPT_OPTION, "second ask")
+
+
+def test_compaction_keeps_status_and_refreshes_claude_md(env, monkeypatch, capsys):
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    base = {"session_id": ws.session_id, "cwd": ws.folder}
+    conn = db.connect()
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base)
+    (ws.path / "acme-web" / "CLAUDE.md").write_text("# acme-web rules\n")  # appeared after the repo was attached
+
+    # auto-compaction happens while Claude works: the session isn't waiting for the user
+    out = run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "compact"})
+    assert "acme-web/: on ws-1-x-y" in out
+    assert db.get_workstream(conn, ws.key).status == db.WORKING
+    assert "@acme-web/CLAUDE.md" in (ws.path / "CLAUDE.md").read_text()
+
+    run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "resume"})
+    assert db.get_workstream(conn, ws.key).status == db.YOUR_TURN
+
+    # /clear re-reads CLAUDE.md too
+    (ws.path / "acme-web" / "CLAUDE.md").unlink()
+    run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "clear"})
+    assert "@acme-web/CLAUDE.md" not in (ws.path / "CLAUDE.md").read_text()
+
+    # nothing changed: nothing is rewritten (Claude Code may be reading the file right then)
+    before = (ws.path / "CLAUDE.md").stat().st_mtime_ns, (ws.path / ".claude" / "settings.json").stat().st_mtime_ns
+    run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "compact"})
+    assert before == ((ws.path / "CLAUDE.md").stat().st_mtime_ns,
+                      (ws.path / ".claude" / "settings.json").stat().st_mtime_ns)
+
+    # a failure to regenerate is logged and still leaves Claude the live state
+    def broken(*a, **kw):
+        raise OSError("disk full")
+    monkeypatch.setattr(ws_mod, "regenerate", broken)
+    out = run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "compact"})
+    assert "acme-web/: on ws-1-x-y" in out
+    assert "regenerate: OSError: disk full" in (env.root / "home" / "hooks.log").read_text()
