@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import db, gitops, naming, repos, templates, tmux
+from . import claudetrust, db, gitops, naming, repos, templates, tmux
 from .config import Config, get_config
 
 
@@ -509,6 +509,7 @@ def start_session(ws: db.Workstream, initial_prompt: str | None = None, resume: 
     _check_session_tools()
     if tmux.has_session(ws.key):
         return
+    claudetrust.ensure_trusted(get_config().workstreams_dir, Path.home() / claudetrust.STATE_FILE_NAME)
     tmux.prune_views()  # an app view whose session was killed by an older wm still runs the previous Claude
     tmux.new_session(
         ws.key, ws.path, claude_command(ws, resume=resume, initial_prompt=initial_prompt),

@@ -307,7 +307,9 @@ def doctor() -> None:
     """Check required tools."""
     import shutil
     import subprocess
+    from pathlib import Path
 
+    from . import claudetrust
     from .config import get_config
 
     cfg = get_config()
@@ -325,27 +327,13 @@ def doctor() -> None:
     typer.echo(f"  home: {cfg.home}\n  workstreams: {cfg.workstreams_dir}\n  code roots: "
                + ", ".join(map(str, cfg.code_roots))
                + (f"\n  single repos: {', '.join(map(str, cfg.repos))}" if cfg.repos else ""))
-    if not _trusted(cfg.workstreams_dir):
-        typer.secho(
-            f"! {cfg.workstreams_dir} is not trusted by Claude Code yet: every new workstream will show the trust "
-            f"dialog. Fix once: mkdir -p {cfg.workstreams_dir} && cd {cfg.workstreams_dir} && claude "
-            "(choose 'Yes, I trust this folder', then exit)", fg="yellow")
+    if not claudetrust.is_trusted(cfg.workstreams_dir, Path.home() / claudetrust.STATE_FILE_NAME):
+        typer.secho(f"! {cfg.workstreams_dir} is not trusted by Claude Code yet: wm trusts it when it next "
+                    "starts a session.", fg="yellow")
     if not shutil.which("wm"):
         typer.secho("! `wm` is not on PATH; Claude sessions call it during intake", fg="yellow")
     if not ok:
         raise typer.Exit(1)
-
-
-def _trusted(folder) -> bool:
-    """Read-only check of Claude Code's folder trust (a trusted ancestor covers subfolders)."""
-    from pathlib import Path
-
-    try:
-        projects = json.loads((Path.home() / ".claude.json").read_text()).get("projects", {})
-    except (OSError, ValueError):
-        return False
-    folder = Path(folder).resolve()
-    return any(projects.get(str(p), {}).get("hasTrustDialogAccepted") for p in (folder, *folder.parents))
 
 
 # ---------------------------------------------------------------------------- internal (hooks / tmux)
