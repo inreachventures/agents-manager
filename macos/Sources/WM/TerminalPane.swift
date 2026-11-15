@@ -123,7 +123,16 @@ final class WMTerminalView: LocalProcessTerminalView {
 
     static let background = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0.11, green: 0.11, blue: 0.12, alpha: 1) : .white
+            ? NSColor(srgbRed: 0x28 / 255, green: 0x2c / 255, blue: 0x34 / 255, alpha: 1) : .white
+    }
+
+    /// Ghostty's default palette (dark mode); light mode restores SwiftTerm's own default, `Color.terminalAppColors`.
+    private static let ghosttyAnsi: [SwiftTerm.Color] = [
+        0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
+        0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
+    ].map { hex in
+        SwiftTerm.Color(red: UInt16((hex >> 16) & 0xff) * 257, green: UInt16((hex >> 8) & 0xff) * 257,
+                        blue: UInt16(hex & 0xff) * 257)
     }
 
     private func applyColors() {
@@ -131,7 +140,8 @@ final class WMTerminalView: LocalProcessTerminalView {
         effectiveAppearance.performAsCurrentDrawingAppearance {
             nativeBackgroundColor = Self.background.usingColorSpace(.sRGB) ?? .black
         }
-        nativeForegroundColor = dark ? NSColor(white: 0.9, alpha: 1) : NSColor(white: 0.12, alpha: 1)
+        nativeForegroundColor = dark ? .white : NSColor(white: 0.12, alpha: 1)
+        installColors(dark ? Self.ghosttyAnsi : SwiftTerm.Color.terminalAppColors)
         caretColor = .controlAccentColor
         selectedTextBackgroundColor = NSColor.selectedTextBackgroundColor
     }
