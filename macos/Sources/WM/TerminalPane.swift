@@ -127,12 +127,18 @@ final class WMTerminalView: LocalProcessTerminalView {
     }
 
     /// Ghostty's default palette (dark mode); light mode restores SwiftTerm's own default, `Color.terminalAppColors`.
-    private static let ghosttyAnsi: [SwiftTerm.Color] = [
+    private static let ghosttyHex: [UInt32] = [
         0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
         0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
-    ].map { hex in
-        SwiftTerm.Color(red: UInt16((hex >> 16) & 0xff) * 257, green: UInt16((hex >> 8) & 0xff) * 257,
-                        blue: UInt16(hex & 0xff) * 257)
+    ]
+    private static let ghosttyAnsi: [SwiftTerm.Color] = ghosttyHex.map(color)
+
+    /// 0xRRGGBB as SwiftTerm's 16-bit-per-channel colour (each byte times 257, so 0xff becomes 0xffff).
+    private static func color(_ hex: UInt32) -> SwiftTerm.Color {
+        let red = UInt16((hex >> 16) & 0xff) * 257
+        let green = UInt16((hex >> 8) & 0xff) * 257
+        let blue = UInt16(hex & 0xff) * 257
+        return SwiftTerm.Color(red: red, green: green, blue: blue)
     }
 
     private func applyColors() {
