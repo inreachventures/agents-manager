@@ -123,10 +123,12 @@ final class WMTerminalView: LocalProcessTerminalView {
 
     static let background = NSColor(name: nil) { appearance in
         appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor(srgbRed: 0x28 / 255, green: 0x2c / 255, blue: 0x34 / 255, alpha: 1) : .white
+            ? NSColor(srgbRed: 0x27 / 255, green: 0x27 / 255, blue: 0x2a / 255, alpha: 1) : .white
     }
 
-    /// Ghostty's default palette (dark mode); light mode restores SwiftTerm's own default, `Color.terminalAppColors`.
+    /// Ghostty's default palette (dark mode), on a neutral background (#27272a) rather than Ghostty's blue-grey, so
+    /// the terminal sits with the app's neutral greys; light mode restores SwiftTerm's own default,
+    /// `Color.terminalAppColors`.
     private static let ghosttyHex: [UInt32] = [
         0x1d1f21, 0xcc6666, 0xb5bd68, 0xf0c674, 0x81a2be, 0xb294bb, 0x8abeb7, 0xc5c8c6,
         0x666666, 0xd54e53, 0xb9ca4a, 0xe7c547, 0x7aa6da, 0xc397d8, 0x70c0b1, 0xeaeaea,
