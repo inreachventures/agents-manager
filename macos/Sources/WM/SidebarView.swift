@@ -25,6 +25,8 @@ struct SidebarView: View {
             }
         }
         .listStyle(.sidebar)
+        .scrollContentBackground(.hidden)
+        .background(Color(nsColor: .windowBackgroundColor))
         .id(model.showArchived)  // a fresh list per mode: rows moving between the two lists leave ghosts
 
         .overlay {
