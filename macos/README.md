@@ -52,6 +52,42 @@ because a pip-installed `xattr` can shadow it and has no `-r`); avoiding that ta
 notarization. The releases on GitHub are these release builds, made by CI from a tag (see
 `.github/workflows/ci.yml`).
 
+**Updates.** From 0.5.0 a release build updates itself through [Sparkle](https://sparkle-project.org): it checks
+once a day and asks before installing, and **Check for Updates…** in the app menu checks now. 0.5.0 itself has to
+be installed by hand once. Each chip's build reads its own feed,
+`releases/latest/download/appcast-apple-silicon.xml` or `appcast-intel.xml`, which CI attaches to every release
+(written by `scripts/make_appcast.py`), and installs the disk image it names only if its signature matches the
+public key in the app (`SUPublicEDKey`). CI signs with the secret `SPARKLE_ED_PRIVATE_KEY`; the maintainers hold the
+private key. The development build has no feed, so it never updates. Until the app has a Developer ID, macOS may ask
+again for the microphone after an update.
+
+To try an update before tagging, sign a newer disk image with Sparkle's `sign_update` and the private key, write a
+feed for it with `scripts/make_appcast.py` and serve both from one folder (`python3 -m http.server 8000 --bind 127.0.0.1`
+is enough: plain http to 127.0.0.1 works). Then start a copy of an older release build by its binary, with a scratch
+setup and a clean environment, so it never sees your workstreams or wm's tmux server:
+
+```sh
+S=$(mktemp -d) && mkdir "$S/code"
+env -u AGENTMGR_WM -u AGENTMGR_WS -u TMUX -u TMUX_PANE -u WM_BIN \
+  AGENTMGR_HOME="$S/home" AGENTMGR_WORKSTREAMS_DIR="$S/workstreams" AGENTMGR_CODE_ROOTS="$S/code" \
+  AGENTMGR_TMUX_SOCKET=wm-update-test AGENTMGR_CLAUDE_CMD=/usr/bin/true \
+  WM_UPDATE_FEED_URL=http://127.0.0.1:8000/appcast.xml \
+  /path/to/old/Workstreams.app/Contents/MacOS/WM
+```
+
+`WM_UPDATE_FEED_URL` points that one process at the test feed and switches its updater on. It is an environment
+variable rather than a user default because the app's defaults are shared with the copy you use every day, and a
+leftover default would point it at the test feed. The `env -u` part drops what a wm session or a development setup
+would otherwise pass on. Choose Check for Updates… and install the update, but when Sparkle offers Install and
+Relaunch, quit the copy with ⌘Q instead: from Sparkle's source, it should install the update as the app quits and start
+nothing (not yet tried on a real update). Run the
+same command again to see the new version.
+
+Don't choose Install and Relaunch. Sparkle relaunches the copy without that environment, so it opens on your real
+workstreams, binds wm's tmux keys to its own wm and can rewrite their hooks to call it. If that happens, quit it at
+once, delete the copy, then quit and reopen your own app: it binds the keys back and repoints every hook that calls
+a wm that is gone. Afterwards stop the server and delete `$S`.
+
 The development build runs `wm app-server` from, in order: `$WM_BIN`, the path set in Settings (⌘,), the `wm` of
 the checkout it was built from (`.venv/bin/wm`), then the first `wm` on your login shell's PATH; a release build
 uses its own after Settings. GUI apps don't get your shell's PATH, so the app reads it from a login shell once at

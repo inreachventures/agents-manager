@@ -14,22 +14,28 @@ cd "$(dirname "$0")/.."
 REPO=$(cd .. && pwd)
 VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' "$REPO/pyproject.toml")
 
-# app ARCH DIR [WM_PATH]: DIR/Workstreams.app for ARCH ("" = this Mac's), without wm inside
+# The public half of the key that signs updates (the private half is the CI secret SPARKLE_ED_PRIVATE_KEY).
+SPARKLE_PUBLIC_KEY="5bg69hnmALdL22m0Oa+fkUZGvM+SmNvuJZGON7toJZc="
+
+# app ARCH DIR [WM_PATH [CHIP]]: DIR/Workstreams.app for ARCH ("" = this Mac's), without wm inside.
+# CHIP (apple-silicon or intel) gives the app its update feed; with none it never checks for updates.
 app() {
-    local arch=$1 app=$2/Workstreams.app wm_path=${3:-} flags=(-c release)
+    local arch=$1 app=$2/Workstreams.app wm_path=${3:-} chip=${4:-} flags=(-c release)
     [ -n "$arch" ] && flags+=(--arch "$arch")
-    swift build "${flags[@]}" --product WM
+    swift build "${flags[@]}" --product WM -Xlinker -rpath -Xlinker @executable_path/../Frameworks  # finds Sparkle
     local bin; bin=$(swift build "${flags[@]}" --show-bin-path)
 
     rm -rf "$app"
-    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources"
+    mkdir -p "$app/Contents/MacOS" "$app/Contents/Resources" "$app/Contents/Frameworks"
     cp "$bin/WM" "$app/Contents/MacOS/WM"
+    ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"  # ditto keeps the symlinks inside
     [ -d "$bin/SwiftTerm_SwiftTerm.bundle" ] && cp -R "$bin/SwiftTerm_SwiftTerm.bundle" "$app/Contents/Resources/"
 
     local iconset; iconset=$(mktemp -d)/AppIcon.iconset
     swift scripts/make-icon.swift "$iconset"
     iconutil -c icns "$iconset" -o "$app/Contents/Resources/AppIcon.icns"
 
+    # CFBundleVersion is what Sparkle compares with the versions in the feed, so it is the release version.
     # NSMicrophoneUsageDescription: macOS counts the tmux server the app starts, and so every Claude session in it,
     # as the app. Without a usage string it never asks, and Claude Code's voice dictation gets no microphone.
     cat > "$app/Contents/Info.plist" <<PLIST
@@ -44,21 +50,30 @@ app() {
     <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>$VERSION</string>
-    <key>CFBundleVersion</key><string>1</string>
+    <key>CFBundleVersion</key><string>$VERSION</string>
     <key>LSMinimumSystemVersion</key><string>14.0</string>
     <key>LSApplicationCategoryType</key><string>public.app-category.developer-tools</string>
     <key>NSHighResolutionCapable</key><true/>
     <key>NSPrincipalClass</key><string>NSApplication</string>
     <key>NSMicrophoneUsageDescription</key><string>Claude Code's voice dictation, in your workstreams' sessions, uses the microphone.</string>
+    <key>SUPublicEDKey</key><string>$SPARKLE_PUBLIC_KEY</string>
 $([ -n "$wm_path" ] && echo "    <key>WMPath</key><string>$wm_path</string>")
+$([ -n "$chip" ] && echo "    <key>SUFeedURL</key><string>https://github.com/inreachventures/agents-manager/releases/latest/download/appcast-$chip.xml</string>
+    <key>SUEnableAutomaticChecks</key><true/>")
 </dict>
 </plist>
 PLIST
 }
 
-# sign APP: each binary inside first (wm's Python), then the app, which seals the rest
+# sign APP: each binary inside first (wm's Python, then Sparkle), then the app, which seals the rest
 sign() {
     local app=$1
+    # Sparkle's own order: the pieces inside the framework, then the framework. No --deep, no entitlements.
+    local sparkle=$app/Contents/Frameworks/Sparkle.framework/Versions/B
+    for part in "$sparkle/XPCServices/Installer.xpc" "$sparkle/XPCServices/Downloader.xpc" \
+                "$sparkle/Autoupdate" "$sparkle/Updater.app" "$app/Contents/Frameworks/Sparkle.framework"; do
+        codesign --force --sign - "$part"
+    done
     if [ -d "$app/Contents/Resources/wm" ]; then
         find "$app/Contents/Resources/wm" -type f \( -name '*.so' -o -name '*.dylib' -o -perm -0100 \) -print0 |
             while IFS= read -r -d '' f; do
@@ -73,7 +88,7 @@ release() {
     local arch=$1 dir=build/$1 chip
     [ "$arch" = arm64 ] && chip=apple-silicon || chip=intel
     rm -rf "$dir" && mkdir -p "$dir"
-    app "$arch" "$dir"
+    app "$arch" "$dir" "" "$chip"
     scripts/bundle-wm.sh "$arch" "$dir/Workstreams.app/Contents/Resources/wm"
     sign "$dir/Workstreams.app"
 

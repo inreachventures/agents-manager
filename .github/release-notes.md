@@ -14,8 +14,12 @@ unidentified developer:
   (use the full path: a Python `xattr` installed with pip can shadow macOS's own on your PATH, and it doesn't know
   `-r`)
 
-After that it opens normally. After an update macOS may ask again for the microphone (Claude Code's voice
-dictation), because each build is signed separately.
+After that it opens normally.
+
+**Updates.** From 0.5.0 the app updates itself. It checks for a new version once a day and asks before installing
+it; **Check for Updates…** in the Workstreams menu checks now. Versions before 0.5.0 can't update themselves, so
+install 0.5.0 by hand once, as above. Until the app is signed with a Developer ID, macOS may ask again for the
+microphone (Claude Code's voice dictation) after an update, because each build is signed separately.
 
 To build it yourself instead, or to use `wm` from the terminal, see the
 [README](https://github.com/inreachventures/agents-manager#readme).
