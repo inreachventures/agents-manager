@@ -72,7 +72,7 @@ final class AppModel {
         return state.workstreams.first { $0.key == key } ?? state.archived.first { $0.key == key }
     }
 
-    var waitingCount: Int { state.workstreams.filter { $0.status == .needsYou || $0.status == .yourTurn }.count }
+    var waitingCount: Int { state.workstreams.filter(\.waitingUnseen).count }
 
     /// The repo the changes panel shows on its own, if any, for the selected workstream.
     var soloRepo: String? {

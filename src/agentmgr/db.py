@@ -79,6 +79,12 @@ CREATE TABLE IF NOT EXISTS fetches (
     ok_at      REAL,            -- last success
     error      TEXT
 );
+-- When someone last looked at a workstream's session (tmux.watched_sessions): a session waiting on you counts on the
+-- app's dock badge until it is seen after it started waiting. A table of its own so an older wm still works.
+CREATE TABLE IF NOT EXISTS seen (
+    ws_key  TEXT PRIMARY KEY,
+    seen_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS counters (
     name  TEXT PRIMARY KEY,
     value INTEGER NOT NULL
@@ -262,6 +268,15 @@ def update_workstream(conn: sqlite3.Connection, key: str, **fields) -> None:
 
 def set_status(conn: sqlite3.Connection, key: str, status: str, reason: str | None = None) -> None:
     update_workstream(conn, key, status=status, status_reason=reason, status_at=time.time())
+
+
+def mark_seen(conn: sqlite3.Connection, key: str) -> None:
+    conn.execute("INSERT INTO seen VALUES (?, ?) ON CONFLICT(ws_key) DO UPDATE SET seen_at = excluded.seen_at",
+                 (key, time.time()))
+
+
+def seen_times(conn: sqlite3.Connection) -> dict[str, float]:
+    return {r["ws_key"]: r["seen_at"] for r in conn.execute("SELECT ws_key, seen_at FROM seen")}
 
 
 def list_repos(conn: sqlite3.Connection, ws_key: str) -> list[RepoLink]:

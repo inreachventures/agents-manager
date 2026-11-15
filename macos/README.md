@@ -8,8 +8,8 @@ repos in the top bar and what their branches change on the right.
   them, plus any repo kept elsewhere) is in Settings → Repos.
 - **Sidebar**: one row per workstream, in the same order and states as `wm`'s dashboard (needs you, working, your
   turn, intake, stopped). A spinner while Claude works, a pulsing dot when it waits for you (orange with `!` when
-  it's blocked on a permission or a question), and a small dot per repo coloured by what it needs next; hover it
-  for the details.
+  it's blocked on a permission or a question) that stops pulsing once you've looked at the session, and a small dot
+  per repo coloured by what it needs next; hover it for the details.
 - **Top bar**: the selected workstream's repos, each with that dot, its PR number or, from 20 commits, how far
   behind base it is (`acme-web 23↓`). Click one to see only its changes, again to see all; right-click for its PRs,
   its worktree and its branch name. ⌘1–⌘9 pick the Nth repo, ⌘0 all of them.
@@ -21,7 +21,8 @@ repos in the top bar and what their branches change on the right.
   untracked files.
 - **Actions**: the `…` toolbar menu or the context menu, ⌘N new, ⇧⌘A add repo, ⇧⌘B rebase, ⌘⌫ archive, ⇧⌘↩
   resume, ⌘R refresh git/PR/CI, ⌘J next workstream waiting on you, ⌥⌘↑/↓ previous/next, ⌥⌘A archived ones. The
-  Dock icon shows how many workstreams wait on you.
+  Dock icon shows how many workstreams wait on you that you haven't looked at since: selecting one while the app is
+  in front, or showing its session in a terminal, takes it off until Claude next waits for you.
 
 ## Build and run
 

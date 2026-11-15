@@ -209,7 +209,7 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
     def ready(base_ci, merged=True):
         row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
                                                                           merged, base_ci)])
-        return server._row(row)["ready_to_archive"]
+        return server._row(row, False)["ready_to_archive"]
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)
@@ -243,3 +243,31 @@ def test_the_state_loop_reads_git_less_often_in_the_background(env, monkeypatch)
     srv.push_state()
     srv.push_state()
     assert ages == [view.GIT_MAX_AGE, server.BACKGROUND_GIT_MAX_AGE, 0, server.BACKGROUND_GIT_MAX_AGE]
+
+
+def test_a_waiting_session_counts_as_unseen_until_someone_looks_at_it(env, monkeypatch):
+    ws = ws_mod.new(launch=False, name="badge")
+    conn = db.connect()
+    try:
+        tmux.new_session(ws.key, env.root, ["sleep", "600"])
+        view_ = tmux.ensure_view(ws.key)
+        db.set_status(conn, ws.key, db.YOUR_TURN)
+        unseen = lambda: server.state()["workstreams"][0]["unseen"]  # noqa: E731
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})
+        assert unseen()
+        srv = server.Server(io.StringIO())
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4242: view_})  # the app shows it, but from behind
+        ask(srv, "focus", active=False)
+        assert unseen()
+        ask(srv, "focus", active=True)  # now in front
+        assert not unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})  # looked at, then moved on: still seen
+        assert not unseen()
+        db.set_status(conn, ws.key, db.WORKING)
+        assert not unseen()  # working: not waiting on you
+        db.set_status(conn, ws.key, db.YOUR_TURN)  # Claude's next turn ends
+        assert unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4343: ws.key})  # a terminal shows it
+        assert not unseen()
+    finally:
+        tmux.run("kill-server", check=False)

@@ -39,10 +39,11 @@ def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None)
     if ws.status == status and ws.status_reason == reason:
         return
     db.set_status(conn, ws.key, status, reason)
-    if status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
-        if not tmux.watched(ws.key):  # nobody is looking at this session
-            msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
-            notify.notify(ws.label, msg)
+    if status in (db.NEEDS_YOU, db.YOUR_TURN) and tmux.watched(ws.key):
+        db.mark_seen(conn, ws.key)  # you're looking at it as it starts waiting: it doesn't count on the dock badge
+    elif status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
+        msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
+        notify.notify(ws.label, msg)  # nobody is looking at this session
 
 
 def scratch_dir(ws: db.Workstream) -> Path:
