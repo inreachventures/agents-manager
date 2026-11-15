@@ -18,6 +18,7 @@ import os
 import shutil
 import sys
 import threading
+import time
 import traceback
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -75,31 +76,34 @@ def _row(r: view.Row, unseen: bool) -> dict:
 
 def state(git_max_age: float = 0) -> dict:
     """Everything the dashboard shows, in the TUI's order: needs you, working, your turn, intake, stopped.
-    `git_max_age`: see view.load."""
+    `git_max_age`: see view.load. Marks the waiting sessions someone is looking at as seen (_unseen)."""
     tmux.prune_views()
     rows = view.load(include_archived=True, git_max_age=git_max_age)
     active = [r for r in rows if r.status != db.ARCHIVED]
     oks = [rr.fetched_ok_at for r in active for rr in r.repos]
-    unseen = _unseen(active)
+    clients = tmux.client_sessions()
+    unseen = _unseen(active, clients)
     return {
         "workstreams": [_row(r, r.ws.key in unseen) for r in active],
         "archived": [_row(r, False) for r in rows if r.status == db.ARCHIVED],
         "origin": {"repos": len(oks), "checked_at": None if None in oks or not oks else min(oks)},
         # client pid -> the session it shows, so the app notices when tmux moved its terminal (C-b s, say)
-        "clients": {str(pid): session for pid, session in tmux.client_sessions().items()},
+        "clients": {str(pid): session for pid, session in clients.items()},
     }
 
 
-def _unseen(rows: list[view.Row]) -> set[str]:
-    """Keys of the workstreams waiting on you that nobody has looked at since they started waiting. Marks those
-    someone is looking at right now (a terminal shows the session, or the app does while in front) as seen."""
+def _unseen(rows: list[view.Row], clients: dict[int, str]) -> set[str]:
+    """Keys of the workstreams waiting on you that nobody has looked at since they started waiting. Writes to the
+    database: marks those someone is looking at right now (a terminal shows the session, or the app does while in
+    front; `clients`: tmux.client_sessions) as seen."""
     conn = db.connect()
     seen = db.seen_times(conn)
     waiting = [r.ws for r in rows if r.status in WAITING and seen.get(r.ws.key, 0) < r.ws.status_at]
-    looking = tmux.watched_sessions() if waiting else set()
+    checked_at = time.time()
+    looking = tmux.watched_sessions(clients.values()) if waiting else set()
     for ws in waiting:
         if ws.key in looking:
-            db.mark_seen(conn, ws.key)
+            db.mark_seen(conn, ws.key, checked_at)
     return {ws.key for ws in waiting if ws.key not in looking}
 
 

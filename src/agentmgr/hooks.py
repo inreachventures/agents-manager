@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
@@ -39,8 +40,9 @@ def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None)
     if ws.status == status and ws.status_reason == reason:
         return
     db.set_status(conn, ws.key, status, reason)
+    checked_at = time.time()
     if status in (db.NEEDS_YOU, db.YOUR_TURN) and tmux.watched(ws.key):
-        db.mark_seen(conn, ws.key)  # you're looking at it as it starts waiting: it doesn't count on the dock badge
+        db.mark_seen(conn, ws.key, checked_at)  # you're looking as it starts waiting: not on the dock badge
     elif status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
         msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
         notify.notify(ws.label, msg)  # nobody is looking at this session

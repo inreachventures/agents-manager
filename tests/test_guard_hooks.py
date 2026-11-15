@@ -217,7 +217,7 @@ def test_a_turn_that_ends_while_you_look_is_seen_and_not_notified(env, monkeypat
     base = {"session_id": ws.session_id, "cwd": ws.folder}
     conn = db.connect()
     looking = set()
-    monkeypatch.setattr("agentmgr.tmux.watched_sessions", lambda: looking)
+    monkeypatch.setattr("agentmgr.tmux.watched_sessions", lambda shown: looking)
 
     run_hook(monkeypatch, capsys, "UserPromptSubmit", base)
     looking.add(ws.key)

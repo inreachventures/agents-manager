@@ -245,6 +245,7 @@ def test_the_state_loop_reads_git_less_often_in_the_background(env, monkeypatch)
     assert ages == [view.GIT_MAX_AGE, server.BACKGROUND_GIT_MAX_AGE, 0, server.BACKGROUND_GIT_MAX_AGE]
 
 
+@pytest.mark.skipif(not tmux.available(), reason="needs tmux")
 def test_a_waiting_session_counts_as_unseen_until_someone_looks_at_it(env, monkeypatch):
     ws = ws_mod.new(launch=False, name="badge")
     conn = db.connect()
@@ -269,5 +270,24 @@ def test_a_waiting_session_counts_as_unseen_until_someone_looks_at_it(env, monke
         assert unseen()
         monkeypatch.setattr(tmux, "client_sessions", lambda: {4343: ws.key})  # a terminal shows it
         assert not unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})
+        db.set_status(conn, ws.key, db.NEEDS_YOU, "Claude needs permission to use Bash")  # a new question
+        assert unseen()
     finally:
         tmux.run("kill-server", check=False)
+
+
+def test_a_terminal_showing_the_session_marks_it_seen_at_once(env, capsys):
+    """tmux draws `wm status-line --left` every 2s for each terminal showing a session: a short look counts, even
+    when the app's state loop is slow (in the background) or the app is closed."""
+    from agentmgr import cli
+
+    ws = ws_mod.new(launch=False, name="glance")
+    conn = db.connect()
+    db.set_status(conn, ws.key, db.YOUR_TURN)
+    assert db.unseen(conn, db.get_workstream(conn, ws.key))
+    cli.status_line(left=ws.key, right=False, title=None)
+    assert ws.label in capsys.readouterr().out
+    assert not db.unseen(conn, db.get_workstream(conn, ws.key))
+    db.set_status(conn, ws.key, db.WORKING)
+    assert not db.unseen(conn, db.get_workstream(conn, ws.key))  # not waiting

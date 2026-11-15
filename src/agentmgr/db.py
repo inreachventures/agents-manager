@@ -270,13 +270,23 @@ def set_status(conn: sqlite3.Connection, key: str, status: str, reason: str | No
     update_workstream(conn, key, status=status, status_reason=reason, status_at=time.time())
 
 
-def mark_seen(conn: sqlite3.Connection, key: str) -> None:
-    conn.execute("INSERT INTO seen VALUES (?, ?) ON CONFLICT(ws_key) DO UPDATE SET seen_at = excluded.seen_at",
-                 (key, time.time()))
+def mark_seen(conn: sqlite3.Connection, key: str, at: float) -> None:
+    """Someone was looking at the session at time `at` (when it was checked, not when this runs: a wait that began
+    in between must still count). Keeps the later time when two writers race."""
+    conn.execute("INSERT INTO seen VALUES (?, ?) "
+                 "ON CONFLICT(ws_key) DO UPDATE SET seen_at = MAX(seen_at, excluded.seen_at)", (key, at))
 
 
 def seen_times(conn: sqlite3.Connection) -> dict[str, float]:
     return {r["ws_key"]: r["seen_at"] for r in conn.execute("SELECT ws_key, seen_at FROM seen")}
+
+
+def unseen(conn: sqlite3.Connection, ws: Workstream) -> bool:
+    """Waiting on you, and nobody has looked at the session since it started waiting."""
+    if ws.status not in (NEEDS_YOU, YOUR_TURN):
+        return False
+    row = conn.execute("SELECT seen_at FROM seen WHERE ws_key = ?", (ws.key,)).fetchone()
+    return row is None or row["seen_at"] < ws.status_at
 
 
 def list_repos(conn: sqlite3.Connection, ws_key: str) -> list[RepoLink]:
