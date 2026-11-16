@@ -72,7 +72,7 @@ final class AppModel {
         return state.workstreams.first { $0.key == key } ?? state.archived.first { $0.key == key }
     }
 
-    var waitingCount: Int { state.workstreams.filter { $0.status == .needsYou || $0.status == .yourTurn }.count }
+    var waitingCount: Int { state.workstreams.filter(\.waitingUnseen).count }
 
     /// The repo the changes panel shows on its own, if any, for the selected workstream.
     var soloRepo: String? {
@@ -270,11 +270,13 @@ final class AppModel {
         selection = keys[min(max(index, 0), keys.count - 1)]
     }
 
+    /// ⌘J: the ones you haven't looked at first (what the Dock badge counts), then any other waiting on you.
     func selectNextWaiting() {
         let order: [Status: Int] = [.needsYou: 0, .yourTurn: 1]
+        func rank(_ ws: Workstream) -> (Int, Int, Double) { (ws.waitingUnseen ? 0 : 1, order[ws.status]!, ws.since) }
         let next = state.workstreams
             .filter { order[$0.status] != nil && $0.key != selection }
-            .sorted { (order[$0.status]!, $0.since) < (order[$1.status]!, $1.since) }
+            .sorted { rank($0) < rank($1) }
             .first
         if let next {
             showArchived = false

@@ -86,7 +86,7 @@ struct WorkstreamRow: View {
             if ws.offersArchive {
                 ArchiveButton(label: ws.label) { Task { await model.startArchive(ws.key) } }
             } else {
-                StatusIndicator(status: ws.status)
+                StatusIndicator(status: ws.status, unseen: ws.unseen != false)
             }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: 5) {

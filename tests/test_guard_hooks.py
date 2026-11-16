@@ -208,3 +208,24 @@ def test_compaction_keeps_status_and_refreshes_claude_md(env, monkeypatch, capsy
     out = run_hook(monkeypatch, capsys, "SessionStart", {**base, "source": "compact"})
     assert "acme-web/: on ws-1-x-y" in out
     assert "regenerate: OSError: disk full" in (env.root / "home" / "hooks.log").read_text()
+
+
+def test_a_turn_that_ends_while_you_look_is_seen_and_not_notified(env, monkeypatch, capsys):
+    sent = []
+    monkeypatch.setattr("agentmgr.notify.notify", lambda *a: sent.append(a))
+    ws = ws_mod.new(launch=False, name="x y")
+    base = {"session_id": ws.session_id, "cwd": ws.folder}
+    conn = db.connect()
+    looking = set()
+    monkeypatch.setattr("agentmgr.tmux.watched_sessions", lambda shown: looking)
+
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base)
+    looking.add(ws.key)
+    run_hook(monkeypatch, capsys, "Stop", base)
+    assert sent == [] and db.seen_times(conn)[ws.key] >= db.get_workstream(conn, ws.key).status_at
+
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base)
+    looking.clear()
+    run_hook(monkeypatch, capsys, "Stop", base)
+    assert sent == [(ws.label, "finished, your turn")]
+    assert db.seen_times(conn)[ws.key] < db.get_workstream(conn, ws.key).status_at

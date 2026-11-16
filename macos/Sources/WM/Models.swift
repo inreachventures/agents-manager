@@ -47,6 +47,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var name: String?
     var label: String
     var status: Status
+    var unseen: Bool?  // waiting on you and not looked at since; nil from an older wm: any waiting one counts
     var statusText: String
     var since: Double
     var folder: String
@@ -59,6 +60,10 @@ struct Workstream: Decodable, Identifiable, Equatable {
 
     var id: String { key }
     var ident: String { ticket ?? key }
+
+    /// Waiting on you (your turn, or blocked on a question) and nobody has looked at the session since: what the dock
+    /// badge counts and what pulses in the sidebar.
+    var waitingUnseen: Bool { (status == .needsYou || status == .yourTurn) && unseen != false }
 
     /// Show the archive button instead of the status dot: done, and Claude isn't busy or waiting on a question.
     var offersArchive: Bool { readyToArchive == true && (status == .yourTurn || status == .stopped) }

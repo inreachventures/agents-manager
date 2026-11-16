@@ -9,6 +9,7 @@ import shutil
 import subprocess
 import sys
 import time
+from collections.abc import Iterable
 from importlib import resources
 from pathlib import Path
 
@@ -207,11 +208,18 @@ def clients(name: str) -> list[str]:
 
 def watched(name: str) -> bool:
     """Someone is looking at session `name`: a terminal shows it, or the native app shows it and is in front."""
-    shown = set(client_sessions().values())
-    if name in shown:
-        return True
-    active = run("show-options", "-g", "-v", "-q", APP_ACTIVE, check=False).stdout.strip() == "1"
-    return view_name(name) in shown and active
+    return name in watched_sessions(client_sessions().values())
+
+
+def watched_sessions(shown: Iterable[str]) -> set[str]:
+    """The workstream sessions someone is looking at (see watched), given the sessions tmux clients show
+    (client_sessions)."""
+    shown = set(shown)
+    looking = {s for s in shown if not s.endswith(VIEW_SUFFIX)}
+    if any(s.endswith(VIEW_SUFFIX) for s in shown) and \
+            run("show-options", "-g", "-v", "-q", APP_ACTIVE, check=False).stdout.strip() == "1":
+        looking |= {s.removesuffix(VIEW_SUFFIX) for s in shown if s.endswith(VIEW_SUFFIX)}
+    return looking
 
 
 def inside_manager() -> bool:

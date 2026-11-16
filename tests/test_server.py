@@ -209,7 +209,7 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
     def ready(base_ci, merged=True):
         row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
                                                                           merged, base_ci)])
-        return server._row(row)["ready_to_archive"]
+        return server._row(row, False)["ready_to_archive"]
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)
@@ -243,3 +243,51 @@ def test_the_state_loop_reads_git_less_often_in_the_background(env, monkeypatch)
     srv.push_state()
     srv.push_state()
     assert ages == [view.GIT_MAX_AGE, server.BACKGROUND_GIT_MAX_AGE, 0, server.BACKGROUND_GIT_MAX_AGE]
+
+
+@pytest.mark.skipif(not tmux.available(), reason="needs tmux")
+def test_a_waiting_session_counts_as_unseen_until_someone_looks_at_it(env, monkeypatch):
+    ws = ws_mod.new(launch=False, name="badge")
+    conn = db.connect()
+    try:
+        tmux.new_session(ws.key, env.root, ["sleep", "600"])
+        view_ = tmux.ensure_view(ws.key)
+        db.set_status(conn, ws.key, db.YOUR_TURN)
+        unseen = lambda: server.state()["workstreams"][0]["unseen"]  # noqa: E731
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})
+        assert unseen()
+        srv = server.Server(io.StringIO())
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4242: view_})  # the app shows it, but from behind
+        ask(srv, "focus", active=False)
+        assert unseen()
+        ask(srv, "focus", active=True)  # now in front
+        assert not unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})  # looked at, then moved on: still seen
+        assert not unseen()
+        db.set_status(conn, ws.key, db.WORKING)
+        assert not unseen()  # working: not waiting on you
+        db.set_status(conn, ws.key, db.YOUR_TURN)  # Claude's next turn ends
+        assert unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {4343: ws.key})  # a terminal shows it
+        assert not unseen()
+        monkeypatch.setattr(tmux, "client_sessions", lambda: {})
+        db.set_status(conn, ws.key, db.NEEDS_YOU, "Claude needs permission to use Bash")  # a new question
+        assert unseen()
+    finally:
+        tmux.run("kill-server", check=False)
+
+
+def test_a_terminal_showing_the_session_marks_it_seen_at_once(env, capsys):
+    """tmux draws `wm status-line --left` every 2s for each terminal showing a session: a short look counts, even
+    when the app's state loop is slow (in the background) or the app is closed."""
+    from agentmgr import cli
+
+    ws = ws_mod.new(launch=False, name="glance")
+    conn = db.connect()
+    db.set_status(conn, ws.key, db.YOUR_TURN)
+    assert db.unseen(conn, db.get_workstream(conn, ws.key))
+    cli.status_line(left=ws.key, right=False, title=None)
+    assert ws.label in capsys.readouterr().out
+    assert not db.unseen(conn, db.get_workstream(conn, ws.key))
+    db.set_status(conn, ws.key, db.WORKING)
+    assert not db.unseen(conn, db.get_workstream(conn, ws.key))  # not waiting

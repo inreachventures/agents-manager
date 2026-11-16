@@ -367,6 +367,8 @@ def status_line(
             typer.echo("wm · dashboard")
             return
         ws = db.get_workstream(conn, left)
+        if ws and db.unseen(conn, ws):  # tmux draws this for each terminal showing the session: you're looking
+            db.mark_seen(conn, ws.key, time.time())
         if ws:
             drift = "  ⚠ drift" if ws.drift else ""
             typer.echo(f"{ws.label} · {ws.status.replace('_', ' ')}{drift}")

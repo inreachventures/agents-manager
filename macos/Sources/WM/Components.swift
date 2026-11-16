@@ -41,9 +41,11 @@ func ago(_ timestamp: Double, now: Date = Date()) -> String {
     return "\(s)s"
 }
 
-/// Spinner while Claude works; a pulse while it waits for you (stronger when blocked on a question or permission).
+/// Spinner while Claude works; a pulse while it waits for you (stronger when blocked on a question or permission),
+/// a still dot once you've looked at it.
 struct StatusIndicator: View {
     var status: Status
+    var unseen = true
 
     var body: some View {
         Group {
@@ -51,9 +53,9 @@ struct StatusIndicator: View {
             case .working:
                 ProgressView().controlSize(.small).scaleEffect(0.75)
             case .needsYou:
-                Pulse(color: .systemOrange, bang: true, period: 1.0)
+                Pulse(color: .systemOrange, bang: true, period: 1.0, pulsing: unseen)
             case .yourTurn:
-                Pulse(color: .systemTeal, bang: false, period: 1.8)
+                Pulse(color: .systemTeal, bang: false, period: 1.8, pulsing: unseen)
             case .archived:
                 Image(systemName: "archivebox").font(.system(size: 10)).foregroundStyle(.tertiary)
             default:
@@ -72,11 +74,12 @@ private struct Pulse: NSViewRepresentable {
     var color: NSColor
     var bang: Bool  // "!" on a bigger dot: blocked on you
     var period: Double
+    var pulsing: Bool  // false: the dot alone, still
 
     func makeNSView(context: Context) -> PulseView { PulseView() }
 
     func updateNSView(_ view: PulseView, context: Context) {
-        view.configure(color: color, bang: bang, period: period)
+        view.configure(color: color, bang: bang, period: period, pulsing: pulsing)
     }
 }
 
@@ -87,6 +90,7 @@ final class PulseView: NSView {
     private var color = NSColor.systemTeal
     private var bang = false
     private var period = 1.8
+    private var pulsing = true
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -100,10 +104,11 @@ final class PulseView: NSView {
     override var intrinsicContentSize: NSSize { NSSize(width: 18, height: 18) }
     override var isFlipped: Bool { true }
 
-    func configure(color: NSColor, bang: Bool, period: Double) {
-        guard color != self.color || bang != self.bang || period != self.period || ring.animation(forKey: "pulse") == nil
+    func configure(color: NSColor, bang: Bool, period: Double, pulsing: Bool) {
+        guard color != self.color || bang != self.bang || period != self.period || pulsing != self.pulsing
+              || (pulsing && ring.animation(forKey: "pulse") == nil)
         else { return }
-        (self.color, self.bang, self.period) = (color, bang, period)
+        (self.color, self.bang, self.period, self.pulsing) = (color, bang, period, pulsing)
         needsLayout = true
         updateColors()
         animate()
@@ -152,6 +157,11 @@ final class PulseView: NSView {
     }
 
     private func animate() {
+        guard pulsing else {
+            ring.removeAnimation(forKey: "pulse")
+            ring.opacity = 0
+            return
+        }
         let scale = CABasicAnimation(keyPath: "transform.scale")
         scale.fromValue = 0.45
         scale.toValue = 1.1
