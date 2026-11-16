@@ -34,6 +34,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        Updater.shared.start()  // only when this build has a feed, so development builds stay silent
         NSApp.setActivationPolicy(.regular)  // also when run as a bare executable during development
         if ProcessInfo.processInfo.environment["WM_DEBUG_DIR"] == nil { NSApp.activate() }
     }
@@ -79,6 +80,9 @@ struct WMCommands: Commands {
                 if let ws = model.selected { model.reveal(ws.folder) }
             }
         }
+        CommandGroup(after: .appInfo) {
+            CheckForUpdatesView()
+        }
         CommandGroup(replacing: .help) {
             Button("Show the Tour") { model.startTour() }
         }
@@ -105,6 +109,15 @@ struct WMCommands: Commands {
     private func withSelected(archived: Bool = false, _ action: @escaping (String) async -> Void) {
         guard let ws = model.selected, (ws.status == .archived) == archived else { return }
         Task { await action(ws.key) }
+    }
+}
+
+/// App menu › Check for Updates…, in a View of its own as in Sparkle's SwiftUI setup: a `Commands` body may not
+/// re-evaluate when the updater's state changes, a View's body does.
+private struct CheckForUpdatesView: View {
+    var body: some View {
+        Button("Check for Updates…") { Updater.shared.checkForUpdates() }
+            .disabled(!Updater.shared.canCheckForUpdates)
     }
 }
 
