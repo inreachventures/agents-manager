@@ -40,7 +40,7 @@ final class AppModel {
         didSet {
             guard phase == .ready else { return }
             UserDefaults.standard.set(showChanges, forKey: "showChanges")
-            if showChanges { Task { await loadDiff() } }
+            if showChanges { Task { await loadPanel() } }
         }
     }
     var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
@@ -52,6 +52,27 @@ final class AppModel {
     var terminalFailed: String?  // key whose tmux client exited right after attaching
     var tourStop: TourStop?  // the tour box on screen, if any
     var setup: SetupInfo?  // where repos come from, and the tools wm needs
+
+    // The Brief panel and the chat view (AppModel+Brief.swift)
+    var center: Center = Center(rawValue: UserDefaults.standard.string(forKey: "center") ?? "") ?? .chat {
+        didSet { UserDefaults.standard.set(center.rawValue, forKey: "center"); if center == .chat { Task { await loadChat() } } }
+    }
+    var panel: Panel = Panel(rawValue: UserDefaults.standard.string(forKey: "panel") ?? "") ?? .status {
+        didSet { UserDefaults.standard.set(panel.rawValue, forKey: "panel"); Task { await loadPanel() } }
+    }
+    var brief: BriefResult?
+    var chat: TranscriptResult?
+    var staged: [String: StagedAnswer] = [:]  // "<key>/<question id>": picked but not sent yet
+    var reopened: Set<String> = []  // answered cards opened again with Change
+    var discussing: Set<String> = []  // cards whose side discussion is open
+    var sendingAnswers = false
+    var answersNote: String?  // "Sent 2 answers to Claude…", under Needs you for a few seconds
+    var quote: String?  // what Reply put above the chat's message box
+    var chatSelection: ChatSelection?  // text selected in the chat view
+    var sideThread: String?  // the quote discussion open in the chat view
+    @ObservationIgnored var briefLoading = false
+    @ObservationIgnored var chatLoading = false
+    @ObservationIgnored var autoSend: Task<Void, Never>?
 
     @ObservationIgnored let backend = Backend()
     @ObservationIgnored let terminal = TerminalController()
@@ -130,8 +151,9 @@ final class AppModel {
         diffLoop?.cancel()
         diffLoop = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(3))
-                await self?.loadDiff(polling: true)
+                try? await Task.sleep(for: .seconds(2))
+                await self?.loadPanel(polling: true)
+                await self?.loadChat(polling: true)
             }
         }
     }
@@ -218,8 +240,17 @@ final class AppModel {
     private func selectionChanged() {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
+        brief = nil
+        chat = nil
+        chatSelection = nil
+        quote = nil
+        sideThread = nil
+        answersNote = nil
         terminalFailed = nil
-        Task { await loadDiff() }
+        Task {
+            await loadPanel()
+            await loadChat()
+        }
         syncTerminal()
     }
 
@@ -308,7 +339,10 @@ final class AppModel {
 
     func nextTourStop() {
         guard let stop = tourStop, let next = TourStop(rawValue: stop.rawValue + 1) else { endTour(); return }
-        if next == .changes && !showChanges { showChanges = true }
+        if next == .changes {
+            panel = .changes
+            if !showChanges { showChanges = true }
+        }
         tourStop = nil  // one popover closes before the next opens
         Task {
             try? await Task.sleep(for: .milliseconds(150))
@@ -325,7 +359,7 @@ final class AppModel {
 
     /// `polling`: the periodic refresh, skipped while the app is in the background.
     func loadDiff(polling: Bool = false) async {
-        guard showChanges, !diffLoading, !polling || NSApp.isActive, let ws = selected, ws.status != .archived,
+        guard showChanges, panel == .changes, !diffLoading, !polling || NSApp.isActive, let ws = selected, ws.status != .archived,
               phase == .ready else { return }
         diffLoading = true
         defer { diffLoading = false }
@@ -338,7 +372,7 @@ final class AppModel {
     // MARK: - Actions (each one is a wm request; wm does the checks)
 
     /// A wm request behind the busy indicator; errors (wm's own refusals included) become a toast.
-    private func request<T: Decodable>(_ message: String, _ method: String, _ params: [String: Any] = [:]) async -> T? {
+    func request<T: Decodable>(_ message: String, _ method: String, _ params: [String: Any] = [:]) async -> T? {
         if let busy {
             toast("Still busy: \(busy)", .warning)
             return nil

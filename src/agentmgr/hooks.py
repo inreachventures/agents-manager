@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
+from . import db, fetcher, gh, gitops, guard, ledger, naming, notify, sidechat, tmux, transcript
 from .config import get_config
 
 PROMPT_OPTION = "@wm_prompt"  # shown in the pane's top border by tmux.conf
@@ -36,13 +36,15 @@ def _find(conn, payload: dict) -> db.Workstream | None:
     return ws if ws and ws.status != db.ARCHIVED else None
 
 
-def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None) -> None:
+def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None, quiet: bool = False) -> None:
     if ws.status == status and ws.status_reason == reason:
         return
     db.set_status(conn, ws.key, status, reason)
     checked_at = time.time()
     if status in (db.NEEDS_YOU, db.YOUR_TURN) and tmux.watched(ws.key):
         db.mark_seen(conn, ws.key, checked_at)  # you're looking as it starts waiting: not on the dock badge
+    elif quiet:
+        return  # waiting on a job Claude started: nothing for you yet
     elif status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING):
         msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
         notify.notify(ws.label, msg)  # nobody is looking at this session
@@ -151,7 +153,7 @@ def _regenerate(conn, ws: db.Workstream) -> None:
         _log(f"SessionStart: regenerate: {type(e).__name__}: {e}")
 
 
-def on_pre_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
+def on_pre_tool_use(conn, ws: db.Workstream, payload: dict, side: bool = False) -> None:
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
     ctx = _context(conn, ws, payload)
@@ -167,7 +169,7 @@ def on_pre_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
     if reason:
         _deny(reason)
         return
-    if ws.status != db.WORKING:
+    if not side and ws.status != db.WORKING:
         _transition(conn, ws, db.WORKING)
 
 
@@ -196,21 +198,69 @@ def drift(conn, ws: db.Workstream) -> list[str]:
     return problems
 
 
-def on_post_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
+def on_post_tool_use(conn, ws: db.Workstream, payload: dict, side: bool = False) -> None:
+    tool = payload.get("tool_name")
     # a permission prompt was answered and the tool ran: back to working
-    if ws.status != db.WORKING:
+    if not side and ws.status != db.WORKING:
         _transition(conn, ws, db.WORKING)
-    if payload.get("tool_name") != "Bash":
+    # answers and edits made in the app reach a working Claude at its next tool call, without a chat message
+    inbox = None if side else ledger.take_inbox(ws.path)
+    out: dict = {}
+    if inbox:
+        out["hookSpecificOutput"] = {"hookEventName": "PostToolUse", "additionalContext": inbox}
+    if tool == "Bash":
+        problems = drift(conn, ws)
+        text = "; ".join(problems) or None
+        if text != ws.drift:
+            db.update_workstream(conn, ws.key, drift=text)
+        if problems:
+            out |= {"decision": "block", "reason": (
+                f"[wm] Workstream {ws.key} drifted: {text}. Restore it now (e.g. switch the worktree back to its "
+                "branch, `git worktree remove` anything you created) and don't repeat the command."
+            )}
+    if out:
+        _emit(out)
+
+
+def on_user_prompt(conn, ws: db.Workstream, payload: dict) -> None:
+    _transition(conn, ws, db.WORKING)
+    _show_prompt(ws, payload.get("prompt") or "")
+    ledger.begin_turn(ws.path)
+    if inbox := ledger.take_inbox(ws.path):
+        _emit({"hookSpecificOutput": {"hookEventName": "UserPromptSubmit", "additionalContext": inbox}})
+
+
+STATE_NUDGE = (
+    "[wm] Before you stop: update the status the user sees in the app. Run `wm state {key} \"<where the work "
+    "stands, one sentence>\"` and bring the steps up to date with `wm step {key} …`: mark what's done, add what "
+    "comes next with who does it (--owner you|job), and what each step waits on (--waits-on). If the work has "
+    "stages and no plan yet, set it out with `wm phase {key} …`; if a stage finished or started, move it. Then "
+    "stop; don't repeat it in the chat."
+)
+
+
+def on_stop(conn, ws: db.Workstream, payload: dict) -> None:
+    """Answers that arrived while Claude worked are handed over now, and Claude carries on with them rather than
+    stopping (Stop hooks can keep the turn going). After a turn of real work that didn't say where things stand,
+    Claude is asked to, once. Then it's the user's turn, unless a job Claude started is still running: it's waiting
+    on that job, and nobody needs a "your turn" notification."""
+    if inbox := ledger.take_inbox(ws.path):
+        _emit({"decision": "block", "reason": inbox})
         return
-    problems = drift(conn, ws)
-    text = "; ".join(problems) or None
-    if text != ws.drift:
-        db.update_workstream(conn, ws.key, drift=text)
-    if problems:
-        _emit({"decision": "block", "reason": (
-            f"[wm] Workstream {ws.key} drifted: {text}. Restore it now (e.g. switch the worktree back to its "
-            "branch, `git worktree remove` anything you created) and don't repeat the command."
-        )})
+    path = Path(payload["transcript_path"]) if payload.get("transcript_path") else None
+    if path and not payload.get("stop_hook_active") \
+            and ledger.should_nudge(ws.path, transcript.tools_since_prompt(path)):
+        _emit({"decision": "block", "reason": STATE_NUDGE.format(key=ws.key)})
+        return
+    jobs = transcript.running_jobs(path) if path else []
+    if isinstance(payload.get("background_tasks"), list):
+        # Claude Code says what is in flight (newer versions): trust it over the transcript for this moment
+        ledger.record_background(ws.path, payload["background_tasks"], payload.get("session_crons") or [])
+        jobs = transcript.merge_background([], None, ledger.load(ws.path)["background"])
+    if jobs:
+        _transition(conn, ws, db.YOUR_TURN, f"waiting on {jobs[0]['text']}", quiet=True)
+        return
+    _transition(conn, ws, db.YOUR_TURN)
 
 
 def on_notification(conn, ws: db.Workstream, payload: dict) -> None:
@@ -227,11 +277,18 @@ def dispatch(event: str, payload: dict) -> None:
     ws = _find(conn, payload)
     if ws is None:
         return  # not a managed session
+    if sidechat.is_side():
+        # a side discussion (sidechat.py): same guardrails, but the workstream's status and brief inbox belong to
+        # the main session
+        if event == "PreToolUse":
+            on_pre_tool_use(conn, ws, payload, side=True)
+        elif event == "PostToolUse":
+            on_post_tool_use(conn, ws, payload, side=True)
+        return
     if event == "SessionStart":
         on_session_start(conn, ws, payload)
     elif event == "UserPromptSubmit":
-        _transition(conn, ws, db.WORKING)
-        _show_prompt(ws, payload.get("prompt") or "")
+        on_user_prompt(conn, ws, payload)
     elif event == "PreToolUse":
         on_pre_tool_use(conn, ws, payload)
     elif event == "PostToolUse":
@@ -239,7 +296,7 @@ def dispatch(event: str, payload: dict) -> None:
     elif event == "Notification":
         on_notification(conn, ws, payload)
     elif event == "Stop":
-        _transition(conn, ws, db.YOUR_TURN)
+        on_stop(conn, ws, payload)
     elif event == "SessionEnd":
         _transition(conn, ws, db.STOPPED, payload.get("reason"))
 

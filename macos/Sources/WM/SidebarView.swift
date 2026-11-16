@@ -100,6 +100,14 @@ struct WorkstreamRow: View {
                     .lineLimit(1)
             }
             Spacer(minLength: 4)
+            if let n = ws.openQuestions, n > 0, ws.status != .archived {
+                Text("\(n)")
+                    .font(.caption2.weight(.bold).monospacedDigit())
+                    .foregroundStyle(Color.amber)
+                    .padding(.horizontal, 5)
+                    .background(Color.amber.opacity(0.15), in: Capsule())
+                    .help("\(n) \(n == 1 ? "question waits" : "questions wait") on you in the brief")
+            }
             if ws.status != .archived {
                 HStack(spacing: 3) {
                     ForEach(ws.repos) { repo in
@@ -121,7 +129,7 @@ struct WorkstreamRow: View {
                     .help("Session colour: \(color) (Claude's /color)")
             }
         }
-        .help(([ws.label, ws.statusText] + (ws.drift.map { ["drift: \($0)"] } ?? [])).joined(separator: "\n"))
+        .help(([ws.label, ws.stateText] + (ws.drift.map { ["drift: \($0)"] } ?? [])).joined(separator: "\n"))
     }
 
     @ViewBuilder private var subtitle: some View {
@@ -129,7 +137,8 @@ struct WorkstreamRow: View {
             Text("merged").foregroundStyle(Color.tone("purple"))
                 + Text(hint.text.dropFirst("merged".count)).foregroundStyle(Color.tone(hint.tone))
         } else {
-            Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
+            Text(ws.stateText).foregroundStyle(ws.status == .stopped ? Color.secondary
+                                               : ws.waiting.map { Color.waiting($0.on) } ?? Color.status(ws.status))
         }
     }
 }

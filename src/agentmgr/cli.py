@@ -336,6 +336,177 @@ def doctor() -> None:
         raise typer.Exit(1)
 
 
+# ---------------------------------------------------------------------------- the brief (written by Claude)
+
+BRIEF_PANEL = "The brief (used by Claude in a workstream)"
+
+
+def _brief(key: str, fn, *args, **kwargs):
+    """Run a ledger write for workstream `key`, turning a bad id or missing field into a clean message."""
+    from . import db, ledger
+
+    ws = _run(_service().require, db.connect(), key)
+    try:
+        return fn(ws.path, *args, **kwargs)
+    except ledger.LedgerError as e:
+        _fail(str(e))
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def ask(
+    key: str,
+    question: Annotated[str | None, typer.Argument(help="The question, in the user's words")] = None,
+    context: Annotated[str, typer.Option("--context", "-c", help="What it is about and why it matters")] = "",
+    option: Annotated[list[str] | None, typer.Option(
+        "--option", "-o", help='"label | what this option does to the result" (repeatable)')] = None,
+    recommended: Annotated[int | None, typer.Option(help="The option you recommend, from 1")] = None,
+    if_no_answer: Annotated[str, typer.Option(help="What you will do if the user doesn't answer")] = "",
+    assumption: Annotated[bool, typer.Option("--assumption", help="Checks something you assumed")] = False,
+    blocker: Annotated[bool, typer.Option("--blocker", help="Something only the user can do")] = False,
+    revise: Annotated[str | None, typer.Option(help="Reword an open question, e.g. Q2")] = None,
+    drop: Annotated[str | None, typer.Option(help="Drop an open question that is no longer needed")] = None,
+    reason: Annotated[str, typer.Option(help="With --drop: why")] = "",
+) -> None:
+    """Put a question for the user in the brief (the app shows it under Needs you)."""
+    from . import ledger
+
+    if drop:
+        if not reason.strip():
+            _fail("--drop needs --reason")
+        _brief(key, ledger.drop, drop, reason)
+        typer.echo(f"dropped {drop.upper()}")
+    elif revise:
+        _brief(key, ledger.revise, revise, title=question, context=context or None, options=option or None,
+               recommended=recommended, if_no_answer=if_no_answer or None)
+        typer.echo(f"revised {revise.upper()}")
+    else:
+        if not question:
+            _fail("missing the question")
+        kind = ledger.BLOCKER if blocker else ledger.ASSUMPTION if assumption else ledger.DECISION
+        qid = _brief(key, ledger.ask, question, context, option or [], recommended, if_no_answer, kind)
+        typer.echo(f"{qid} is in the brief; the user answers it in the app")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def fact(
+    key: str,
+    text: Annotated[str, typer.Argument()] = "",
+    found: Annotated[bool, typer.Option("--found", help="You checked it (default)")] = False,
+    assumed: Annotated[bool, typer.Option("--assumed", help="Not checked yet")] = False,
+    you: Annotated[bool, typer.Option("--you", help="The user said it")] = False,
+    example: Annotated[list[str] | None, typer.Option(help="A real id or row the user can check (repeatable)")] = None,
+    question: Annotated[str | None, typer.Option(help="With --assumed: the question that checks it")] = None,
+    update: Annotated[str | None, typer.Option(help="Correct fact F<n>")] = None,
+    remove: Annotated[str | None, typer.Option(help="Delete fact F<n>")] = None,
+) -> None:
+    """Record something known about the task, with where it comes from."""
+    from . import ledger
+
+    if not remove and not text.strip():
+        _fail("missing the fact")
+    source = ledger.ASSUMED if assumed else ledger.YOU if you else ledger.FOUND
+    fid = _brief(key, ledger.fact, text, source, examples=example, update=update, remove=remove, question=question)
+    typer.echo(f"{'removed' if remove else 'recorded'} {fid}")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def rule(
+    key: str,
+    text: Annotated[str, typer.Argument()] = "",
+    update: Annotated[str | None, typer.Option(help="Change rule R<n>")] = None,
+    remove: Annotated[str | None, typer.Option(help="Delete rule R<n>")] = None,
+) -> None:
+    """Record a rule the user set; it holds until they change it."""
+    from . import ledger
+
+    if not remove and not text.strip():
+        _fail("missing the rule")
+    rid = _brief(key, ledger.rule, text, update=update, remove=remove)
+    typer.echo(f"{'removed' if remove else 'recorded'} {rid}")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def changed(key: str, text: str) -> None:
+    """Record what you learned and what it changed: "learned X → changed Y"."""
+    from . import ledger
+
+    _brief(key, ledger.changed, text)
+    typer.echo("recorded")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def state(key: str, where: str) -> None:
+    """Say where the work stands, in one sentence (the app's Status card leads with it)."""
+    from . import ledger
+
+    _brief(key, ledger.state, where)
+    typer.echo("recorded")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def step(
+    key: str,
+    text: Annotated[str, typer.Argument(help="What has to happen, in plain words")] = "",
+    owner: Annotated[str | None, typer.Option(help="claude (default), you, or job")] = None,
+    waits_on: Annotated[list[str] | None, typer.Option(
+        "--waits-on", help="A step (S2), a question (Q1) or job (repeatable)")] = None,
+    doing: Annotated[str | None, typer.Option(help="Mark step S<n> as in progress")] = None,
+    done: Annotated[str | None, typer.Option(help="Mark step S<n> as done")] = None,
+    update: Annotated[str | None, typer.Option(help="Change step S<n> (text, --owner, --waits-on)")] = None,
+    remove: Annotated[str | None, typer.Option(help="Delete step S<n>")] = None,
+    phase: Annotated[str | None, typer.Option(help="The plan phase it belongs to (P2); new steps default to the "
+                                                   "current phase")] = None,
+) -> None:
+    """Add or update a step of the work: what happens next, who does it, and what it waits on."""
+    from . import ledger
+
+    if done or doing:
+        sid = _brief(key, ledger.step, text or None, owner, "done" if done else "doing", waits_on,
+                     update=done or doing, phase=phase)
+        typer.echo(f"{sid} {'done' if done else 'in progress'}")
+    elif remove:
+        typer.echo(f"removed {_brief(key, ledger.step, remove=remove)}")
+    else:
+        sid = _brief(key, ledger.step, text or None, owner, None, waits_on, update=update, phase=phase)
+        typer.echo(f"{'updated' if update else 'added'} {sid}")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def phase(
+    key: str,
+    text: Annotated[str, typer.Argument(help="The phase, in plain words (e.g. \"Evaluate the new model\")")] = "",
+    owner: Annotated[str | None, typer.Option(help="claude (default), you (a decision point), or job")] = None,
+    question: Annotated[str | None, typer.Option(help="The question (Q<n>) that decides a decision point")] = None,
+    before: Annotated[str | None, typer.Option(help="Insert before phase P<n> instead of at the end")] = None,
+    start: Annotated[str | None, typer.Option(help="Start phase P<n> (finishes the one in progress)")] = None,
+    done: Annotated[str | None, typer.Option(help="Mark phase P<n> as finished")] = None,
+    skip: Annotated[str | None, typer.Option(help="Skip phase P<n> (e.g. no deploy after a \"no\")")] = None,
+    update: Annotated[str | None, typer.Option(help="Change phase P<n> (text, --owner, --question)")] = None,
+    remove: Annotated[str | None, typer.Option(help="Delete phase P<n>")] = None,
+) -> None:
+    """Add or move a phase of the plan: the stages the work goes through, in order."""
+    from . import ledger
+
+    status = "doing" if start else "done" if done else "skipped" if skip else None
+    if status:
+        pid = _brief(key, ledger.phase, text or None, owner, status, question, update=start or done or skip)
+        typer.echo(f"{pid} {status}")
+    elif remove:
+        typer.echo(f"removed {_brief(key, ledger.phase, remove=remove)}")
+    else:
+        pid = _brief(key, ledger.phase, text or None, owner, None, question, before, update=update)
+        typer.echo(f"{'updated' if update else 'added'} {pid}")
+
+
+@app.command(rich_help_panel=BRIEF_PANEL)
+def brief(key: str) -> None:
+    """Print the brief: rules, facts, open questions and recent changes."""
+    from . import ledger
+
+    path = _brief(key, lambda p: p)
+    typer.echo(ledger.render(ledger.load(path)), nl=False)
+
+
 # ---------------------------------------------------------------------------- internal (hooks / tmux)
 
 

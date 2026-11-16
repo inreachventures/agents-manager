@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TextIO
 
-from . import db, diffs, fetcher, gh, gitops, sessioncolor, tmux, view, workstream
+from . import db, diffs, fetcher, gh, gitops, ledger, sessioncolor, sidechat, tmux, transcript, view, workstream
 from .config import Config, get_config, save_paths
 from .naming import NamingError
 from .repos import RepoMatchError, discover
@@ -35,10 +35,12 @@ BACKGROUND_GIT_MAX_AGE = 60  # view.GIT_MAX_AGE while the app is in the backgrou
 PR_REFRESH_SECONDS = 60
 COLOR_WAIT_SECONDS = 10  # after typing /color, how long to show the picked colour while Claude's transcript lacks it
 FETCH_SECONDS = 30  # each repo is actually fetched at most every fetcher.DASHBOARD_MAX_AGE
-EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError)
+EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError,
+            ledger.LedgerError, sidechat.SideError)
 # Requests that change nothing the dashboard shows, so no state push after them: the app asks for a diff every 3s,
 # and pushing the state after each one kept the state loop (git in every repo) running without a pause.
-QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "scan", "diff", "focus"})
+QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "scan", "diff", "focus", "brief",
+                   "transcript"})
 
 # view.git_state's rich styles, as colour names the app maps to its palette
 TONES = {"bold red": "red", "yellow": "yellow", view.BLUE: "blue", "bold green": "green", "grey50": "grey",
@@ -60,18 +62,65 @@ def _repo(rr: view.RepoRow) -> dict:
 WAITING = (db.NEEDS_YOU, db.YOUR_TURN)
 
 
+def waiting(ws: db.Workstream, data: dict, jobs: list[dict]) -> dict:
+    """Who the workstream is waiting on, in one word and one line: Claude, a job, you, or nobody (done).
+
+    Claude having stopped isn't the same as "your turn": while a monitor or background job it started is running,
+    it's waiting on that job and will pick up when it reports back."""
+    if ws.status in (db.ARCHIVED, db.STOPPED):
+        return {"on": ws.status, "text": ws.status}
+    if ws.status == db.NEEDS_YOU:
+        return {"on": "you", "text": ws.status_reason or "waiting on a prompt in the terminal"}
+    if ws.status == db.WORKING:
+        return {"on": "claude", "text": "Claude is working"}
+    questions = [q for q in data["questions"] if q["status"] == ledger.OPEN]
+    if questions:
+        n = len(questions)
+        return {"on": "you", "text": f"{n} question{'s' * (n > 1)} for you"}
+    if jobs:
+        more = f" (+{len(jobs) - 1} more)" if len(jobs) > 1 else ""
+        return {"on": "job", "text": f"waiting on {jobs[0]['text']}{more}"}
+    open_steps = [st for st in data["steps"] if st["status"] != "done"]
+    yours = [st for st in open_steps if st["owner"] == "you" and not ledger.blockers(data, st, False)]
+    if yours:
+        return {"on": "you", "text": yours[0]["text"]}
+    if data["steps"] and not open_steps:
+        return {"on": "done", "text": "all steps done"}
+    return {"on": "you", "text": "your turn" if ws.status == db.YOUR_TURN else ws.status}
+
+
+def _jobs(ws: db.Workstream) -> list[dict]:
+    if ws.status in (db.ARCHIVED, db.STOPPED):
+        return []  # background work ends with the session
+    reader = transcript.reader_for(transcript.path_for(ws.path, ws.session_id))
+    running = reader.running_jobs()
+    if ws.status == db.WORKING:
+        return running  # the stop list describes the last stop, not a turn under way
+    return transcript.merge_background(running, reader.jobs, ledger.load(ws.path)["background"])
+
+
 def _row(r: view.Row, unseen: bool, color: str | None) -> dict:
     ws = r.ws
     example = workstream.is_example(ws) and r.status != db.ARCHIVED
+    data = ledger.load(ws.path) if r.status != db.ARCHIVED else ledger.empty()
+    wait = waiting(ws, data, _jobs(ws))
     return {
         "key": ws.key, "ticket": ws.ticket, "name": ws.name, "label": ws.label, "status": r.status,
-        "unseen": unseen,  # waiting on you, and nobody has looked at the session since it started waiting
+        # waiting on you, and nobody has looked at the session since it started waiting; a session whose Claude
+        # waits on its own job isn't waiting on you, so it stays off the dock badge
+        "unseen": unseen and wait["on"] == "you",
         "color": color,  # Claude's /color for the session (see sessioncolor), None for its default
         "status_text": "example · ready to archive" if example else r.status_text,
         "since": ws.archived_at or ws.status_at, "folder": ws.folder,
         "intake": r.intake, "drift": ws.drift, "all_merged": r.all_merged, "base_ci": r.base_ci,
+        # the sidebar's "N questions" badge, and who it is waiting on (see `waiting`)
+        "open_questions": sum(q["status"] == ledger.OPEN for q in data["questions"]),
+        "waiting": wait,
         # everything merged and CI passed on base, or no CI there: the TUI's "→ x archive"
-        "ready_to_archive": example or (r.all_merged and r.base_ci in ("pass", None)),
+        # and nothing is still going on: no job running, no open step or question
+        "ready_to_archive": example or (r.all_merged and r.base_ci in ("pass", None) and wait["on"] in ("you", "done")
+                                        and not any(st["status"] != "done" for st in data["steps"])
+                                        and not any(q["status"] == ledger.OPEN for q in data["questions"])),
         "repos": [_repo(rr) for rr in r.repos],
     }
 
@@ -113,6 +162,19 @@ def _unseen(rows: list[view.Row], clients: dict[int, str]) -> set[str]:
         if ws.key in looking:
             db.mark_seen(conn, ws.key, checked_at)
     return {ws.key for ws in waiting if ws.key not in looking}
+
+
+def task_goal(ws_path: Path) -> str | None:
+    """The Goal section of TASK.md, which heads the app's Brief panel; None during intake."""
+    try:
+        text = (ws_path / "TASK.md").read_text()
+    except OSError:
+        return None
+    _, found, rest = text.partition("## Goal")
+    if not found:
+        return None
+    goal = rest.split("\n## ", 1)[0].strip()
+    return " ".join(goal.split()) or None
 
 
 def _paths(values: list[str]) -> list[Path]:
@@ -434,6 +496,116 @@ class Server:
         if digest == since:
             return {"key": ws.key, "digest": digest, "unchanged": True, "repos": []}
         return {"key": ws.key, "digest": digest, "repos": repos}
+
+    # ------------------------------------------------------------------ the brief and the chat
+
+    def rpc_brief(self, key: str, since: str | None = None) -> dict:
+        """The Brief panel: questions, now, rules, facts, changes, side discussions. `since` as in rpc_diff."""
+        ws = workstream.require(db.connect(), key)
+        reader = self.reader(ws)
+        jobs = _jobs(ws)
+        data = ledger.for_app(ws.path, jobs_running=bool(jobs)) | {
+            "goal": task_goal(ws.path), "activity": reader.activity(), "jobs": jobs,
+            "waiting": waiting(ws, ledger.load(ws.path), jobs)}
+        digest = hashlib.sha1(json.dumps(data, sort_keys=True).encode()).hexdigest()[:16]
+        if digest == since:
+            return {"key": ws.key, "digest": digest, "unchanged": True}
+        return {"key": ws.key, "digest": digest, **data}
+
+    def rpc_brief_answer(self, key: str, answers: list[dict]) -> dict:
+        """Record answers from the app. If Claude is waiting for the user, one short line starts its turn and the
+        UserPromptSubmit hook hands it the answers; if it is working, the next tool call or its Stop does (hooks.py).
+        A permission prompt is left alone: typing into it would answer it."""
+        conn = db.connect()
+        ws = workstream.require(conn, key)
+        ids = ledger.answer(ws.path, answers)
+        sent = False
+        if ids and ws.status == db.YOUR_TURN and workstream.session_alive(ws):
+            with self.typing:  # not while a /color goes in (apply_colors)
+                # only at an empty prompt: a draft you started in the terminal would get the line appended. Else
+                # the answers wait in the inbox for your next message.
+                if sessioncolor.prompt_ready(tmux.capture(ws.key), sessioncolor.vim_keys()):
+                    tmux.send_text(ws.key, f"[wm] Answered in the brief: {', '.join(ids)}")
+                    sent = True
+        return {"answered": ids, "sent": sent}
+
+    def rpc_brief_edit(self, key: str, kind: str, id: str | None = None, text: str | None = None,
+                       remove: bool = False) -> dict:
+        """The user adds, corrects or removes a rule or fact. It reaches Claude with its next prompt or tool call,
+        without starting a turn of its own."""
+        ws = workstream.require(db.connect(), key)
+        return {"note": ledger.user_edit(ws.path, kind, id, text, remove=remove)}
+
+    def rpc_brief_step(self, key: str, id: str, done: bool) -> dict:
+        """The user ticks off a step (their own, usually) or reopens one."""
+        ws = workstream.require(db.connect(), key)
+        return {"note": ledger.user_step(ws.path, id, "done" if done else "todo")}
+
+    def rpc_side_open(self, key: str, question: str | None = None, quote: str | None = None,
+                      message: str | None = None) -> dict:
+        ws = workstream.require(db.connect(), key)
+        anchor = {"question": question.upper()} if question else {"quote": (quote or "").strip(), "message": message}
+        if not question and not anchor["quote"]:
+            raise ledger.LedgerError("nothing to discuss: no question and no quote")
+        return {"id": ledger.open_thread(ws.path, anchor)}
+
+    def rpc_side_ask(self, key: str, id: str, text: str) -> dict:
+        """Start Claude on a side discussion and return at once; the answer shows up in the brief."""
+        conn = db.connect()
+        ws = workstream.require(conn, key)
+        if ws.status == db.WORKING:
+            raise sidechat.SideError("Claude is working in the main session; ask again when it stops, so two "
+                                     "copies of Claude don't change the same files at once")
+        if not text.strip():
+            raise sidechat.SideError("empty message")
+        if ledger.thread(ws.path, id)["busy"]:
+            raise sidechat.SideError("Claude is still answering this side discussion")
+        self.pool.submit(self._side, ws, id, text.strip())
+        return {}
+
+    def _side(self, ws: db.Workstream, tid: str, text: str) -> None:
+        try:
+            sidechat.ask(ws, tid, text)
+        except Exception as e:  # noqa: BLE001 — the thread shows the error instead of spinning forever
+            traceback.print_exc()
+            ledger.thread_post(ws.path, tid, "claude", "", busy=False, error=f"{type(e).__name__}: {e}")
+        self.wake.set()
+
+    def rpc_side_close(self, key: str, id: str) -> dict:
+        ws = workstream.require(db.connect(), key)
+        ledger.close_thread(ws.path, id)
+        return {}
+
+    def rpc_transcript(self, key: str, since: str | None = None) -> dict:
+        """The conversation as messages for the app's chat view. `since` as in rpc_diff."""
+        ws = workstream.require(db.connect(), key)
+        messages = self.reader(ws).read()
+        digest = hashlib.sha1(json.dumps(messages, sort_keys=True).encode()).hexdigest()[:16]
+        if digest == since:
+            return {"key": ws.key, "digest": digest, "unchanged": True, "messages": []}
+        return {"key": ws.key, "digest": digest, "messages": messages}
+
+    def reader(self, ws: db.Workstream) -> transcript.Reader:
+        """The workstream's transcript, parsed incrementally; shared by the chat view and the Status tab."""
+        return transcript.reader_for(transcript.path_for(ws.path, ws.session_id))
+
+    def rpc_send(self, key: str, text: str) -> dict:
+        """A message typed in the app's chat view, sent to Claude as if typed in the terminal (one line: a newline
+        would submit what comes before it)."""
+        ws = workstream.require(db.connect(), key)
+        if not workstream.session_alive(ws):
+            raise workstream.WorkstreamError(f"{ws.key} is stopped; resume it first")
+        if ws.status == db.NEEDS_YOU:
+            raise workstream.WorkstreamError("Claude is waiting on a prompt in the terminal; answer it there first")
+        line = " ".join(text.split())
+        if not line:
+            raise workstream.WorkstreamError("empty message")
+        with self.typing:  # not while a /color or an answer line goes in
+            if sessioncolor.prompt_text(tmux.capture(ws.key)):
+                raise workstream.WorkstreamError("there's a message half-typed in the terminal; send or clear it "
+                                                 "there first")
+            tmux.send_text(ws.key, line)
+        return {}
 
     def rpc_attach(self, key: str) -> dict:
         """argv for the app's terminal: a tmux client on the workstream's app view."""

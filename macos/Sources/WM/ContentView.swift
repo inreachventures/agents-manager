@@ -60,6 +60,17 @@ struct DetailView: View {
                 if let ws = model.selected, ws.status != .archived {
                     ToolbarItem(placement: .automatic) { RepoChips(ws: ws) }
                 }
+                if let ws = model.selected, ws.status.isRunning {
+                    ToolbarItem(placement: .automatic) {
+                        Picker("View", selection: $model.center) {
+                            Text("Chat").tag(Center.chat)
+                            Text("Terminal").tag(Center.terminal)
+                        }
+                        .pickerStyle(.segmented)
+                        .help("Chat: Claude's replies as text you can select and quote. Terminal: the real Claude "
+                              + "session, for permission prompts and slash commands.")
+                    }
+                }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.refreshing {
                         ProgressView().controlSize(.small)
@@ -77,20 +88,23 @@ struct DetailView: View {
                     Button {
                         model.showChanges.toggle()
                     } label: {
-                        Label("Changes", systemImage: "sidebar.trailing")
+                        Label("Panel", systemImage: "sidebar.trailing")
                     }
-                    .help("Show or hide the changes (⌥⌘0)")
+                    .help("Show or hide Needs you, Now, Brief and Changes (⌥⌘0)")
                 }
             }
             .inspector(isPresented: $model.showChanges) {
-                ChangesPanel()
-                    .inspectorColumnWidth(min: 320, ideal: 520, max: 1100)
+                SidePanel()
+                    .inspectorColumnWidth(min: 320, ideal: 460, max: 1100)
+            }
+            .onChange(of: model.center) { _, center in
+                if center == .terminal { model.terminal.focus() }
             }
     }
 
     private var subtitle: String {
         guard let ws = model.selected else { return "" }
-        var parts = [ws.statusText]
+        var parts = [ws.stateText]
         if let hint = ws.mergeHint { parts.append(hint.text) }
         return parts.joined(separator: " · ")
     }
@@ -115,8 +129,15 @@ struct DetailView: View {
                         Button("Try Again") { model.retryTerminal() }
                     }
                 } else if ws.status.isRunning {
-                    TerminalHost(controller: model.terminal)
-                        .background(Color(nsColor: WMTerminalView.background))
+                    // the terminal stays attached under the chat, so switching back is instant and wm's "is anyone
+                    // looking at this session" check keeps working
+                    ZStack {
+                        TerminalHost(controller: model.terminal)
+                            .background(Color(nsColor: WMTerminalView.background))
+                        if model.center == .chat {
+                            ChatView().background(Color(nsColor: .textBackgroundColor))
+                        }
+                    }
                 } else {
                     Placeholder(symbol: "pause.circle", title: "Session stopped",
                                 text: model.setup?.claudeMissing == true ? SetupInfo.claudeHint

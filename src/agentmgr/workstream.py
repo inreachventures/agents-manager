@@ -521,9 +521,12 @@ def start_session(ws: db.Workstream, initial_prompt: str | None = None, resume: 
         return
     claudetrust.ensure_trusted(get_config().workstreams_dir, Path.home() / claudetrust.STATE_FILE_NAME)
     tmux.prune_views()  # an app view whose session was killed by an older wm still runs the previous Claude
+    # The wm that starts the session comes first on its PATH: the tmux server is shared, and its PATH may lead to
+    # another copy (the Mac app's, a checkout's), whose `wm ask` and friends would not match the hooks written here.
+    path = os.pathsep.join([str(Path(tmux.wm_executable()).parent), os.environ.get("PATH", "")])
     tmux.new_session(
         ws.key, ws.path, claude_command(ws, resume=resume, initial_prompt=initial_prompt),
-        env={"AGENTMGR_WS": ws.key},
+        env={"AGENTMGR_WS": ws.key, "PATH": path},
     )
 
 
