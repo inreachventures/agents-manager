@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 
 /// Workstreams in the TUI's order (needs you, working, your turn, intake, stopped), one row each, with a dot per repo
@@ -114,6 +115,12 @@ struct WorkstreamRow: View {
             .foregroundStyle(.tertiary)
         }
         .padding(.vertical, 2)
+        .overlay(alignment: .leading) {  // Claude's /color for the session, at the row's edge
+            if let color = ws.color {
+                Capsule().fill(Color.session(color)).frame(width: 3).padding(.vertical, 1).offset(x: -7)
+                    .help("Session colour: \(color) (Claude's /color)")
+            }
+        }
         .help(([ws.label, ws.statusText] + (ws.drift.map { ["drift: \($0)"] } ?? [])).joined(separator: "\n"))
     }
 
@@ -162,10 +169,40 @@ struct WorkstreamMenu: View {
         }
         Button("Add Repo…") { Task { await model.startAddRepo(ws.key) } }
         Button("Rebase…") { Task { await model.startRebase(ws.key) } }
+        ColorMenu(ws: ws)
         Divider()
         Button("Reveal in Finder") { model.reveal(ws.folder) }
         Divider()
         Button("Archive…") { Task { await model.startArchive(ws.key) } }
+    }
+}
+
+/// Claude's /color for the session: wm types `/color <name>` into it when Claude waits at an empty prompt.
+private struct ColorMenu: View {
+    @Environment(AppModel.self) private var model
+    let ws: Workstream
+
+    var body: some View {
+        Picker("Colour", selection: Binding(get: { ws.color ?? "default" },
+                                           set: { name in Task { await model.setColor(ws.key, name) } })) {
+            ForEach(Color.sessionColors, id: \.self) { name in
+                Label { Text(name.capitalized) } icon: { Image(nsImage: swatch(name)) }.tag(name)
+            }
+            Divider()
+            Text("Default").tag("default")
+        }
+        .pickerStyle(.menu)
+    }
+
+    /// A coloured dot: menus draw SF Symbols as templates, in the text colour.
+    private func swatch(_ name: String) -> NSImage {
+        let image = NSImage(size: NSSize(width: 12, height: 12), flipped: false) { rect in
+            NSColor(Color.session(name)).setFill()
+            NSBezierPath(ovalIn: rect.insetBy(dx: 1, dy: 1)).fill()
+            return true
+        }
+        image.isTemplate = false
+        return image
     }
 }
 

@@ -9,7 +9,10 @@ repos in the top bar and what their branches change on the right.
 - **Sidebar**: one row per workstream, in the same order and states as `wm`'s dashboard (needs you, working, your
   turn, intake, stopped). A spinner while Claude works, a pulsing dot when it waits for you (orange with `!` when
   it's blocked on a permission or a question) that stops pulsing once you've looked at the session, and a small dot
-  per repo coloured by what it needs next; hover it for the details.
+  per repo coloured by what it needs next; hover it for the details. A strip at the row's edge shows the colour
+  Claude's `/color` gave the session. To set it, right-click (or Control-click) the row → Colour: wm types
+  `/color <name>` into the session as soon as Claude waits at an empty prompt, so it never mixes with a message
+  you've started.
 - **Top bar**: the selected workstream's repos, each with that dot, its PR number or, from 20 commits, how far
   behind base it is (`acme-web 23↓`). Click one to see only its changes, again to see all; right-click for its PRs,
   its worktree and its branch name. ⌘1–⌘9 pick the Nth repo, ⌘0 all of them.

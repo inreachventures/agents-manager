@@ -7,7 +7,7 @@ import SwiftUI
 ///   snap NAME · select KEY · select-archived KEY · select-row N · repo NAME|all (a top-bar chip)
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
-///   appearance dark|light · tour [STOP] · onscreen
+///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -27,6 +27,7 @@ enum DebugControl {
                 }
             }
         }
+        RunLoop.main.add(timer!, forMode: .common)  // also while a menu is open (snap-menus)
     }
 
     private static var window: NSWindow? {
@@ -44,6 +45,14 @@ enum DebugControl {
             if let sheet = window.attachedSheet { snapshot(sheet, to: "\(dir)/\(name)-sheet.png") }
             let popovers = NSApp.windows.filter { $0.isVisible && String(describing: type(of: $0)).contains("Popover") }
             if !popovers.isEmpty { composite([window] + popovers, to: "\(dir)/\(name)-tour.png") }
+        case "snap-menus":  // the window with the context menu (and submenu) open on it, as on screen
+            guard let window else { return }
+            let menus = (CGWindowListCopyWindowInfo([.optionAll], kCGNullWindowID) as? [[String: Any]] ?? [])
+                .filter { ($0[kCGWindowOwnerPID as String] as? NSNumber)?.int32Value == getpid()
+                          && ($0[kCGWindowLayer as String] as? NSNumber)?.intValue ?? 0 > 0 }  // menus: not "on screen"
+                .compactMap { ($0[kCGWindowNumber as String] as? NSNumber)?.intValue }
+            composite(windowNumbers: menus.reversed() + [window.windowNumber], frame: window.frame,
+                      to: "\(dir)/\(rest.first ?? "snap")-menus.png")
         case "onscreen":
             window?.setFrameOrigin(NSPoint(x: 60, y: 60))
         case "select":
@@ -122,10 +131,11 @@ enum DebugControl {
                     target.sendEvent(event)
                 }
             }
-        case "click":
+        case "click", "right-click":  // right-click: opens the context menu there (for a screenshot of it)
             guard let window, let x = Double(rest[0]), let y = Double(rest[1]) else { return }
             let point = NSPoint(x: x, y: window.frame.height - y)
-            for type in [NSEvent.EventType.leftMouseDown, .leftMouseUp] {
+            let types: [NSEvent.EventType] = command == "click" ? [.leftMouseDown, .leftMouseUp] : [.rightMouseDown]
+            for type in types {
                 if let event = NSEvent.mouseEvent(with: type, location: point, modifierFlags: [],
                                                   timestamp: ProcessInfo.processInfo.systemUptime,
                                                   windowNumber: window.windowNumber, context: nil, eventNumber: 0,
@@ -146,12 +156,17 @@ enum DebugControl {
 
     /// The main window with its popovers on top, as on screen.
     private static func composite(_ windows: [NSWindow], to path: String) {
+        composite(windowNumbers: windows.reversed().map(\.windowNumber),
+                  frame: windows.map(\.frame).reduce(windows[0].frame) { $0.union($1) }, to: path)
+    }
+
+    /// `windowNumbers`: front first; `frame`: the area to capture, in screen coordinates.
+    private static func composite(windowNumbers: [Int], frame: NSRect, to path: String) {
         guard let sym = dlsym(UnsafeMutableRawPointer(bitPattern: -2), "CGWindowListCreateImageFromArray"),
               let screen = NSScreen.screens.first else { return }
         let create = unsafeBitCast(sym, to: CreateFromArray.self)
-        let frame = windows.map(\.frame).reduce(windows[0].frame) { $0.union($1) }
         let bounds = CGRect(x: frame.minX, y: screen.frame.height - frame.maxY, width: frame.width, height: frame.height)
-        var ids = windows.reversed().map { UnsafeRawPointer(bitPattern: UInt($0.windowNumber)) }  // front first
+        var ids = windowNumbers.map { UnsafeRawPointer(bitPattern: UInt($0)) }
         guard let list = CFArrayCreate(nil, &ids, ids.count, nil),
               let image = create(bounds, list, 1 << 3)?.takeRetainedValue() else { return }
         try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?

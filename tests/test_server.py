@@ -30,7 +30,7 @@ def test_state_lists_workstreams_with_their_repos(env):
     ws_mod.archive(gone.key)
     (ws.path / "acme-web" / "new.txt").write_text("x\n")
 
-    data = server.state()
+    data = server.state({})
     [row] = data["workstreams"]
     assert (row["key"], row["label"], row["status"], row["intake"]) == ("PROJ-1", "PROJ-1 dark mode", "stopped", True)
     [repo] = row["repos"]
@@ -193,13 +193,13 @@ def test_the_example_is_made_once_and_ready_to_archive(env):
     srv = server.Server(io.StringIO())
     assert ask(srv, "create_example")["result"] == {"key": "EXAMPLE-1"}
     assert ask(srv, "create_example")["result"] == {"key": None}
-    [row] = server.state()["workstreams"]
+    [row] = server.state({})["workstreams"]
     assert (row["label"], row["ready_to_archive"], row["status_text"]) == (
         "EXAMPLE-1 archive me", True, "example · ready to archive")
     assert ask(srv, "archive_report", key="EXAMPLE-1")["result"]["blocked"] is False
     ask(srv, "archive", key="EXAMPLE-1")
     assert ask(srv, "create_example")["result"] == {"key": None}  # archived still counts: not made again
-    assert [r["key"] for r in server.state()["archived"]] == ["EXAMPLE-1"]
+    assert [r["key"] for r in server.state({})["archived"]] == ["EXAMPLE-1"]
 
 
 def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
@@ -209,7 +209,7 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
     def ready(base_ci, merged=True):
         row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
                                                                           merged, base_ci)])
-        return server._row(row, False)["ready_to_archive"]
+        return server._row(row, False, None)["ready_to_archive"]
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)
@@ -234,7 +234,7 @@ def test_only_requests_that_change_something_push_the_state(env, monkeypatch):
 
 def test_the_state_loop_reads_git_less_often_in_the_background(env, monkeypatch):
     ages = []
-    monkeypatch.setattr(server, "state", lambda git_max_age=0: ages.append(git_max_age) or {"push": len(ages)})
+    monkeypatch.setattr(server, "state", lambda colors, git_max_age=0: ages.append(git_max_age) or {"push": len(ages)})
     srv = server.Server(io.StringIO())
     srv.push_state()
     srv.app_active = False
@@ -253,7 +253,7 @@ def test_a_waiting_session_counts_as_unseen_until_someone_looks_at_it(env, monke
         tmux.new_session(ws.key, env.root, ["sleep", "600"])
         view_ = tmux.ensure_view(ws.key)
         db.set_status(conn, ws.key, db.YOUR_TURN)
-        unseen = lambda: server.state()["workstreams"][0]["unseen"]  # noqa: E731
+        unseen = lambda: server.state({})["workstreams"][0]["unseen"]  # noqa: E731
         monkeypatch.setattr(tmux, "client_sessions", lambda: {})
         assert unseen()
         srv = server.Server(io.StringIO())
