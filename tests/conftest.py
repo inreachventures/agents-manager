@@ -31,6 +31,8 @@ def env(tmp_path, monkeypatch):
     origins = tmp_path / "origins"
     code.mkdir()
     origins.mkdir()
+    (tmp_path / "userhome").mkdir()
+    monkeypatch.setenv("HOME", str(tmp_path / "userhome"))
     monkeypatch.setenv("AGENTMGR_HOME", str(tmp_path / "home"))
     monkeypatch.setenv("AGENTMGR_CODE_ROOTS", str(code))
     monkeypatch.setenv("AGENTMGR_WORKSTREAMS_DIR", str(tmp_path / "workstreams"))
