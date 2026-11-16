@@ -68,12 +68,20 @@ def regenerate(conn, ws: db.Workstream, cfg: Config | None = None, pending_repos
 
 
 APP_WM = ".app/Contents/Resources/wm/bin/wm"  # where the Mac app keeps its wm
+VOLUMES = "/Volumes/"  # where disk images mount
+
+
+def _about_to_vanish(wm: str) -> bool:
+    """A copy of the app on a disk image or translocated by macOS: the rule of the app's
+    `ShellEnvironment.runningFromTemporaryPlace`."""
+    return wm.startswith(VOLUMES) or "/AppTranslocation/" in wm
 
 
 def repoint_hooks() -> list[str]:
     """Regenerate the workstreams whose hooks call a wm that is gone (the Mac app was moved, say): a hook that can't
-    run blocks nothing, so their guardrails would be off. From the Mac app, also those calling another copy of it
-    (the one on its disk image, soon ejected). Returns their keys."""
+    run blocks nothing, so their guardrails would be off. From the Mac app, also those calling a copy of it that is
+    about to vanish: one on its disk image, soon ejected, or translocated by macOS. Another installed copy (a test
+    build, an older install) keeps its hooks. Returns their keys."""
     here = tmux.wm_executable()
     conn = _conn()
     fixed = []
@@ -83,7 +91,8 @@ def repoint_hooks() -> list[str]:
             wm = shlex.split(next(iter(hooks.values()))[0]["hooks"][0]["command"])[0]
         except (OSError, ValueError, KeyError, IndexError, StopIteration):
             continue
-        if not os.access(wm, os.X_OK) or (tmux.bundled() and wm != here and wm.endswith(APP_WM)):
+        if not os.access(wm, os.X_OK) or (tmux.bundled() and wm != here and wm.endswith(APP_WM)
+                                          and _about_to_vanish(wm)):
             regenerate(conn, ws)
             fixed.append(ws.key)
     return fixed
