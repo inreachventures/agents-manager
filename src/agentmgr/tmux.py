@@ -194,10 +194,24 @@ def session_option(name: str, option: str) -> str:
 
 def send_text(name: str, text: str) -> None:
     """Type `text` into the session's active pane and press Enter, as if you had typed a message to Claude."""
-    pane = f"{target(name)}:"
-    run("send-keys", "-t", pane, "-l", text)
+    type_text(name, text)
     time.sleep(0.5)  # a separate, later Enter submits; sent with the text it can be taken as part of a paste
-    run("send-keys", "-t", pane, "Enter")
+    press_enter(name)
+
+
+def type_text(name: str, text: str) -> None:
+    """Type `text` into the session's active pane, without pressing Enter."""
+    run("send-keys", "-t", f"{target(name)}:", "-l", text)
+
+
+def press_enter(name: str) -> None:
+    run("send-keys", "-t", f"{target(name)}:", "Enter")
+
+
+def capture(name: str) -> str:
+    """What the session's active pane shows, with its colours and styles as escape sequences; "" if it's gone."""
+    proc = run("capture-pane", "-p", "-e", "-t", f"{target(name)}:", check=False)
+    return proc.stdout if proc.returncode == 0 else ""
 
 
 def clients(name: str) -> list[str]:

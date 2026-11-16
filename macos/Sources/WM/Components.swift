@@ -22,6 +22,23 @@ extension Color {
             ? NSColor.systemYellow : NSColor(srgbRed: 0.70, green: 0.47, blue: 0.0, alpha: 1)
     })
 
+    /// The colours Claude Code's /color offers, in its order, as wm sends them.
+    static let sessionColors = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"]
+
+    static func session(_ name: String) -> Color {
+        switch name {
+        case "red": return .red
+        case "blue": return .blue
+        case "green": return .green
+        case "yellow": return .yellow
+        case "purple": return .purple
+        case "orange": return .orange
+        case "pink": return .pink
+        case "cyan": return .cyan
+        default: return .clear
+        }
+    }
+
     static func status(_ status: Status) -> Color {
         switch status {
         case .needsYou: return .orange

@@ -48,6 +48,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var label: String
     var status: Status
     var unseen: Bool?  // waiting on you and not looked at since; nil from an older wm: any waiting one counts
+    var color: String?  // Claude's /color for the session (red, blue, …), nil for its default
     var statusText: String
     var since: Double
     var folder: String
@@ -188,6 +189,7 @@ struct ExampleResult: Decodable { var key: String? }
 struct LogResult: Decodable { var log: [String] }
 struct AttachResult: Decodable { var argv: [String] }
 struct SwitchResult: Decodable { var switched: Bool }
+struct ColorResult: Decodable { var applied: Bool }
 struct ReposResult: Decodable { var repos: [String] }
 struct RefreshResult: Decodable { var failed: [String] }
 

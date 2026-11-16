@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TextIO
 
-from . import db, diffs, fetcher, gh, gitops, tmux, view, workstream
+from . import db, diffs, fetcher, gh, gitops, sessioncolor, tmux, view, workstream
 from .config import Config, get_config, save_paths
 from .naming import NamingError
 from .repos import RepoMatchError, discover
@@ -33,6 +33,7 @@ STATE_SECONDS = 2
 BACKGROUND_STATE_SECONDS = 10  # while the app is behind other apps, when only its dock badge shows
 BACKGROUND_GIT_MAX_AGE = 60  # view.GIT_MAX_AGE while the app is in the background
 PR_REFRESH_SECONDS = 60
+COLOR_WAIT_SECONDS = 10  # after typing /color, how long to show the picked colour while Claude's transcript lacks it
 FETCH_SECONDS = 30  # each repo is actually fetched at most every fetcher.DASHBOARD_MAX_AGE
 EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError)
 # Requests that change nothing the dashboard shows, so no state push after them: the app asks for a diff every 3s,
@@ -59,12 +60,13 @@ def _repo(rr: view.RepoRow) -> dict:
 WAITING = (db.NEEDS_YOU, db.YOUR_TURN)
 
 
-def _row(r: view.Row, unseen: bool) -> dict:
+def _row(r: view.Row, unseen: bool, color: str | None) -> dict:
     ws = r.ws
     example = workstream.is_example(ws) and r.status != db.ARCHIVED
     return {
         "key": ws.key, "ticket": ws.ticket, "name": ws.name, "label": ws.label, "status": r.status,
         "unseen": unseen,  # waiting on you, and nobody has looked at the session since it started waiting
+        "color": color,  # Claude's /color for the session (see sessioncolor), None for its default
         "status_text": "example · ready to archive" if example else r.status_text,
         "since": ws.archived_at or ws.status_at, "folder": ws.folder,
         "intake": r.intake, "drift": ws.drift, "all_merged": r.all_merged, "base_ci": r.base_ci,
@@ -74,18 +76,24 @@ def _row(r: view.Row, unseen: bool) -> dict:
     }
 
 
-def state(git_max_age: float = 0) -> dict:
+def state(colors: dict[str, str], git_max_age: float = 0) -> dict:
     """Everything the dashboard shows, in the TUI's order: needs you, working, your turn, intake, stopped.
-    `git_max_age`: see view.load. Marks the waiting sessions someone is looking at as seen (_unseen)."""
+    `colors`: session colours chosen in the app that Claude doesn't show yet (Server.colors). `git_max_age`: see
+    view.load. Marks the waiting sessions someone is looking at as seen (_unseen)."""
     tmux.prune_views()
     rows = view.load(include_archived=True, git_max_age=git_max_age)
     active = [r for r in rows if r.status != db.ARCHIVED]
     oks = [rr.fetched_ok_at for r in active for rr in r.repos]
     clients = tmux.client_sessions()
     unseen = _unseen(active, clients)
+
+    def color(ws: db.Workstream) -> str | None:
+        chosen = colors.get(ws.key)
+        return (chosen if chosen in sessioncolor.COLORS else None) if chosen else sessioncolor.current(ws)
+
     return {
-        "workstreams": [_row(r, r.ws.key in unseen) for r in active],
-        "archived": [_row(r, False) for r in rows if r.status == db.ARCHIVED],
+        "workstreams": [_row(r, r.ws.key in unseen, color(r.ws)) for r in active],
+        "archived": [_row(r, False, None) for r in rows if r.status == db.ARCHIVED],
         "origin": {"repos": len(oks), "checked_at": None if None in oks or not oks else min(oks)},
         # client pid -> the session it shows, so the app notices when tmux moved its terminal (C-b s, say)
         "clients": {str(pid): session for pid, session in clients.items()},
@@ -145,6 +153,11 @@ class Server:
         self.last_state: dict | None = None
         self.app_active = True  # the app is the frontmost app (rpc_focus)
         self.fresh = False  # the next state push reads every repo's git state again (rpc_refresh)
+        # per workstream: the session colour picked in the app (a sessioncolor.COLORS name or "default") and when wm
+        # typed it into the session (None: not yet, Claude is busy). Shown until Claude's transcript has it.
+        self.colors: dict[str, tuple[str, float | None]] = {}
+        self.colors_lock = threading.Lock()
+        self.typing = threading.Lock()  # one apply_colors at a time, so a colour is typed once
         self.locks: dict[str, threading.Lock] = {}  # per workstream: one change at a time (an add-repo during an
         self.locks_lock = threading.Lock()  # archive would leave a worktree behind)
 
@@ -183,6 +196,8 @@ class Server:
                 self.pool.submit(self.call, line)
         self.done.set()
         self.pool.shutdown(wait=True)  # an archive or rebase in flight runs to the end
+        with self.typing:  # nor quit halfway through typing a /color, which would leave it in the prompt
+            pass
 
     def _every(self, fn, seconds: float | None) -> None:
         while not self.done.is_set():
@@ -201,10 +216,68 @@ class Server:
 
     def push_state(self) -> None:
         fresh, self.fresh = self.fresh, False
-        data = state(git_max_age=0 if fresh else self.git_max_age())
+        try:
+            self.apply_colors()
+        except Exception:  # noqa: BLE001 — the dashboard goes out regardless
+            traceback.print_exc()
+        data = state(self.chosen_colors(), git_max_age=0 if fresh else self.git_max_age())
         if data != self.last_state:
             self.last_state = data
             self.send({"event": "state", "data": data})
+
+    def chosen_colors(self) -> dict[str, str]:
+        with self.colors_lock:
+            return {key: color for key, (color, _) in self.colors.items()}
+
+    def apply_colors(self) -> None:
+        """Type each colour picked in the app into its session once Claude waits at an empty prompt, and forget it
+        once Claude's transcript has it (or a while after typing it, if Claude ignored it)."""
+        with self.typing:
+            self._apply_colors()
+
+    def _apply_colors(self) -> None:
+        with self.colors_lock:
+            todo = dict(self.colors)
+        for key, entry in todo.items():
+            try:
+                self._apply_color(key, *entry)
+            except Exception:  # noqa: BLE001 — one session's trouble mustn't hold up the others or the state push
+                traceback.print_exc()
+
+    def _apply_color(self, key: str, color: str, sent_at: float | None) -> None:
+        conn = db.connect()
+        ws = db.get_workstream(conn, key)
+        if ws is None or ws.status == db.ARCHIVED:
+            done = True
+        elif sent_at is not None:
+            now = sessioncolor.current(ws) or "default"
+            done = now == color or time.time() - sent_at > COLOR_WAIT_SECONDS
+        else:
+            done = False
+            if (ws.status in (db.YOUR_TURN, db.INTAKE) and workstream.session_alive(ws)
+                    and sessioncolor.prompt_ready(tmux.capture(ws.key), sessioncolor.vim_keys())):
+                done = not self._type_color(ws, color)
+                if not done:
+                    with self.colors_lock:
+                        if self.colors.get(key) == (color, None):
+                            self.colors[key] = (color, time.time())
+        if done:
+            with self.colors_lock:
+                if self.colors.get(key) == (color, sent_at):
+                    del self.colors[key]
+
+    def _type_color(self, ws: db.Workstream, color: str) -> bool:
+        """Type `/color <color>` and press Enter, unless something else reached the prompt in between (you started
+        typing): then leave it there for you to see, unsent, and give up on the pick. False if given up."""
+        command = f"/color {color}"
+        tmux.type_text(ws.key, command)
+        time.sleep(0.5)  # a later, separate Enter submits; sent with the text it can be taken as part of a paste
+        if sessioncolor.prompt_text(tmux.capture(ws.key)) != command:
+            self.notice(f"{ws.key}: you started typing as wm set the colour, so it didn't send `{command}`",
+                        "warning")
+            return False
+        tmux.press_enter(ws.key)
+        return True
 
     def call(self, line: str) -> None:
         try:
@@ -244,7 +317,22 @@ class Server:
     # ------------------------------------------------------------------ requests (rpc_<method>)
 
     def rpc_state(self) -> dict:
-        return state(git_max_age=self.git_max_age())
+        return state(self.chosen_colors(), git_max_age=self.git_max_age())
+
+    def rpc_set_color(self, key: str, color: str) -> dict:
+        """Give the workstream's Claude session this /color (a sessioncolor.COLORS name or "default"). wm types it
+        into the session now if Claude waits at an empty prompt, else when it next does (`applied`: False)."""
+        if color not in (*sessioncolor.COLORS, "default"):
+            raise workstream.WorkstreamError(f"unknown colour {color!r}")
+        ws = workstream.require(db.connect(), key)
+        if ws.status == db.ARCHIVED:
+            raise workstream.WorkstreamError(f"{ws.key} is archived")
+        with self.colors_lock:
+            self.colors[ws.key] = (color, None)
+        self.apply_colors()
+        with self.colors_lock:
+            entry = self.colors.get(ws.key)
+        return {"applied": entry is None or entry[1] is not None}
 
     def rpc_repos(self) -> dict:
         return {"repos": [r.name for r in discover(get_config())]}

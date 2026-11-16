@@ -424,6 +424,21 @@ final class AppModel {
         selection = key
     }
 
+    /// Claude's /color for the workstream's session ("default" for none). wm types it in now if Claude waits at an
+    /// empty prompt, else as soon as it does; the sidebar shows it meanwhile.
+    func setColor(_ key: String, _ color: String) async {
+        do {
+            let result: ColorResult = try await backend.call("set_color", ["key": key, "color": color])
+            if !result.applied {
+                let stopped = state.workstreams.first { $0.key == key }?.status == .stopped
+                toast(stopped ? "\(key): Claude gets the colour when you resume it"
+                              : "\(key): Claude gets the colour when it next waits for you at an empty prompt", .info)
+            }
+        } catch {
+            toast(error.localizedDescription, .error)
+        }
+    }
+
     func refresh() async {
         guard !refreshing else { return }
         refreshing = true
