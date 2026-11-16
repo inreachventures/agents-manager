@@ -78,15 +78,18 @@ env -u AGENTMGR_WM -u AGENTMGR_WS -u TMUX -u TMUX_PANE -u WM_BIN \
 `WM_UPDATE_FEED_URL` points that one process at the test feed and switches its updater on. It is an environment
 variable rather than a user default because the app's defaults are shared with the copy you use every day, and a
 leftover default would point it at the test feed. The `env -u` part drops what a wm session or a development setup
-would otherwise pass on. Choose Check for Updates… and install the update, but when Sparkle offers Install and
-Relaunch, quit the copy with ⌘Q instead: from Sparkle's source, it should install the update as the app quits and start
-nothing (not yet tried on a real update). Run the
-same command again to see the new version.
+would otherwise pass on. Choose Check for Updates… and Install Update, but when Sparkle offers Install and
+Relaunch, quit the copy with ⌘Q instead: Sparkle installs the update as the app quits and starts nothing. Run the
+same command again to see the new version; Check for Updates… then says it is up to date.
 
 Don't choose Install and Relaunch. Sparkle relaunches the copy without that environment, so it opens on your real
 workstreams, binds wm's tmux keys to its own wm and can rewrite their hooks to call it. If that happens, quit it at
 once, delete the copy, then quit and reopen your own app: it binds the keys back and repoints every hook that calls
 a wm that is gone. Afterwards stop the server and delete `$S`.
+
+CI checks each release before publishing it: `scripts/check-update.swift` mounts each disk image and fails the
+release unless the app inside reads its chip's feed, has the tag's version and accepts the image's signature with
+its own public key.
 
 The development build runs `wm app-server` from, in order: `$WM_BIN`, the path set in Settings (⌘,), the `wm` of
 the checkout it was built from (`.venv/bin/wm`), then the first `wm` on your login shell's PATH; a release build

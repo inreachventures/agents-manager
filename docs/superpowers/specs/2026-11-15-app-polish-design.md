@@ -70,6 +70,7 @@ They ship as four independent PRs against `main`, one per item:
 - **App.** An `SPUStandardUpdaterController` is created at launch, and "Check for Updates…" goes in the app menu after "About".
 - **CI, on a `v*` tag only.**
   - Sign each DMG with Sparkle's `sign_update` and the secret `SPARKLE_ED_PRIVATE_KEY`.
+  - Before publishing, check each DMG as the app will (`macos/scripts/check-update.swift`): the app inside reads that chip's feed, has the tag's version, and its `SUPublicEDKey` accepts the signature. A secret that doesn't match the app's key fails the release instead of shipping an update every copy would refuse.
   - Write `appcast-<chip>.xml` for each chip. Each feed has one item: the version, the signature and length, `sparkle:minimumSystemVersion` 14.0, and a link to the GitHub release page for the notes.
   - Attach both feeds to the release with the DMGs.
   - `sign_update` is a macOS tool, so this runs on a macOS runner: the release job moves to `macos-15`, or the signing happens in the build job when the run is for a tag.

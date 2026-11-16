@@ -88,6 +88,8 @@ jobs:
             signature=$(sed -n 's/.*sparkle:edSignature="\([^"]*\)".*/\1/p' <<< "$signed")
             length=$(sed -n 's/.*length="\([0-9]*\)".*/\1/p' <<< "$signed")
             [ -n "$signature" ] && [ -n "$length" ] || { echo "::error::sign_update gave no signature for $dmg"; exit 1; }
+            # the app inside must read this chip's feed, be this version and accept the signature, or nothing is published
+            swift macos/scripts/check-update.swift "$dmg" "$chip" "$version" "$signature"
             python3 macos/scripts/make_appcast.py --version "$version" --chip "$chip" \
               --dmg-url "$base/download/$GITHUB_REF_NAME/Workstreams-$version-$chip.dmg" \
               --signature "$signature" --length "$length" --release-url "$base/tag/$GITHUB_REF_NAME" \
