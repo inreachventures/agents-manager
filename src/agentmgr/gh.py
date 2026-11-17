@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import functools
 import json
 import shutil
 import subprocess
@@ -42,7 +41,7 @@ def _checks(rollup: list[dict] | None) -> str | None:
 
 def _pr_list(worktree: Path, *args: str) -> list[dict]:
     proc = subprocess.run(
-        ["gh", "pr", "list", "--state", "all", "--json", f"{FIELDS},headRefName,baseRefName,author", *args],
+        ["gh", "pr", "list", "--state", "all", "--json", f"{FIELDS},headRefName,baseRefName", *args],
         cwd=worktree, capture_output=True, text=True, timeout=30,
     )
     if proc.returncode != 0:
@@ -50,30 +49,17 @@ def _pr_list(worktree: Path, *args: str) -> list[dict]:
     return json.loads(proc.stdout or "[]")
 
 
-@functools.cache
-def _login() -> str:
-    """The GitHub user gh is logged in as: whose PRs count as the workstream's."""
-    proc = subprocess.run(["gh", "api", "user", "--jq", ".login"], capture_output=True, text=True, timeout=30)
-    if proc.returncode != 0 or not proc.stdout.strip():
-        raise RuntimeError(proc.stderr.strip() or "gh: no login")
-    return proc.stdout.strip()
-
-
 def fetch_prs(worktree: Path, branch: str, prefixes: list[str]) -> list[dict]:
-    """PRs opened from `branch`, or from any other branch whose name starts with one of the workstream's `prefixes`
-    (naming.branch_prefixes, e.g. 'proj-313-'): stacks and re-cut branches. One search per prefix, which also finds
-    the branch's own PRs when its name carries the prefix (the usual case); a separate lookup otherwise.
+    """PRs opened from `branch`, whoever opened them, and your PRs from any other branch whose name starts with one
+    of the workstream's `prefixes` (naming.branch_prefixes, e.g. 'proj-313-'): stacks and re-cut branches.
 
-    Each developer's wm counts its own WS-<n> keys, so another developer's ws-7-* branches share this workstream's
-    prefix: of the other branches, only PRs you opened count. The branch's own PRs count whoever opened them."""
-    found = {}
-    if not any(branch.lower().startswith(p) for p in prefixes):
-        found |= {p["number"]: p for p in _pr_list(worktree, "--head", branch, "--limit", "10")}
+    Only yours from the other branches, because each developer's wm counts its own WS-<n> keys, so a colleague's
+    ws-7-* branches share this workstream's prefix. GitHub resolves `author:@me` for the repo's host and token."""
+    found = {p["number"]: p for p in _pr_list(worktree, "--head", branch, "--limit", "10")}
     for prefix in prefixes:
         # GitHub's head: qualifier matches branch names by prefix; keep only exact prefix matches all the same
-        for p in _pr_list(worktree, "--search", f"head:{prefix}", "--limit", "50"):
-            head = p.get("headRefName", "")
-            if head.lower().startswith(prefix) and (head == branch or (p.get("author") or {}).get("login") == _login()):
+        for p in _pr_list(worktree, "--search", f"head:{prefix} author:@me", "--limit", "50"):
+            if p.get("headRefName", "").lower().startswith(prefix):
                 found[p["number"]] = p
     return list(found.values())
 

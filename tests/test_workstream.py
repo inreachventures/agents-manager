@@ -133,10 +133,13 @@ def test_generated_branch_already_on_origin(env):
     theirs: refuse rather than quietly build on it, and say how to continue it on purpose."""
     web = env.code / "acme-web"
     sh(web, "git", "push", "-q", "origin", "HEAD:refs/heads/proj-8-their-work")
-    with pytest.raises(WorkstreamError, match="already exists on origin.*--branch proj-8-their-work"):
+    with pytest.raises(WorkstreamError, match="nothing was created.*without acme-web.*--branch proj-8-their-work"):
         new(ticket="PROJ-8", name="their work", repo_queries=["web"])
     assert db.get_workstream(db.connect(), "PROJ-8") is None
     ws = new(ticket="PROJ-8", name="their work")
+    with pytest.raises(WorkstreamError, match="Ask the user.*add-repo PROJ-8 acme-web --branch proj-8-their-work"):
+        ws_mod.add_repo(ws.key, "web")
+    assert db.list_repos(db.connect(), ws.key) == []
     res = ws_mod.add_repo(ws.key, "web", branch="proj-8-their-work")
     assert not res.created_branch and res.link.branch == "proj-8-their-work"
 

@@ -133,13 +133,12 @@ prompt when resuming a stopped session; Claude resolves, tests and pushes.
 
 ### PR status (D10)
 
-`gh pr list --state all --search "head:<ticket-or-key>-" --json number,state,isDraft,reviewDecision,statusCheckRollup,url,headRefName,baseRefName,…`
-per repo: GitHub's `head:` qualifier matches by prefix, so one search finds the PRs of the workstream branch and of
-any other branch whose name carries the workstream's prefix (a stack, a re-cut branch); the brief asks Claude to name
-such branches that way. A branch without the prefix (`--branch` on `add-repo`) is also looked up by name (`--head`),
-and a branch another workstream has in the same repo is left to that one. Each developer's `wm` counts its own
-`WS-<n>` keys, so another developer's `ws-7-*` branches share the prefix: of the other branches, only PRs opened by
-the logged-in `gh` user count (the workstream branch's own PRs count whoever opened them). Cached in SQLite: `prs` holds the
+Per repo, one `--head` lookup plus one search per prefix with `gh pr list --state all --json number,state,isDraft,reviewDecision,statusCheckRollup,url,headRefName,…`.
+`--head <branch>` finds the workstream branch's own PRs, whoever opened them. `--search "head:<ticket-or-key>-
+author:@me"` finds your PRs from any other branch carrying the workstream's prefix (a stack, a re-cut branch; the
+brief asks Claude to name such branches that way): GitHub's `head:` qualifier matches by prefix, and `author:@me`
+keeps out a colleague's branches, which share the prefix because each developer's `wm` counts its own `WS-<n>` keys.
+A branch another workstream has in the same repo is left to that one. Cached in SQLite: `prs` holds the
 workstream branch's PR (open first, else the most recently updated; or none / n/a), `branch_prs` every PR found (a
 table of its own so an older `wm` reading the same database keeps working). Refreshed every ~60s while a dashboard is
 open and on demand. If `gh` isn't authenticated, show "PR n/a" instead of failing. MVP doesn't create PRs; Claude does
@@ -207,7 +206,8 @@ already attached).
 4. **Attach repos**: `wm add-repo <key> <repo> [--branch <existing>]`. The manager creates the worktree and the
    branch `<ticket-or-key>-<name-slug>` from the repo's default branch, so the naming stays guaranteed. If that
    branch already exists on origin it refuses (it may be another developer's, since keys repeat across machines)
-   and says to pass `--branch` to continue it on purpose.
+   and says to ask the user, then pass `--branch` to continue it or rename the workstream; the intake brief tells
+   Claude the same.
    It refuses until a name is set (the branch depends on it). Voice transcription mangles names
    ("acme ML pipeline"), so `CLAUDE.md` lists the available repos and `add-repo` fuzzy-matches, rejecting
    anything ambiguous with the candidates. `wm set <key>` and `wm add-repo <key>` are pre-approved via `--allowedTools` on the `claude` command line
