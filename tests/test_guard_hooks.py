@@ -321,7 +321,7 @@ def test_a_failed_drawing_is_not_retried_until_a_repo_moves(env, monkeypatch, ca
     real_which = shutil.which
     monkeypatch.setattr(taskmap.shutil, "which", lambda cmd, *a, **k: (
         f"/fake/bin/{cmd}" if cmd in ("node", "claude") else real_which(cmd, *a, **k)))
-    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log: spawned.append(argv) or (4201, 4101))
+    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log, limit: spawned.append(argv) or (4201, 4101))
     monkeypatch.setattr(taskmap, "_alive", lambda pid, pgid: False)  # every drawing dies at once without saving
 
     _commit(wt, "a.txt")

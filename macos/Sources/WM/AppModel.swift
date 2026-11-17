@@ -65,6 +65,7 @@ final class AppModel {
     var diff: DiffResult?
     var changesMode: [String: ChangesMode] = [:]  // per workstream: diff (the default) or map
     var map: MapResult?
+    var mapLoadError: MapLoadError?  // why the selected workstream's map couldn't be fetched, while there is none to show
     var mapLenses: [String: String] = [:]  // per workstream: the lens picked in the map (none: the first it has)
     var jump: DiffJump?  // a map card's file for the diff to open and scroll to; the diff clears it once there
     var backToMap: MapViewState?  // set by a jump from the map, until the user goes back or moves on
@@ -300,6 +301,7 @@ final class AppModel {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
         map = nil
+        mapLoadError = nil
         jump = nil
         backToMap = nil
         mapRestore = nil
@@ -428,12 +430,17 @@ final class AppModel {
         defer { mapLoading = false }
         var params: [String: Any] = ["key": ws.key]
         if let digest = map?.digest, map?.key == ws.key { params["since"] = digest }
-        guard let data = try? await backend.callRaw("map", params),
-              let result = try? await Task.detached(priority: .userInitiated, operation: {
-                  try MapResult.parse(data, decoder: Backend.decoder)
-              }).value,
-              result.unchanged != true else { return }
-        if result.key == selected?.key { map = result }
+        do {
+            let data = try await backend.callRaw("map", params)
+            let result = try await Task.detached(priority: .userInitiated, operation: {
+                try MapResult.parse(data, decoder: Backend.decoder)
+            }).value
+            if mapLoadError?.key == ws.key { mapLoadError = nil }
+            if result.unchanged != true, result.key == selected?.key { map = result }
+        } catch {
+            // a map already showing stays; with none, say why instead of spinning
+            if map?.key != ws.key { mapLoadError = MapLoadError(key: ws.key, message: error.localizedDescription) }
+        }
     }
 
     /// Draw the selected workstream's map again now; how it goes shows in the map's status line.

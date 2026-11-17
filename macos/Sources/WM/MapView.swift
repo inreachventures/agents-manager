@@ -14,6 +14,14 @@ struct MapPanel: View {
     var body: some View {
         if let map = model.map, map.key == ws.key {
             content(map)
+        } else if let error = model.mapLoadError, error.key == ws.key {
+            ContentUnavailableView {
+                Label("Can't load the map", systemImage: "exclamationmark.triangle")
+            } description: {
+                Text(error.message)
+            } actions: {
+                Button("Try again") { Task { await model.loadMap() } }
+            }
         } else {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
         }
@@ -149,7 +157,7 @@ struct MapPanel: View {
     }
 
     private var openLogButton: some View {
-        Button("Open log") { model.reveal(ws.folder + "/.wm/map/last-run.log") }
+        Button("Open log") { model.reveal(ws.folder + "/.wm/map/failed-run.log") }
             .help("Show the last drawing's log in Finder")
     }
 }

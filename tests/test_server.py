@@ -354,7 +354,7 @@ def test_redraw_map_starts_drawing(env, monkeypatch):
     srv = server.Server(io.StringIO())
     spawned = []
     monkeypatch.setattr(taskmap.shutil, "which", lambda cmd, *a, **k: f"/fake/{cmd}")
-    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log: spawned.append(argv) or (4201, 4101))
+    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log, limit: spawned.append(argv) or (4201, 4101))
     monkeypatch.setattr(taskmap, "_alive", lambda pid, pgid: True)
     assert ask(srv, "redraw_map", key=ws.key)["result"] == {"result": "started"}
     assert len(spawned) == 1
@@ -370,8 +370,9 @@ def test_map_reports_failure(env):
 
     ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
     srv = server.Server(io.StringIO())
-    taskmap._record_failure(ws, "claude exited 1", ran=True)
+    taskmap.map_dir(ws).mkdir(parents=True, exist_ok=True)
     (taskmap.map_dir(ws) / "last-run.log").write_text("claude exited 1\n")
+    taskmap._record_failure(ws, "claude exited 1", ran=True)
     failure = ask(srv, "map", key=ws.key)["result"]["failure"]
     assert failure["reason"] == "claude exited 1" and failure["at"] > 0 and failure["log"] is True
 

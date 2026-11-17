@@ -205,7 +205,7 @@ struct MapResult: Decodable, Equatable {
     struct Failure: Decodable, Equatable {
         var at: Double
         var reason: String
-        var log: Bool?  // the drawing ran and left `last-run.log` to open (one that never started has none)
+        var log: Bool?  // the drawing ran and left its log (`failed-run.log`) to open (one that never started has none)
     }
 
     static let drawable = ["architecture", "data-flow", "data-model"]
@@ -320,4 +320,10 @@ struct ArchiveReport: Decodable, Identifiable {
 struct Notice: Decodable {
     var level: String
     var message: String
+}
+
+/// Why fetching a workstream's map failed (wm stopped, a reply it couldn't parse).
+struct MapLoadError: Equatable {
+    let key: String
+    let message: String
 }

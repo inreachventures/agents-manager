@@ -2,8 +2,8 @@
 
 Map files live under `<workstream folder>/.wm/map/`, never inside a repo: `map.json` is the saved map, `drawing.json`
 the drawing in progress, `lock` serialises changes to the drawing state, `brief.md` tells the drawing process what to
-do, `draft.json` is what it writes, `last-run.log` its output, `failure.json` why the last drawing failed and
-`attempted.json` the heads the last drawing started from."""
+do, `draft.json` is what it writes, `last-run.log` its output, `failure.json` why the last drawing failed (and
+`failed-run.log` that drawing's output), and `attempted.json` the heads the last drawing started from."""
 
 from __future__ import annotations
 
@@ -31,6 +31,10 @@ PRLENS = importlib.resources.files("agentmgr") / "data" / "prlens"
 NO_SHA = "0" * 40
 VALIDATE_TIMEOUT = 30
 DRAWING_TIMEOUT = 15 * 60
+KILL_GRACE = 10  # seconds between the watchdog's SIGTERM and its SIGKILL
+# wm's own backstop, should a drawing's watchdog itself be gone: wall-clock time, so far past the watchdog's limit
+REAP_TIMEOUT = 4 * DRAWING_TIMEOUT
+FAILED_LOG = "failed-run.log"  # the log of the last drawing that failed
 PROMPT = "Draw this workstream's task map: follow .wm/map/brief.md"
 NO_NODE = "The task map needs Node.js"
 LOG_TAIL = 20
@@ -235,34 +239,36 @@ def _convention_problems(doc: dict, repos: list[str]) -> list[str]:
 
 
 def save(key: str, token: str, draft: Path) -> None:
-    """Accept a drawn map: check it, store it as the current map and mark the drawing saved. Raises MapError."""
+    """Accept a drawn map: check it, store it as the current map and mark the drawing saved. Raises MapError. The
+    validator runs outside the lock (it may take seconds, and a session's commit hook waits on the lock); the token is
+    checked again under it before anything is written."""
     ws = workstream.require(db.connect(), key)
+    drawing = read_drawing(ws)
+    if drawing is None or drawing.token != token:
+        raise MapError("this drawing is not the one in progress (the token does not match)")
+    try:
+        doc = json.loads(Path(draft).read_text())
+    except (OSError, ValueError) as e:
+        raise MapError(f"the draft is not valid JSON: {e}") from e
+    if not isinstance(doc, dict):
+        raise MapError("the draft must be a JSON object")
+    marks = [m for m in drawing.snapshot.values() if not m.error]
+    first = marks[0] if marks else RepoMark(NO_SHA, NO_SHA, "")
+    doc["provenance"] = {"repo": {"owner": "wm", "name": ws.key}, "base": {"sha": first.fork},
+                         "head": {"sha": first.head}}
+    problems = _validate(doc) + _convention_problems(doc, list(drawing.snapshot))
+    if problems:
+        raise MapError("\n".join(problems))
     with locked(ws):
-        drawing = read_drawing(ws)
-        if drawing is None or drawing.token != token:
+        current = read_drawing(ws)
+        if current is None or current.token != token:
             raise MapError("this drawing is not the one in progress (the token does not match)")
-        try:
-            doc = json.loads(Path(draft).read_text())
-        except (OSError, ValueError) as e:
-            raise MapError(f"the draft is not valid JSON: {e}") from e
-        if not isinstance(doc, dict):
-            raise MapError("the draft must be a JSON object")
-        marks = [m for m in drawing.snapshot.values() if not m.error]
-        first = marks[0] if marks else RepoMark(NO_SHA, NO_SHA, "")
-        doc["provenance"] = {"repo": {"owner": "wm", "name": ws.key}, "base": {"sha": first.fork},
-                             "head": {"sha": first.head}}
-        problems = _validate(doc) + _convention_problems(doc, list(drawing.snapshot))
-        if problems:
-            raise MapError("\n".join(problems))
         _write_json(map_dir(ws) / "map.json", {"doc": doc, "drawn_at": time.time(),
-                                                "snapshot": {r: asdict(m) for r, m in drawing.snapshot.items()},
+                                                "snapshot": {r: asdict(m) for r, m in current.snapshot.items()},
                                                 "token": token})
-        drawing.saved = True
-        write_drawing(ws, drawing)
+        current.saved = True
+        write_drawing(ws, current)
         (map_dir(ws) / "failure.json").unlink(missing_ok=True)
-
-
-# ---------------------------------------------------------------------------- the drawing process
 
 
 def draft_path(ws: db.Workstream) -> Path:
@@ -271,11 +277,12 @@ def draft_path(ws: db.Workstream) -> Path:
 
 def last_failure(ws: db.Workstream) -> dict | None:
     """Why the last drawing failed, as {"at", "reason", "log"}; None once a drawing has saved. `log`: the drawing ran
-    and its `last-run.log` is there to open (a drawing that never started has none of its own)."""
+    and its log, kept as `failed-run.log`, is there to open (a drawing that never started has none of its own;
+    `last-run.log` may already be the next drawing's)."""
     try:
         raw = json.loads((map_dir(ws) / "failure.json").read_text())
         return {"at": float(raw["at"]), "reason": str(raw["reason"]),
-                "log": raw.get("ran") is True and (map_dir(ws) / "last-run.log").is_file()}
+                "log": raw.get("ran") is True and (map_dir(ws) / FAILED_LOG).is_file()}
     except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
@@ -290,7 +297,12 @@ def attempted_heads(ws: db.Workstream) -> dict[str, str] | None:
 
 
 def _record_failure(ws: db.Workstream, reason: str, ran: bool) -> None:
-    """`ran`: the drawing process ran (so its log is this failure's), rather than never starting."""
+    """`ran`: the drawing process ran (so its log is this failure's, and is kept), rather than never starting."""
+    if ran:
+        try:
+            shutil.copyfile(map_dir(ws) / "last-run.log", map_dir(ws) / FAILED_LOG)
+        except OSError:
+            pass
     _write_json(map_dir(ws) / "failure.json", {"at": time.time(), "reason": reason, "ran": ran})
 
 
@@ -324,14 +336,26 @@ def _running(drawing: Drawing) -> bool:
     return drawing.pid is not None and drawing.pgid is not None and _alive(drawing.pid, drawing.pgid)
 
 
-def _spawn(argv: list[str], cwd: Path, env: dict, log: Path) -> tuple[int, int]:
+def _spawn(argv: list[str], cwd: Path, env: dict, log: Path, limit: int) -> tuple[int, int]:
     """Start `argv` detached, output to `log`; returns its pid and process group. `sh` backgrounds it and exits at
     once, so the caller can exit too and nothing is left a zombie: the process is reparented to launchd. It stays in
     the process group of that `sh` (a new session, so the group id is the sh's pid), and `_kill` reaches everything
-    it starts."""
-    proc = subprocess.run(["/bin/sh", "-c", 'exec "$@" >"$LOG" 2>&1 </dev/null &\necho $$ $!', "sh", *argv],
-                          env={**env, "LOG": str(log)}, cwd=cwd, start_new_session=True, stdin=subprocess.DEVNULL,
-                          capture_output=True, text=True)
+    it starts. A watchdog in the same group stops the group once `argv` has run `limit` seconds (SIGTERM, then SIGKILL
+    after `KILL_GRACE`), whether or not anything is around to reap it; it ignores the SIGTERM and leaves once `argv`
+    has ended. It counts seconds slept, so time the Mac spends asleep doesn't count."""
+    watchdog = (
+        "(trap '' TERM; n=0\n"
+        ' while kill -0 "$child" 2>/dev/null; do\n'
+        '  if [ "$n" -ge "$LIMIT" ]; then\n'
+        '   echo "wm: stopped: still running after $((LIMIT / 60)) minutes" >>"$LOG"\n'
+        '   kill -TERM -$$; sleep "$GRACE"; kill -KILL -$$; exit\n'
+        "  fi\n"
+        "  sleep 1; n=$((n + 1))\n"
+        " done) >/dev/null 2>&1 </dev/null &\n")
+    script = '"$@" >"$LOG" 2>&1 </dev/null &\nchild=$!\n' + watchdog + "echo $$ $child"
+    proc = subprocess.run(["/bin/sh", "-c", script, "sh", *argv],
+                          env={**env, "LOG": str(log), "LIMIT": str(limit), "GRACE": str(KILL_GRACE)}, cwd=cwd,
+                          start_new_session=True, stdin=subprocess.DEVNULL, capture_output=True, text=True)
     pgid, pid = map(int, proc.stdout.split())
     return pid, pgid
 
@@ -361,7 +385,7 @@ def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing)
     rules = [f"Bash({diff} *)" for diff in cmds["diff"].values()]
     for git in cmds["git"].values():
         rules += [f"Bash({git} {sub} *)" for sub in ("log", "show", "status")]
-    rules += [f"Edit(/{draft_path(ws)})", f"Bash({cmds['validate']} *)", f"Bash({cmds['save']} *)"]
+    rules += [f"Edit(/{draft_path(ws)})", f"Bash({cmds['validate_draft']})", f"Bash({cmds['save_draft']})"]
     return rules
 
 
@@ -407,8 +431,9 @@ def brief_text(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing, ex
             continue
         repos.append(f"- `{link.repo}/`: branch `{link.branch}`, base `{link.base}`, forked at `{mark.fork}`.\n"
                      f"  Its changes, committed and not: `{cmds['diff'][link.repo]}`. Only that diff command is "
-                     f"allowed, with options or ` -- <path>` added after it. Also allowed: `{git} log ...`, "
-                     f"`{git} show ...`, `{git} status`.")
+                     f"allowed, with options or ` -- <path>` added after it. New files not yet added to git aren't "
+                     f"in it: `{git} status` lists them, and Read opens them. Also allowed: `{git} log ...`, "
+                     f"`{git} show ...`.")
     if existing:
         redraw = (f"A map was drawn before: `{map_dir(ws) / 'map.json'}` (the document is its `doc` field). Redraw "
                   "from it: keep the id of every lane, node, edge and flow that still exists, so its card stays in "
@@ -480,18 +505,19 @@ def _reap(conn, ws: db.Workstream) -> str | None:
         if drawing is None:
             return None
         alive = _running(drawing)
-        timed_out = time.time() - drawing.started_at > DRAWING_TIMEOUT
+        timed_out = time.time() - drawing.started_at > REAP_TIMEOUT
         if alive and not timed_out:
             return None
         if alive:
             _kill(drawing.pid, drawing.pgid)
         write_drawing(ws, None)
         if not drawing.saved:
-            reason = (f"timed out after {DRAWING_TIMEOUT // 60} minutes" if alive
+            reason = (f"timed out after {REAP_TIMEOUT // 60} minutes" if alive
                       else _log_tail(ws) or "the drawing stopped without saving a map")
             _record_failure(ws, reason, ran=True)
-        if drawing.requested_again:
-            rerun = bool(freshness(ws.key, drawing.snapshot, snapshot(conn, ws), db.list_repos(conn, ws.key)))
+        if drawing.requested_again:  # a repo it can't read doesn't count: it would rerun after every drawing
+            stale = freshness(ws.key, drawing.snapshot, snapshot(conn, ws), db.list_repos(conn, ws.key))
+            rerun = any(s["reason"] != "unavailable" for s in stale)
     return start_drawing(conn, ws) if rerun else None
 
 
@@ -526,12 +552,16 @@ def start_drawing(conn, ws: db.Workstream) -> str:
                           snapshot=snapshot(conn, ws))
         (map_dir(ws) / "brief.md").write_text(brief_text(ws, links, drawing, load(ws)))
         draft_path(ws).unlink(missing_ok=True)
+        # a repo whose diff can't be read is still recorded at its HEAD, so a commit-like command elsewhere
+        # doesn't count it as moved and start a drawing every time
         _write_json(map_dir(ws) / "attempted.json",
-                    {"heads": {repo: mark.head for repo, mark in drawing.snapshot.items() if not mark.error}})
+                    {"heads": heads(conn, ws) | {r: m.head for r, m in drawing.snapshot.items() if not m.error}})
         argv = drawing_argv(claude, ws, links, drawing)
-        env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV} | {DRAWING_ENV: "1"}
+        # GIT_OPTIONAL_LOCKS=0: its `git status` never takes index.lock from under the session's own git commands
+        env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV} | {DRAWING_ENV: "1",
+                                                                              "GIT_OPTIONAL_LOCKS": "0"}
         try:
-            drawing.pid, drawing.pgid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")
+            drawing.pid, drawing.pgid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log", DRAWING_TIMEOUT)
         except (OSError, ValueError) as e:
             _record_failure(ws, f"the drawing could not start: {e}", ran=False)
             return "failed"

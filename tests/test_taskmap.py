@@ -240,8 +240,8 @@ class Fakes:
                 return "/fake/bin/claude"
             return real_which(cmd, *args, **kwargs)
 
-        def spawn(argv, cwd, env, log):
-            self.calls.append({"argv": argv, "cwd": cwd, "env": env, "log": log})
+        def spawn(argv, cwd, env, log, limit):
+            self.calls.append({"argv": argv, "cwd": cwd, "env": env, "log": log, "limit": limit})
             return 4200 + len(self.calls), 4100 + len(self.calls)
 
         monkeypatch.setattr(taskmap.shutil, "which", which)
@@ -277,7 +277,14 @@ def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
         assert f"Bash(git -C {wt} diff *)" not in rules
         assert f"`git -C {wt} diff --find-renames {fork}`" in (taskmap.map_dir(ws) / "brief.md").read_text()
     assert "Bash(git * --no-index*)" in call["argv"][call["argv"].index("--disallowedTools"):]
-    assert f"Bash({tmux.wm_executable()} map save *)" in rules
+    drawing = taskmap.read_drawing(ws)
+    draft = taskmap.map_dir(ws) / "draft.json"
+    # validate and save only the draft, exactly as the brief spells them: no other file goes to node or wm
+    assert f"Bash(node {taskmap.PRLENS / 'prlens-validate.mjs'} {draft})" in rules
+    assert f"Bash({tmux.wm_executable()} map save {ws.key} --token {drawing.token} {draft})" in rules
+    assert not [r for r in rules if r.startswith(("Bash(node", f"Bash({tmux.wm_executable()}")) and r.endswith("*)")]
+    assert call["limit"] == taskmap.DRAWING_TIMEOUT
+    assert call["env"]["GIT_OPTIONAL_LOCKS"] == "0"
     draft = taskmap.map_dir(ws) / "draft.json"
     assert f"Edit(/{draft})" in rules
     brief = (taskmap.map_dir(ws) / "brief.md").read_text()
@@ -346,6 +353,24 @@ def test_exit_without_save_records_failure_with_log_tail(env, monkeypatch):
     failure = taskmap.last_failure(ws)
     assert failure["reason"] == "\n".join(lines[-20:]) and failure["at"] <= time.time()
     assert failure["log"] is True  # the app offers to open it
+    # the next drawing's output replaces last-run.log; the failure's own log is kept for "Open log"
+    (taskmap.map_dir(ws) / "last-run.log").write_text("the next drawing\n")
+    assert taskmap.last_failure(ws)["log"] is True
+    assert (taskmap.map_dir(ws) / "failed-run.log").read_text().splitlines() == lines
+
+
+def test_unreadable_repo_does_not_rerun_the_drawing(env, monkeypatch):
+    """A repo wm can't read stays "unavailable" however often it is drawn: asked again meanwhile, a drawing only
+    reruns when something else moved."""
+    ws, web, ml = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    ml.rename(ml.with_name("elsewhere"))
+    assert taskmap.start_drawing(conn, ws) == "started"
+    assert taskmap.start_drawing(conn, ws) == "queued"
+    fakes.dead.add(4201)
+    taskmap.reap(conn, ws)
+    assert len(fakes.calls) == 1 and taskmap.read_drawing(ws) is None
 
 
 def test_exit_after_save_records_no_failure(env, monkeypatch):
@@ -366,12 +391,12 @@ def test_timeout_kills_and_records(env, monkeypatch):
     fakes = Fakes(monkeypatch)
     conn = db.connect()
     taskmap.start_drawing(conn, ws)
-    later = taskmap.read_drawing(ws).started_at + taskmap.DRAWING_TIMEOUT + 1
+    later = taskmap.read_drawing(ws).started_at + taskmap.REAP_TIMEOUT + 1
     monkeypatch.setattr(taskmap.time, "time", lambda: later)
     taskmap.reap(conn, ws)
     assert fakes.killed == [4201]
     assert taskmap.read_drawing(ws) is None
-    assert taskmap.last_failure(ws)["reason"] == "timed out after 15 minutes"
+    assert taskmap.last_failure(ws)["reason"] == "timed out after 60 minutes"
 
 
 def test_no_node_records_failure(env, monkeypatch):
@@ -438,7 +463,7 @@ def test_cli_map_save_success_clears_failure(env, tmp_path):
 
 def test_spawn_detaches_and_kill_stops_the_group(tmp_path):
     log = tmp_path / "run.log"
-    pid, pgid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 30"], tmp_path, dict(os.environ), log)
+    pid, pgid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 30"], tmp_path, dict(os.environ), log, 600)
     assert pgid != os.getpgid(0) and os.getpgid(pid) == pgid
     deadline = time.time() + 5
     while "started" not in (log.read_text() if log.exists() else "") and time.time() < deadline:
@@ -449,6 +474,31 @@ def test_spawn_detaches_and_kill_stops_the_group(tmp_path):
     while taskmap._alive(pid, pgid) and time.time() < deadline:
         time.sleep(0.05)
     assert not taskmap._alive(pid, pgid)
+
+
+def test_watchdog_stops_a_drawing_that_runs_too_long(tmp_path):
+    """The time limit holds with nothing reaping (the app closed): the group is stopped and the log says why."""
+    log = tmp_path / "run.log"
+    pid, pgid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 60"], tmp_path, dict(os.environ), log, 1)
+    deadline = time.time() + 10
+    while taskmap._alive(pid, pgid) and time.time() < deadline:
+        time.sleep(0.1)
+    assert not taskmap._alive(pid, pgid)
+    assert "wm: stopped: still running after 0 minutes" in log.read_text()
+
+
+def test_watchdog_leaves_with_the_drawing(tmp_path):
+    """Once the drawing ends, nothing of it stays behind: its process group is gone."""
+    pid, pgid = taskmap._spawn(["/bin/sh", "-c", "exit 0"], tmp_path, dict(os.environ), tmp_path / "run.log", 600)
+    deadline = time.time() + 10
+    while time.time() < deadline:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            break
+        time.sleep(0.1)
+    else:
+        raise AssertionError("the drawing's process group outlived it")
 
 
 def test_drawing_is_confined_to_the_brief(env, monkeypatch):

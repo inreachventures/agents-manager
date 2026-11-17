@@ -130,17 +130,25 @@ content.
     no notification, no guard (permissions below are the guard);
   - `--allowedTools` limited to: reading files anywhere in the workstream folder; read-only git (`git -C <worktree>
     diff --find-renames <fork point>`, and `log|show|status`; `--no-index` is denied); writing the draft file only;
-    the validate command; the save command. In `-p` mode anything else is denied without a prompt;
+    the validate and save commands exactly as the brief spells them, for the draft only. In `-p` mode anything else
+    is denied without a prompt;
+  - `GIT_OPTIONAL_LOCKS=0`, so its `git status` never holds `index.lock` while the session commits;
   - output to `.wm/map/last-run.log`.
-- Kills the process after 15 minutes.
+- Kills the process after 15 minutes, whether or not the app is running: a watchdog started in the same process group
+  sends SIGTERM to the group, then SIGKILL 10 seconds later, and notes it in the log. It counts seconds slept, so
+  time the Mac spends asleep doesn't count. wm's reaping keeps a wall-clock backstop at an hour, should the watchdog
+  itself be gone.
 
 When the process exits, wm (whoever notices first: the server's background tick or the next hook) clears the
-in-progress drawing. If it exited without saving, that is the last drawing's failure, with the log's tail. If it
-was **requested again**, and any repo moved since its snapshot, `start_drawing` runs once more. So a burst of commits
+in-progress drawing. If it exited without saving, that is the last drawing's failure, with the log's tail; the log
+is kept as `failed-run.log`, which "Open log" opens, since the next drawing overwrites `last-run.log`. If it
+was **requested again**, and any repo moved since its snapshot (a repo wm can't read doesn't count),
+`start_drawing` runs once more. So a burst of commits
 costs at most two drawings, and the last one sees the final state.
 
 `wm map save <key> --token <t> <draft.json>` (hidden command, only the drawing process calls it):
-- Runs the vendored validator, then wm's own checks: every lane id, and every file path on a node or data-model
+- Runs the vendored validator (outside the lock, which a session's commit hook may be waiting on; the token is
+  checked again under it before writing), then wm's own checks: every lane id, and every file path on a node or data-model
   table, prefixed by an attached repo's folder. Overwrites
   `provenance`. Rejects with the field at fault, so the process fixes the draft and retries.
 - Rejects a token that is not the in-progress drawing's (an old drawing must not overwrite a newer one).
