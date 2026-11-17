@@ -56,6 +56,7 @@ class RepoMark:
 class Drawing:
     token: str
     pid: int | None
+    pgid: int | None  # the drawing's process group: tells it apart from an unrelated process given a reused pid
     started_at: float
     snapshot: dict[str, RepoMark]
     requested_again: bool = False
@@ -248,34 +249,38 @@ def _log_tail(ws: db.Workstream) -> str:
     return "\n".join(lines[-LOG_TAIL:]).strip()
 
 
-def _alive(pid: int) -> bool:
+def _alive(pid: int, pgid: int) -> bool:
+    """The drawing still runs: its pid exists and is still in the drawing's process group (a pid reused by an
+    unrelated process is not)."""
     try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
+        return os.getpgid(pid) == pgid
+    except (ProcessLookupError, PermissionError):
         return False
-    except PermissionError:  # someone else's process: the pid was reused, so the drawing is gone
-        return False
-    return True
 
 
-def _kill(pid: int) -> None:
-    """SIGTERM the drawing's process group: claude and whatever it runs."""
+def _kill(pid: int, pgid: int) -> None:
+    """SIGTERM the drawing's process group, claude and whatever it runs; only while it is still the drawing's."""
     try:
-        group = os.getpgid(pid)
-        if group != os.getpgid(0):  # never our own group
-            os.killpg(group, signal.SIGTERM)
+        if _alive(pid, pgid) and pgid != os.getpgid(0):  # never our own group
+            os.killpg(pgid, signal.SIGTERM)
     except (ProcessLookupError, PermissionError):
         pass
 
 
-def _spawn(argv: list[str], cwd: Path, env: dict, log: Path) -> int:
-    """Start `argv` detached, output to `log`; returns its pid. `sh` backgrounds it and exits at once, so the caller
-    can exit too and nothing is left a zombie: the process is reparented to launchd. It runs in the process group of
-    that `sh`, a new session, so `_kill` reaches everything it starts."""
-    proc = subprocess.run(["/bin/sh", "-c", 'exec "$@" >"$LOG" 2>&1 </dev/null &\necho $!', "sh", *argv],
-                          env={**env, "LOG": str(log)}, cwd=cwd, start_new_session=True, capture_output=True,
-                          text=True)
-    return int(proc.stdout.strip())
+def _running(drawing: Drawing) -> bool:
+    return drawing.pid is not None and drawing.pgid is not None and _alive(drawing.pid, drawing.pgid)
+
+
+def _spawn(argv: list[str], cwd: Path, env: dict, log: Path) -> tuple[int, int]:
+    """Start `argv` detached, output to `log`; returns its pid and process group. `sh` backgrounds it and exits at
+    once, so the caller can exit too and nothing is left a zombie: the process is reparented to launchd. It stays in
+    the process group of that `sh` (a new session, so the group id is the sh's pid), and `_kill` reaches everything
+    it starts."""
+    proc = subprocess.run(["/bin/sh", "-c", 'exec "$@" >"$LOG" 2>&1 </dev/null &\necho $$ $!', "sh", *argv],
+                          env={**env, "LOG": str(log)}, cwd=cwd, start_new_session=True, stdin=subprocess.DEVNULL,
+                          capture_output=True, text=True)
+    pgid, pid = map(int, proc.stdout.split())
+    return pid, pgid
 
 
 def _commands(ws: db.Workstream, links: list[db.RepoLink], token: str) -> dict:
@@ -289,11 +294,12 @@ def _commands(ws: db.Workstream, links: list[db.RepoLink], token: str) -> dict:
 
 
 def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], token: str) -> list[str]:
-    """Everything the drawing process may do without asking; in `-p` mode anything else is denied, never prompted.
-    `//` starts an absolute path in a permission rule, and an `Edit` rule also covers the Write tool (a `Write(path)`
-    rule is accepted but never matched)."""
+    """What the drawing process may do beyond reading its working directories (the workstream folder and the
+    vendored PR Lens folder, which need no rule); anything else is denied, never prompted. `//` starts an absolute
+    path in a permission rule, and an `Edit` rule also covers the Write tool (a `Write(path)` rule is accepted but
+    never matched)."""
     cmds = _commands(ws, links, token)
-    rules = ["Read", "Glob", "Grep"]
+    rules = []
     for git in cmds["git"].values():
         rules += [f"Bash({git} {sub} *)" for sub in ("diff", "log", "show", "status")]
     rules += [f"Edit(/{draft_path(ws)})", f"Bash({cmds['validate']} *)", f"Bash({cmds['save']} *)"]
@@ -302,6 +308,21 @@ def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], token: str) -> li
 
 # `--output=<file>` makes git diff/log/show write a file anywhere
 DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Bash(git * --output*)"]
+TOOLS = "Bash,Read,Edit,Write,Glob,Grep"
+# Passed with --settings, the only settings file a --restricted session reads besides managed settings.
+DRAWING_SETTINGS = {"disableAllHooks": True, "permissions": {"blockReadsOutsideWorkingDirectories": True}}
+
+
+def drawing_argv(claude: str, ws: db.Workstream, links: list[db.RepoLink], token: str) -> list[str]:
+    """`claude -p` confined to the brief. `--restricted` loads only managed settings and `--settings`, so no allow
+    rule, hook, plugin or default mode from the user's, the workstream's or a repo's settings reaches it; it keeps
+    the tools `--tools` names and confines the file tools to the working directories. `--strict-mcp-config` loads no
+    MCP server. `dontAsk` denies whatever would prompt. No transcript is saved, so the workstream's session never
+    sees one beside its own."""
+    return [claude, "-p", PROMPT, "--restricted", "--tools", TOOLS, "--strict-mcp-config",
+            "--settings", json.dumps(DRAWING_SETTINGS), "--add-dir", str(PRLENS),
+            "--permission-mode", "dontAsk", "--no-session-persistence",
+            "--allowedTools", *allowed_tools(ws, links, token), "--disallowedTools", *DISALLOWED_TOOLS]
 
 
 def brief_text(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing, existing: dict | None) -> str:
@@ -345,7 +366,8 @@ The workstream folder is `{ws.path}`; each repo is a subfolder of it.
 
 {chr(10).join(repos) if repos else "- (no repos are attached)"}
 
-Read any file in the workstream folder with Read, Glob and Grep.
+Read any file in the workstream folder with Read, Glob and Grep. Nothing outside it is readable, apart from the
+PR Lens folder below.
 
 ## The document format
 
@@ -389,16 +411,18 @@ def _reap(conn, ws: db.Workstream) -> str | None:
     """Clear a drawing that has ended (or ran too long); rerun it once if it was requested again and a repo moved.
     Returns what that rerun's `start_drawing` returned, None if there was none."""
     rerun = False
+    if not map_dir(ws).is_dir():  # no drawing ever started (or the workstream folder is gone)
+        return None
     with locked(ws):
         drawing = read_drawing(ws)
         if drawing is None:
             return None
-        alive = drawing.pid is not None and _alive(drawing.pid)
+        alive = _running(drawing)
         timed_out = time.time() - drawing.started_at > DRAWING_TIMEOUT
         if alive and not timed_out:
             return None
         if alive:
-            _kill(drawing.pid)
+            _kill(drawing.pid, drawing.pgid)
         write_drawing(ws, None)
         if not drawing.saved:
             reason = (f"timed out after {DRAWING_TIMEOUT // 60} minutes" if alive
@@ -415,7 +439,11 @@ def reap(conn, ws: db.Workstream) -> None:
 
 def start_drawing(conn, ws: db.Workstream) -> str:
     """Start Claude drawing the map in the background: "started", "queued" (one is running; it reruns once it ends,
-    if a repo moved meanwhile), "no-node" or "no-claude" (recorded as the last failure)."""
+    if a repo moved meanwhile), "no-node", "no-claude" or "failed" (recorded as the last failure), or "unavailable"
+    (the workstream is archived or its folder is gone: a hook can fire while it is being archived)."""
+    current = db.get_workstream(conn, ws.key)
+    if current is None or current.status == db.ARCHIVED or not ws.path.is_dir():
+        return "unavailable"
     if (rerun := _reap(conn, ws)) is not None:
         return rerun
     with locked(ws):
@@ -432,14 +460,14 @@ def start_drawing(conn, ws: db.Workstream) -> str:
             _record_failure(ws, workstream.claude_missing() or "Claude Code isn't installed")
             return "no-claude"
         links = db.list_repos(conn, ws.key)
-        drawing = Drawing(token=secrets.token_hex(16), pid=None, started_at=time.time(), snapshot=snapshot(conn, ws))
+        drawing = Drawing(token=secrets.token_hex(16), pid=None, pgid=None, started_at=time.time(),
+                          snapshot=snapshot(conn, ws))
         (map_dir(ws) / "brief.md").write_text(brief_text(ws, links, drawing, load(ws)))
         draft_path(ws).unlink(missing_ok=True)
-        argv = [claude, "-p", PROMPT, "--permission-mode", "dontAsk", "--no-session-persistence",
-                "--allowedTools", *allowed_tools(ws, links, drawing.token), "--disallowedTools", *DISALLOWED_TOOLS]
+        argv = drawing_argv(claude, ws, links, drawing.token)
         env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV} | {DRAWING_ENV: "1"}
         try:
-            drawing.pid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")
+            drawing.pid, drawing.pgid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")
         except (OSError, ValueError) as e:
             _record_failure(ws, f"the drawing could not start: {e}")
             return "failed"
@@ -455,6 +483,6 @@ def cancel(ws: db.Workstream) -> None:
         drawing = read_drawing(ws)
         if drawing is None:
             return
-        if drawing.pid is not None and _alive(drawing.pid):
-            _kill(drawing.pid)
+        if _running(drawing):
+            _kill(drawing.pid, drawing.pgid)
         write_drawing(ws, None)

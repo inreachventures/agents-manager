@@ -32,7 +32,8 @@ def commit(wt, name):
 
 def start_drawing(ws, token="tok"):
     snap = taskmap.snapshot(db.connect(), ws)
-    taskmap.write_drawing(ws, taskmap.Drawing(token=token, pid=None, started_at=time.time(), snapshot=snap))
+    taskmap.write_drawing(ws, taskmap.Drawing(token=token, pid=None, pgid=None, started_at=time.time(),
+                                              snapshot=snap))
     return snap
 
 
@@ -218,12 +219,12 @@ class Fakes:
 
         def spawn(argv, cwd, env, log):
             self.calls.append({"argv": argv, "cwd": cwd, "env": env, "log": log})
-            return 4200 + len(self.calls)
+            return 4200 + len(self.calls), 4100 + len(self.calls)
 
         monkeypatch.setattr(taskmap.shutil, "which", which)
         monkeypatch.setattr(taskmap, "_spawn", spawn)
-        monkeypatch.setattr(taskmap, "_alive", lambda pid: pid not in self.dead)
-        monkeypatch.setattr(taskmap, "_kill", self.killed.append)
+        monkeypatch.setattr(taskmap, "_alive", lambda pid, pgid: pid not in self.dead and pgid == pid - 100)
+        monkeypatch.setattr(taskmap, "_kill", lambda pid, pgid: self.killed.append(pid))
 
 
 def allowed(argv):
@@ -243,6 +244,7 @@ def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
     assert call["cwd"] == ws.path and call["log"] == taskmap.map_dir(ws) / "last-run.log"
     assert call["argv"][:3] == ["/fake/bin/claude", "-p", "Draw this workstream's task map: follow .wm/map/brief.md"]
     rules = allowed(call["argv"])
+    assert not {"Read", "Glob", "Grep"} & set(rules)
     for wt in (web, ml):
         assert f"Bash(git -C {wt} diff *)" in rules
     assert f"Bash({tmux.wm_executable()} map save *)" in rules
@@ -251,7 +253,8 @@ def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
     brief = (taskmap.map_dir(ws) / "brief.md").read_text()
     assert str(draft) in brief and "0.3.1" in brief and "acme-web/" in brief
     drawing = taskmap.read_drawing(ws)
-    assert drawing.pid == 4201 and drawing.token in brief and set(drawing.snapshot) == {"acme-web", "acme-ml-pipeline"}
+    assert drawing.pid == 4201 and drawing.pgid == 4101 and drawing.token in brief
+    assert set(drawing.snapshot) == {"acme-web", "acme-ml-pipeline"}
 
 
 def test_second_request_is_queued_then_rerun_once(env, monkeypatch):
@@ -399,13 +402,63 @@ def test_cli_map_save_success_clears_failure(env, tmp_path):
 
 def test_spawn_detaches_and_kill_stops_the_group(tmp_path):
     log = tmp_path / "run.log"
-    pid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 30"], tmp_path, dict(os.environ), log)
+    pid, pgid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 30"], tmp_path, dict(os.environ), log)
+    assert pgid != os.getpgid(0) and os.getpgid(pid) == pgid
     deadline = time.time() + 5
     while "started" not in (log.read_text() if log.exists() else "") and time.time() < deadline:
         time.sleep(0.05)
     assert "started" in log.read_text()
-    assert taskmap._alive(pid)
-    taskmap._kill(pid)
-    while taskmap._alive(pid) and time.time() < deadline:
+    assert taskmap._alive(pid, pgid)
+    taskmap._kill(pid, pgid)
+    while taskmap._alive(pid, pgid) and time.time() < deadline:
         time.sleep(0.05)
-    assert not taskmap._alive(pid)
+    assert not taskmap._alive(pid, pgid)
+
+
+def test_drawing_is_confined_to_the_brief(env, monkeypatch):
+    """No settings, hooks or MCP servers of the user's, the workstream's or a repo's reach the drawing; its file
+    tools read only the workstream folder and the vendored PR Lens folder; nothing prompts."""
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    taskmap.start_drawing(db.connect(), ws)
+    argv = fakes.calls[0]["argv"]
+
+    def value(flag):
+        return argv[argv.index(flag) + 1]
+
+    assert "--restricted" in argv and "--strict-mcp-config" in argv and "--no-session-persistence" in argv
+    assert value("--permission-mode") == "dontAsk"
+    assert value("--tools") == "Bash,Read,Edit,Write,Glob,Grep"
+    assert json.loads(value("--settings")) == {"disableAllHooks": True,
+                                               "permissions": {"blockReadsOutsideWorkingDirectories": True}}
+    assert value("--add-dir") == str(taskmap.PRLENS)
+    assert "--setting-sources" not in argv  # --restricted already loads none
+
+
+def test_reused_pid_is_not_the_drawing(monkeypatch):
+    """A pid now in another process group is someone else's process: not alive, and never signalled."""
+    signalled = []
+    monkeypatch.setattr(taskmap.os, "getpgid", lambda pid: 999 if pid else 1)
+    monkeypatch.setattr(taskmap.os, "killpg", lambda pgid, sig: signalled.append(pgid))
+    assert taskmap._alive(4201, 4101) is False
+    taskmap._kill(4201, 4101)
+    assert signalled == []
+    assert taskmap._alive(4201, 999) is True
+    taskmap._kill(4201, 999)
+    assert signalled == [999]
+
+
+def test_no_drawing_for_an_archived_workstream(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    ws_mod.archive(ws.key, force=True)
+    assert taskmap.start_drawing(db.connect(), ws) == "unavailable"
+    assert fakes.calls == [] and not taskmap.map_dir(ws).exists()
+
+
+def test_no_drawing_once_the_folder_is_gone(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    shutil.rmtree(ws.path)
+    assert taskmap.start_drawing(db.connect(), ws) == "unavailable"
+    assert fakes.calls == [] and not ws.path.exists()
