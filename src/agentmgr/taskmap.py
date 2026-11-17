@@ -2,7 +2,8 @@
 
 Map files live under `<workstream folder>/.wm/map/`, never inside a repo: `map.json` is the saved map, `drawing.json`
 the drawing in progress, `lock` serialises changes to the drawing state, `brief.md` tells the drawing process what to
-do, `draft.json` is what it writes, `last-run.log` its output and `failure.json` why the last drawing failed."""
+do, `draft.json` is what it writes, `last-run.log` its output, `failure.json` why the last drawing failed and
+`attempted.json` the heads the last drawing started from."""
 
 from __future__ import annotations
 
@@ -24,12 +25,11 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 
 from . import db, diffs, gitops, tmux, workstream
-from .config import get_config
+from .config import DRAWING_ENV, get_config
 
 PRLENS = importlib.resources.files("agentmgr") / "data" / "prlens"
 NO_SHA = "0" * 40
 VALIDATE_TIMEOUT = 30
-DRAWING_ENV = "AGENTMGR_MAP_DRAWING"
 DRAWING_TIMEOUT = 15 * 60
 PROMPT = "Draw this workstream's task map: follow .wm/map/brief.md"
 NO_NODE = "The task map needs Node.js"
@@ -278,6 +278,15 @@ def last_failure(ws: db.Workstream) -> dict | None:
         return None
 
 
+def attempted_heads(ws: db.Workstream) -> dict[str, str] | None:
+    """Each repo's HEAD when the last drawing started (whether or not it saved); None if none is recorded."""
+    try:
+        heads = json.loads((map_dir(ws) / "attempted.json").read_text())["heads"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    return {str(repo): str(head) for repo, head in heads.items()} if isinstance(heads, dict) else None
+
+
 def _record_failure(ws: db.Workstream, reason: str) -> None:
     _write_json(map_dir(ws) / "failure.json", {"at": time.time(), "reason": reason})
 
@@ -324,51 +333,58 @@ def _spawn(argv: list[str], cwd: Path, env: dict, log: Path) -> tuple[int, int]:
     return pid, pgid
 
 
-def _commands(ws: db.Workstream, links: list[db.RepoLink], token: str) -> dict:
-    """The commands the drawing process may run, exactly as the brief spells them and the allow rules match them."""
+def _commands(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing) -> dict:
+    """The commands the drawing process may run, exactly as the brief spells them and the allow rules match them.
+    `diff` is each available repo's diff from its fork point: with a commit as its first argument, git diff never
+    takes two paths as files to compare (its implicit `--no-index`, which reads files outside the repo)."""
     draft = shlex.quote(str(draft_path(ws)))
     validate = f"node {shlex.quote(str(PRLENS / 'prlens-validate.mjs'))}"
     save = f"{shlex.quote(tmux.wm_executable())} map save"
-    return {"git": {link.repo: f"git -C {shlex.quote(link.worktree_path)}" for link in links},
+    git = {link.repo: f"git -C {shlex.quote(link.worktree_path)}" for link in links}
+    marks = {repo: drawing.snapshot.get(repo) for repo in git}
+    return {"git": git,
+            "diff": {repo: f"{git[repo]} diff --find-renames {mark.fork}"
+                     for repo, mark in marks.items() if mark is not None and not mark.error},
             "validate": validate, "save": save, "validate_draft": f"{validate} {draft}",
-            "save_draft": f"{save} {ws.key} --token {token} {draft}"}
+            "save_draft": f"{save} {ws.key} --token {drawing.token} {draft}"}
 
 
-def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], token: str) -> list[str]:
+def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing) -> list[str]:
     """What the drawing process may do beyond reading its working directories (the workstream folder and the
     vendored PR Lens folder, which need no rule); anything else is denied, never prompted. `//` starts an absolute
     path in a permission rule, and an `Edit` rule also covers the Write tool (a `Write(path)` rule is accepted but
     never matched)."""
-    cmds = _commands(ws, links, token)
-    rules = []
+    cmds = _commands(ws, links, drawing)
+    rules = [f"Bash({diff} *)" for diff in cmds["diff"].values()]
     for git in cmds["git"].values():
-        rules += [f"Bash({git} {sub} *)" for sub in ("diff", "log", "show", "status")]
+        rules += [f"Bash({git} {sub} *)" for sub in ("log", "show", "status")]
     rules += [f"Edit(/{draft_path(ws)})", f"Bash({cmds['validate']} *)", f"Bash({cmds['save']} *)"]
     return rules
 
 
-# `--output=<file>` makes git diff/log/show write a file anywhere
-DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Bash(git * --output*)"]
+# `--output=<file>` makes git diff/log/show write a file anywhere; `--no-index` makes git diff read files anywhere
+DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Bash(git * --output*)", "Bash(git * --no-index*)"]
 TOOLS = "Bash,Read,Edit,Write,Glob,Grep"
 # Passed with --settings, the only settings file a --restricted session reads besides managed settings.
 DRAWING_SETTINGS = {"disableAllHooks": True, "permissions": {"blockReadsOutsideWorkingDirectories": True}}
 
 
-def drawing_argv(claude: str, ws: db.Workstream, links: list[db.RepoLink], token: str) -> list[str]:
+def drawing_argv(claude: str, ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing) -> list[str]:
     """`claude -p` confined to the brief. `--restricted` loads only managed settings and `--settings`, so no allow
     rule, hook, plugin or default mode from the user's, the workstream's or a repo's settings reaches it; it keeps
-    the tools `--tools` names and confines the file tools to the working directories. `--strict-mcp-config` loads no
-    MCP server. `dontAsk` denies whatever would prompt. No transcript is saved, so the workstream's session never
-    sees one beside its own."""
-    return [claude, "-p", PROMPT, "--restricted", "--tools", TOOLS, "--strict-mcp-config",
+    the tools `--tools` names and confines the file tools to the working directories. `--safe-mode` loads no CLAUDE.md
+    (whose rules are the workstream session's, not this brief's), skill, agent or auto memory. `--strict-mcp-config`
+    loads no MCP server. `dontAsk` denies whatever would prompt. No transcript is saved, so the workstream's session
+    never sees one beside its own."""
+    return [claude, "-p", PROMPT, "--restricted", "--safe-mode", "--tools", TOOLS, "--strict-mcp-config",
             "--settings", json.dumps(DRAWING_SETTINGS), "--add-dir", str(PRLENS),
             "--permission-mode", "dontAsk", "--no-session-persistence",
-            "--allowedTools", *allowed_tools(ws, links, token), "--disallowedTools", *DISALLOWED_TOOLS]
+            "--allowedTools", *allowed_tools(ws, links, drawing), "--disallowedTools", *DISALLOWED_TOOLS]
 
 
 def brief_text(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing, existing: dict | None) -> str:
     versions = json.loads((PRLENS / "versions.json").read_text())
-    cmds = _commands(ws, links, drawing.token)
+    cmds = _commands(ws, links, drawing)
     marks = [m for m in drawing.snapshot.values() if not m.error]
     first = marks[0] if marks else RepoMark(NO_SHA, NO_SHA, "")
     skeleton = {
@@ -387,8 +403,9 @@ def brief_text(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing, ex
                          f"{f' ({mark.error})' if mark and mark.error else ''}: leave it out of the map.")
             continue
         repos.append(f"- `{link.repo}/`: branch `{link.branch}`, base `{link.base}`, forked at `{mark.fork}`.\n"
-                     f"  Its changes, committed and not: `{git} diff --find-renames {mark.fork}`. Also allowed: "
-                     f"`{git} log ...`, `{git} show ...`, `{git} status`.")
+                     f"  Its changes, committed and not: `{cmds['diff'][link.repo]}`. Only that diff command is "
+                     f"allowed, with options or ` -- <path>` added after it. Also allowed: `{git} log ...`, "
+                     f"`{git} show ...`, `{git} status`.")
     if existing:
         redraw = (f"A map was drawn before: `{map_dir(ws) / 'map.json'}` (the document is its `doc` field). Redraw "
                   "from it: keep the id of every lane, node, edge and flow that still exists, so its card stays in "
@@ -506,7 +523,9 @@ def start_drawing(conn, ws: db.Workstream) -> str:
                           snapshot=snapshot(conn, ws))
         (map_dir(ws) / "brief.md").write_text(brief_text(ws, links, drawing, load(ws)))
         draft_path(ws).unlink(missing_ok=True)
-        argv = drawing_argv(claude, ws, links, drawing.token)
+        _write_json(map_dir(ws) / "attempted.json",
+                    {"heads": {repo: mark.head for repo, mark in drawing.snapshot.items() if not mark.error}})
+        argv = drawing_argv(claude, ws, links, drawing)
         env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV} | {DRAWING_ENV: "1"}
         try:
             drawing.pid, drawing.pgid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")

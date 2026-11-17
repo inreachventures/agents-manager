@@ -10,6 +10,10 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 
+# Set in the environment of the task map's drawing process (see taskmap); its hooks do nothing. Here, not in taskmap,
+# so the hooks can check it without importing the task map on every tool call.
+DRAWING_ENV = "AGENTMGR_MAP_DRAWING"
+
 
 def _expand(p: str | Path) -> Path:
     return Path(os.path.expanduser(str(p))).resolve()

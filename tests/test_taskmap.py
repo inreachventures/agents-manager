@@ -268,8 +268,15 @@ def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
     assert call["argv"][:3] == ["/fake/bin/claude", "-p", "Draw this workstream's task map: follow .wm/map/brief.md"]
     rules = allowed(call["argv"])
     assert not {"Read", "Glob", "Grep"} & set(rules)
-    for wt in (web, ml):
-        assert f"Bash(git -C {wt} diff *)" in rules
+    drawing = taskmap.read_drawing(ws)
+    for repo, wt in (("acme-web", web), ("acme-ml-pipeline", ml)):
+        fork = drawing.snapshot[repo].fork
+        # only the diff from the fork point: a first argument that is a commit keeps git diff from reading two
+        # files outside the repo (its implicit --no-index)
+        assert f"Bash(git -C {wt} diff --find-renames {fork} *)" in rules
+        assert f"Bash(git -C {wt} diff *)" not in rules
+        assert f"`git -C {wt} diff --find-renames {fork}`" in (taskmap.map_dir(ws) / "brief.md").read_text()
+    assert "Bash(git * --no-index*)" in call["argv"][call["argv"].index("--disallowedTools"):]
     assert f"Bash({tmux.wm_executable()} map save *)" in rules
     draft = taskmap.map_dir(ws) / "draft.json"
     assert f"Edit(/{draft})" in rules
@@ -451,6 +458,7 @@ def test_drawing_is_confined_to_the_brief(env, monkeypatch):
         return argv[argv.index(flag) + 1]
 
     assert "--restricted" in argv and "--strict-mcp-config" in argv and "--no-session-persistence" in argv
+    assert "--safe-mode" in argv  # no CLAUDE.md, skills, agents or auto memory: the brief is all it is told
     assert value("--permission-mode") == "dontAsk"
     assert value("--tools") == "Bash,Read,Edit,Write,Glob,Grep"
     assert json.loads(value("--settings")) == {"disableAllHooks": True,

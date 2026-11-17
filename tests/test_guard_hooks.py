@@ -1,5 +1,7 @@
 import io
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -294,3 +296,42 @@ def test_empty_commit_does_not_draw(env, monkeypatch, capsys):
     _commit(wt, "b.txt")
     run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base))
     assert calls == [ws.key]
+
+
+def test_hooks_do_not_import_the_task_map_up_front():
+    """Every tool call runs a hook: the task map (and the workstream and diff modules it pulls in) loads only when a
+    commit may need a drawing."""
+    heavy = ["agentmgr.taskmap", "agentmgr.workstream", "agentmgr.diffs"]
+    code = f"import sys, agentmgr.hooks; print(sorted(m for m in sys.modules if m in {heavy!r}))"
+    assert subprocess.run([sys.executable, "-c", code], capture_output=True, text=True,
+                          check=True).stdout.strip() == "[]"
+
+
+def test_a_failed_drawing_is_not_retried_until_a_repo_moves(env, monkeypatch, capsys):
+    """With no map yet, a command that only looks like a commit (nothing to commit, `git log --grep commit`) must not
+    start a drawing of what the last, failed drawing already tried: each would spawn another `claude -p`."""
+    import shutil
+
+    from agentmgr import taskmap
+
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    base = {"session_id": ws.session_id, "cwd": ws.folder}
+    wt = Path(ws.folder) / "acme-web"
+    spawned = []
+    real_which = shutil.which
+    monkeypatch.setattr(taskmap.shutil, "which", lambda cmd, *a, **k: (
+        f"/fake/bin/{cmd}" if cmd in ("node", "claude") else real_which(cmd, *a, **k)))
+    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log: spawned.append(argv) or (4201, 4101))
+    monkeypatch.setattr(taskmap, "_alive", lambda pid, pgid: False)  # every drawing dies at once without saving
+
+    _commit(wt, "a.txt")
+    run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base))
+    assert len(spawned) == 1
+    taskmap.reap(db.connect(), ws)  # the server's loop notices it ended
+    assert taskmap.last_failure(ws) is not None and taskmap.load(ws) is None
+    for command in ("git commit -m x", "git commit --help", "git log --grep commit"):
+        run_hook(monkeypatch, capsys, "PostToolUse", {**base, "tool_name": "Bash", "tool_input": {"command": command}})
+    assert len(spawned) == 1
+    _commit(wt, "b.txt")
+    run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base))
+    assert len(spawned) == 2

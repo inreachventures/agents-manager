@@ -12,8 +12,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import db, fetcher, gh, gitops, guard, naming, notify, taskmap, tmux
-from .config import get_config
+from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
+from .config import DRAWING_ENV, get_config
 
 PROMPT_OPTION = "@wm_prompt"  # shown in the pane's top border by tmux.conf
 PROMPT_MAX = 500
@@ -220,14 +220,22 @@ COMMIT_COMMAND = re.compile(r"\bgit\b.*\bcommit\b")
 
 
 def _maybe_draw(conn, ws: db.Workstream, payload: dict) -> None:
-    """After a commit that moved a repo's head past what the map (or the drawing in progress) was drawn from."""
+    """After a commit that moved a repo's head past what was last drawn: the drawing in progress, else the last one
+    started (which may have failed: a command that merely looks like a commit must not retry it), else the map."""
     try:
         if not COMMIT_COMMAND.search((payload.get("tool_input") or {}).get("command") or ""):
             return
+        from . import taskmap  # here, not at the top: it pulls in the workstream and diff modules
+
         drawing = taskmap.read_drawing(ws)
-        saved = drawing.snapshot if drawing else (taskmap.load(ws) or {}).get("snapshot")
+        if drawing is not None:
+            drawn = {repo: mark.head for repo, mark in drawing.snapshot.items()}
+        else:
+            saved = taskmap.load(ws)
+            drawn = taskmap.attempted_heads(ws) or (
+                {repo: mark.head for repo, mark in saved["snapshot"].items()} if saved else None)
         current = taskmap.heads(conn, ws)
-        if saved is None or any(repo not in saved or saved[repo].head != head for repo, head in current.items()):
+        if drawn is None or any(drawn.get(repo) != head for repo, head in current.items()):
             taskmap.start_drawing(conn, ws)
     except Exception as e:  # noqa: BLE001
         _log(f"PostToolUse: draw: {type(e).__name__}: {e}")
@@ -265,7 +273,7 @@ def dispatch(event: str, payload: dict) -> None:
 
 
 def main(event: str) -> None:
-    if os.environ.get(taskmap.DRAWING_ENV):
+    if os.environ.get(DRAWING_ENV):
         return  # the task-map drawing process: it must not change the session's status, notify or prompt
     try:
         payload = json.loads(sys.stdin.read() or "{}")
