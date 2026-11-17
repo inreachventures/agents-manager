@@ -7,11 +7,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
 
-from . import db, fetcher, gh, gitops, guard, naming, notify, tmux
+from . import db, fetcher, gh, gitops, guard, naming, notify, taskmap, tmux
 from .config import get_config
 
 PROMPT_OPTION = "@wm_prompt"  # shown in the pane's top border by tmux.conf
@@ -211,6 +212,25 @@ def on_post_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
             f"[wm] Workstream {ws.key} drifted: {text}. Restore it now (e.g. switch the worktree back to its "
             "branch, `git worktree remove` anything you created) and don't repeat the command."
         )})
+        return
+    _maybe_draw(conn, ws, payload)
+
+
+COMMIT_COMMAND = re.compile(r"\bgit\b.*\bcommit\b")
+
+
+def _maybe_draw(conn, ws: db.Workstream, payload: dict) -> None:
+    """After a commit that moved a repo's head past what the map (or the drawing in progress) was drawn from."""
+    try:
+        if not COMMIT_COMMAND.search((payload.get("tool_input") or {}).get("command") or ""):
+            return
+        drawing = taskmap.read_drawing(ws)
+        saved = drawing.snapshot if drawing else (taskmap.load(ws) or {}).get("snapshot")
+        current = taskmap.heads(conn, ws)
+        if saved is None or any(repo not in saved or saved[repo].head != head for repo, head in current.items()):
+            taskmap.start_drawing(conn, ws)
+    except Exception as e:  # noqa: BLE001
+        _log(f"PostToolUse: draw: {type(e).__name__}: {e}")
 
 
 def on_notification(conn, ws: db.Workstream, payload: dict) -> None:
@@ -245,6 +265,8 @@ def dispatch(event: str, payload: dict) -> None:
 
 
 def main(event: str) -> None:
+    if os.environ.get(taskmap.DRAWING_ENV):
+        return  # the task-map drawing process: it must not change the session's status, notify or prompt
     try:
         payload = json.loads(sys.stdin.read() or "{}")
         dispatch(event, payload)

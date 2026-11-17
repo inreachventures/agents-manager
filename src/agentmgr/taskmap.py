@@ -97,6 +97,17 @@ def snapshot(conn, ws: db.Workstream) -> dict[str, RepoMark]:
     return {link.repo: repo_mark(link) for link in db.list_repos(conn, ws.key)}
 
 
+def heads(conn, ws: db.Workstream) -> dict[str, str]:
+    """Each repo's current HEAD, cheaply (no diff digest); repos whose worktree can't be read are left out."""
+    out = {}
+    for link in db.list_repos(conn, ws.key):
+        try:
+            out[link.repo] = gitops.git(Path(link.worktree_path), "rev-parse", "HEAD")
+        except (gitops.GitError, OSError):
+            continue
+    return out
+
+
 def freshness(ws_key: str, saved: dict[str, RepoMark], current: dict[str, RepoMark],
               links: list[db.RepoLink]) -> list[dict]:
     """One {"repo", "reason"} per repo whose changes differ from what the map was drawn from; [] = up to date."""

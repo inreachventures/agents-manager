@@ -229,3 +229,68 @@ def test_a_turn_that_ends_while_you_look_is_seen_and_not_notified(env, monkeypat
     run_hook(monkeypatch, capsys, "Stop", base)
     assert sent == [(ws.label, "finished, your turn")]
     assert db.seen_times(conn)[ws.key] < db.get_workstream(conn, ws.key).status_at
+
+
+def _commit(wt, name):
+    (wt / name).write_text(name)
+    sh(wt, "git", "add", name)
+    sh(wt, "git", "commit", "-q", "-m", name)
+
+
+def _draw_env(env, monkeypatch):
+    from agentmgr import taskmap
+
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    calls = []
+    monkeypatch.setattr(taskmap, "start_drawing", lambda conn, w: calls.append(w.key) or "started")
+    base = {"session_id": ws.session_id, "cwd": ws.folder}
+    return ws, base, calls, Path(ws.folder) / "acme-web"
+
+
+def _commit_payload(base, **extra):
+    return {**base, "tool_name": "Bash", "tool_input": {"command": "git commit -m x"}, **extra}
+
+
+def test_drawing_process_hooks_are_ignored(env, monkeypatch, capsys):
+    monkeypatch.setenv("AGENTMGR_MAP_DRAWING", "1")
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    base = {"session_id": ws.session_id, "cwd": ws.folder}
+    conn = db.connect()
+    db.set_status(conn, ws.key, db.NEEDS_YOU, "waiting")
+    for event, payload in (("PostToolUse", {**base, "tool_name": "Bash", "tool_input": {"command": "ls"}}),
+                           ("Stop", base)):
+        assert run_hook(monkeypatch, capsys, event, payload) == ""
+        assert db.get_workstream(conn, ws.key).status == db.NEEDS_YOU
+
+
+def test_commit_starts_drawing(env, monkeypatch, capsys):
+    ws, base, calls, wt = _draw_env(env, monkeypatch)
+    _commit(wt, "a.txt")
+    assert run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base)) == ""
+    assert calls == [ws.key]
+
+
+def test_commit_from_subagent_payload_starts_drawing(env, monkeypatch, capsys):
+    ws, base, calls, wt = _draw_env(env, monkeypatch)
+    _commit(wt, "a.txt")
+    payload = _commit_payload(base, agent_id="sub-1", agent_type="general-purpose")
+    assert run_hook(monkeypatch, capsys, "PostToolUse", payload) == ""
+    assert calls == [ws.key]
+
+
+def test_empty_commit_does_not_draw(env, monkeypatch, capsys):
+    from agentmgr import taskmap
+
+    ws, base, calls, wt = _draw_env(env, monkeypatch)
+    _commit(wt, "a.txt")
+    snap = taskmap.snapshot(db.connect(), ws)
+    taskmap._write_json(taskmap.map_dir(ws) / "map.json", {
+        "doc": {}, "drawn_at": 0, "token": "t",
+        "snapshot": {k: vars(v) for k, v in snap.items()}})
+    assert run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base)) == ""
+    log = {**base, "tool_name": "Bash", "tool_input": {"command": "git log --oneline"}}
+    assert run_hook(monkeypatch, capsys, "PostToolUse", log) == ""
+    assert calls == []
+    _commit(wt, "b.txt")
+    run_hook(monkeypatch, capsys, "PostToolUse", _commit_payload(base))
+    assert calls == [ws.key]
