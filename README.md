@@ -13,6 +13,8 @@ one conversation, N PRs and one definition of done.
   the background.
 - 🚦 **One dashboard for every task.** Who is waiting on you, and **what each repo needs next**, from "needs push"
   to "ready to merge".
+- 🗺️ **A map of the task.** A diagram of what it changes across repos, redrawn by Claude after commits and marked
+  out of date when the code moves on.
 - 🧹 **Archive that never loses work.** It refuses while anything is uncommitted or unpushed.
 - 💻 **The real `claude` CLI on your subscription**, in a native Mac app or your terminal. Local: no API keys, no
   cloud.

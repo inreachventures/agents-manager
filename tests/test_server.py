@@ -1,3 +1,4 @@
+import dataclasses
 import io
 import json
 import subprocess
@@ -291,3 +292,96 @@ def test_a_terminal_showing_the_session_marks_it_seen_at_once(env, capsys):
     assert not db.unseen(conn, db.get_workstream(conn, ws.key))
     db.set_status(conn, ws.key, db.WORKING)
     assert not db.unseen(conn, db.get_workstream(conn, ws.key))  # not waiting
+
+
+def save_map(ws, doc=None):
+    """What `wm map save` leaves behind: the map, drawn from the repos as they stand now."""
+    from agentmgr import taskmap
+
+    snap = taskmap.snapshot(db.connect(), ws)
+    taskmap._write_json(taskmap.map_dir(ws) / "map.json", {
+        "doc": doc or {"nodes": []}, "drawn_at": 1000.0, "token": "t",
+        "snapshot": {repo: dataclasses.asdict(m) for repo, m in snap.items()}})
+
+
+def test_map_reports_none_then_saved_and_stale(env):
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    first = ask(srv, "map", key=ws.key)["result"]
+    assert (first["map"], first["drawn_at"], first["stale"], first["drawing_since"], first["failure"]) == (
+        None, None, [], None, None)
+    assert not srv.wake.is_set()
+
+    save_map(ws, {"nodes": ["x"]})
+    saved = ask(srv, "map", key=ws.key)["result"]
+    assert saved["map"] == {"nodes": ["x"]} and saved["drawn_at"] == 1000.0 and saved["stale"] == []
+    assert saved["digest"] != first["digest"]
+
+    (ws.path / "acme-web" / "wip.txt").write_text("wip\n")
+    srv.digests.clear()
+    stale = ask(srv, "map", key=ws.key)["result"]
+    assert stale["stale"] == [{"repo": "acme-web", "reason": "uncommitted changes"}]
+
+
+def test_map_uses_the_digest_rpc_diff_just_computed(env, monkeypatch):
+    from agentmgr import taskmap
+
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    save_map(ws)
+    ask(srv, "diff", key=ws.key)
+    monkeypatch.setattr(taskmap, "live_digest", lambda link: pytest.fail("diffed again"))
+    assert ask(srv, "map", key=ws.key)["result"]["stale"] == []
+    srv.digests = {k: (t - 10, d) for k, (t, d) in srv.digests.items()}  # too old to use
+    with pytest.raises(pytest.fail.Exception):
+        srv.rpc_map(ws.key)
+
+
+def test_map_since_digest_unchanged(env):
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    first = ask(srv, "map", key=ws.key)["result"]
+    again = ask(srv, "map", key=ws.key, since=first["digest"])["result"]
+    assert again == {"key": ws.key, "digest": first["digest"], "unchanged": True}
+    save_map(ws)
+    assert not ask(srv, "map", key=ws.key, since=first["digest"])["result"].get("unchanged")
+
+
+def test_redraw_map_starts_drawing(env, monkeypatch):
+    from agentmgr import taskmap
+
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    spawned = []
+    monkeypatch.setattr(taskmap.shutil, "which", lambda cmd, *a, **k: f"/fake/{cmd}")
+    monkeypatch.setattr(taskmap, "_spawn", lambda argv, cwd, env, log: spawned.append(argv) or (4201, 4101))
+    monkeypatch.setattr(taskmap, "_alive", lambda pid, pgid: True)
+    assert ask(srv, "redraw_map", key=ws.key)["result"] == {"result": "started"}
+    assert len(spawned) == 1
+    assert ask(srv, "map", key=ws.key)["result"]["drawing_since"] is not None
+    assert ask(srv, "redraw_map", key=ws.key)["result"] == {"result": "queued"}
+    assert not srv.wake.is_set()
+    ws_mod.archive(ws.key)
+    assert "archived" in ask(srv, "redraw_map", key=ws.key)["error"]
+
+
+def test_map_reports_failure(env):
+    from agentmgr import taskmap
+
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    taskmap._record_failure(ws, "claude exited 1")
+    failure = ask(srv, "map", key=ws.key)["result"]["failure"]
+    assert failure["reason"] == "claude exited 1" and failure["at"] > 0
+
+
+def test_the_map_loop_reaps_each_active_workstream(env, monkeypatch):
+    from agentmgr import taskmap
+
+    live = ws_mod.new(launch=False, name="live")
+    gone = ws_mod.new(launch=False, name="gone")
+    ws_mod.archive(gone.key)
+    reaped = []
+    monkeypatch.setattr(taskmap, "reap", lambda conn, ws: reaped.append(ws.key))
+    server.Server(io.StringIO()).reap_maps()
+    assert reaped == [live.key]

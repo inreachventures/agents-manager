@@ -360,6 +360,16 @@ for everything that matters: no daemon, no web server, sessions in the manager's
   staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded; symlinks not
   followed). Output flags are forced, so the user's diff config can't change the format the parser reads. Capped per
   file, per repo and in untracked files, so a lockfile or an un-ignored build folder can't flood the app.
+- **Task map**: a PR Lens graph of what the workstream changes across its repos, in a Diff / Map switch on the
+  changes panel. `taskmap.start_drawing` runs a headless `claude -p` in the workstream folder after a commit (hooks
+  call it), on Redraw, or when a repo moved during a drawing; it is confined to read-only git, node and its draft, and
+  its process never touches the session's status or notifies. Claude writes the content; `wm map save` validates it
+  (vendored `prlens-validate.mjs`, needs Node: `wm doctor` reports it) and stores it with a snapshot per repo (HEAD,
+  fork point, diff digest) under `<workstream>/.wm/map/`, never in a repo. The server's `map` request compares that
+  snapshot with the repos now (digests reused from `diff` if under 5s old) and lists out-of-date repos with a reason;
+  `redraw_map` starts a drawing and a 30s loop reaps ended or hung ones. The renderer (`prlens.js`) is a SwiftPM
+  resource shown in a `WKWebView`; both files come from PR Lens at one pinned version, built by
+  `macos/scripts/bundle-prlens.sh`. To upgrade: change the pin, run the script, review the diff, commit.
 - **Self-contained release**: `build-app.sh --release` puts wm and a relocatable CPython (python-build-standalone,
   checksummed; dependencies pinned with hashes) inside the app, one build per chip. Its launcher sets
   `AGENTMGR_WM` to its own path, and `tmux.wm_executable()` prefers that over PATH, so hooks keep calling the copy

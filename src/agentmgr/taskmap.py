@@ -19,6 +19,7 @@ import signal
 import subprocess
 import tempfile
 import time
+from collections.abc import Callable
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
@@ -81,14 +82,23 @@ def diff_digest(diff: dict) -> str:
     return hashlib.sha1(json.dumps(diff, sort_keys=True).encode()).hexdigest()[:16]
 
 
+def live_digest(link: db.RepoLink) -> str:
+    return diff_digest(diffs.repo_diff(Path(link.worktree_path), link.base))
+
+
 def repo_mark(link: db.RepoLink) -> RepoMark:
+    return repo_mark_with(link, live_digest)
+
+
+def repo_mark_with(link: db.RepoLink, digest_of: Callable[[db.RepoLink], str]) -> RepoMark:
+    """Where `link`'s repo stands now; `digest_of` supplies its diff digest (a caller may have a recent one)."""
     wt = Path(link.worktree_path)
     try:
         if not wt.is_dir():
             raise gitops.GitError(f"worktree {wt} is missing")
         head = gitops.git(wt, "rev-parse", "HEAD")
         fork = gitops.git(wt, "merge-base", link.base, "HEAD") if gitops.ref_exists(wt, link.base) else head
-        return RepoMark(head=head, fork=fork, digest=diff_digest(diffs.repo_diff(wt, link.base)))
+        return RepoMark(head=head, fork=fork, digest=digest_of(link))
     except (gitops.GitError, OSError) as e:
         return RepoMark(head="", fork="", digest="", error=str(e))
 

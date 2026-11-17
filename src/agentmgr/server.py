@@ -24,7 +24,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TextIO
 
-from . import db, diffs, fetcher, gh, gitops, sessioncolor, tmux, view, workstream
+from . import db, diffs, fetcher, gh, gitops, sessioncolor, taskmap, tmux, view, workstream
 from .config import Config, get_config, save_paths
 from .naming import NamingError
 from .repos import RepoMatchError, discover
@@ -34,11 +34,14 @@ BACKGROUND_STATE_SECONDS = 10  # while the app is behind other apps, when only i
 BACKGROUND_GIT_MAX_AGE = 60  # view.GIT_MAX_AGE while the app is in the background
 PR_REFRESH_SECONDS = 60
 COLOR_WAIT_SECONDS = 10  # after typing /color, how long to show the picked colour while Claude's transcript lacks it
+MAP_REAP_SECONDS = 30  # how often drawings that ended or hung are noticed
+MAP_DIGEST_SECONDS = 5  # how long a diff digest from rpc_diff stands in for a fresh one in rpc_map
 FETCH_SECONDS = 30  # each repo is actually fetched at most every fetcher.DASHBOARD_MAX_AGE
 EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError)
 # Requests that change nothing the dashboard shows, so no state push after them: the app asks for a diff every 3s,
 # and pushing the state after each one kept the state loop (git in every repo) running without a pause.
-QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "scan", "diff", "focus"})
+QUIET = frozenset({"state", "repos", "rebase_plan", "archive_report", "setup", "scan", "diff", "focus", "map",
+                   "redraw_map"})
 
 # view.git_state's rich styles, as colour names the app maps to its palette
 TONES = {"bold red": "red", "yellow": "yellow", view.BLUE: "blue", "bold green": "green", "grey50": "grey",
@@ -160,6 +163,9 @@ class Server:
         self.typing = threading.Lock()  # one apply_colors at a time, so a colour is typed once
         self.locks: dict[str, threading.Lock] = {}  # per workstream: one change at a time (an add-repo during an
         self.locks_lock = threading.Lock()  # archive would leave a worktree behind)
+        # worktree path -> (when, taskmap.diff_digest of its diff), filled by rpc_diff so rpc_map need not diff again
+        self.digests: dict[str, tuple[float, str]] = {}
+        self.digests_lock = threading.Lock()
 
     def send(self, msg: dict) -> None:
         line = json.dumps(msg, separators=(",", ":")) + "\n"
@@ -189,7 +195,7 @@ class Server:
         except (workstream.WorkstreamError, OSError):
             traceback.print_exc()
         for fn, seconds in ((self.push_state, None), (self.refresh_prs, PR_REFRESH_SECONDS),
-                            (self.fetch_bases, FETCH_SECONDS)):
+                            (self.fetch_bases, FETCH_SECONDS), (self.reap_maps, MAP_REAP_SECONDS)):
             threading.Thread(target=self._every, args=(fn, seconds), daemon=True).start()
         while line := stdin.readline():
             if line.strip():
@@ -210,6 +216,12 @@ class Server:
                 self.wake.clear()
             else:
                 self.done.wait(seconds)
+
+    def reap_maps(self) -> None:
+        """Notice drawings whose process has ended or hung, and rerun one a repo moved during."""
+        conn = db.connect()
+        for ws in db.list_workstreams(conn):  # not the archived ones
+            taskmap.reap(conn, ws)
 
     def git_max_age(self) -> float:
         return view.GIT_MAX_AGE if self.app_active else BACKGROUND_GIT_MAX_AGE
@@ -426,7 +438,10 @@ class Server:
             try:
                 if not Path(link.worktree_path).exists():
                     raise gitops.GitError("worktree missing")
-                entry |= diffs.repo_diff(Path(link.worktree_path), link.base)
+                diff = diffs.repo_diff(Path(link.worktree_path), link.base)
+                with self.digests_lock:
+                    self.digests[link.worktree_path] = (time.monotonic(), taskmap.diff_digest(diff))
+                entry |= diff
             except gitops.GitError as e:
                 entry |= {"error": str(e), "files": [], "additions": 0, "deletions": 0}
             repos.append(entry)
@@ -434,6 +449,38 @@ class Server:
         if digest == since:
             return {"key": ws.key, "digest": digest, "unchanged": True, "repos": []}
         return {"key": ws.key, "digest": digest, "repos": repos}
+
+    def _cached_digest(self, link: db.RepoLink) -> str:
+        """The diff digest rpc_diff stored for this worktree in the last MAP_DIGEST_SECONDS, else a fresh one."""
+        with self.digests_lock:
+            hit = self.digests.get(link.worktree_path)
+        if hit is not None and time.monotonic() - hit[0] < MAP_DIGEST_SECONDS:
+            return hit[1]
+        return taskmap.live_digest(link)
+
+    def rpc_map(self, key: str, since: str | None = None) -> dict:
+        """The task map and how it stands: when drawn, which repos changed since, a drawing in progress, the last
+        failure. `since`: the digest of what the app shows; if nothing changed, only that is returned."""
+        conn = db.connect()
+        ws = workstream.require(conn, key)
+        links = db.list_repos(conn, ws.key)
+        saved = taskmap.load(ws)
+        drawing = taskmap.read_drawing(ws)
+        out = {"key": ws.key, "map": saved["doc"] if saved else None, "drawn_at": saved["drawn_at"] if saved else None,
+               "stale": [], "drawing_since": drawing.started_at if drawing else None,
+               "failure": taskmap.last_failure(ws)}
+        if saved:
+            current = {link.repo: taskmap.repo_mark_with(link, self._cached_digest) for link in links}
+            out["stale"] = taskmap.freshness(ws.key, saved["snapshot"], current, links)
+        digest = hashlib.sha1(json.dumps(out, sort_keys=True).encode()).hexdigest()[:16]
+        if digest == since:
+            return {"key": ws.key, "digest": digest, "unchanged": True}
+        return {**out, "digest": digest}
+
+    def rpc_redraw_map(self, key: str) -> dict:
+        conn = db.connect()
+        ws = workstream.require(conn, key)
+        return {"result": taskmap.start_drawing(conn, ws)}
 
     def rpc_attach(self, key: str) -> dict:
         """argv for the app's terminal: a tmux client on the workstream's app view."""
