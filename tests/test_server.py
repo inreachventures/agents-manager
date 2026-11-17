@@ -385,3 +385,31 @@ def test_the_map_loop_reaps_each_active_workstream(env, monkeypatch):
     monkeypatch.setattr(taskmap, "reap", lambda conn, ws: reaped.append(ws.key))
     server.Server(io.StringIO()).reap_maps()
     assert reaped == [live.key]
+
+
+def test_one_workstreams_failed_reap_does_not_skip_the_rest(env, monkeypatch):
+    from agentmgr import taskmap
+
+    first = ws_mod.new(launch=False, name="first")
+    second = ws_mod.new(launch=False, name="second")
+    reaped = []
+
+    def reap(conn, ws):
+        if ws.key == first.key:
+            raise RuntimeError("boom")
+        reaped.append(ws.key)
+
+    monkeypatch.setattr(taskmap, "reap", reap)
+    server.Server(io.StringIO()).reap_maps()
+    assert reaped == [second.key]
+
+
+def test_map_marks_a_missing_worktree_unavailable(env):
+    import shutil
+
+    ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
+    srv = server.Server(io.StringIO())
+    save_map(ws)
+    shutil.rmtree(ws.path / "acme-web")
+    result = ask(srv, "map", key=ws.key)["result"]
+    assert result["stale"] == [{"repo": "acme-web", "reason": "unavailable"}]

@@ -221,7 +221,10 @@ class Server:
         """Notice drawings whose process has ended or hung, and rerun one a repo moved during."""
         conn = db.connect()
         for ws in db.list_workstreams(conn):  # not the archived ones
-            taskmap.reap(conn, ws)
+            try:
+                taskmap.reap(conn, ws)
+            except Exception:  # noqa: BLE001 — one workstream's failure must not leave the others unreaped
+                traceback.print_exc()
 
     def git_max_age(self) -> float:
         return view.GIT_MAX_AGE if self.app_active else BACKGROUND_GIT_MAX_AGE
