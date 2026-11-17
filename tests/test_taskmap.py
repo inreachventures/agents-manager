@@ -38,13 +38,15 @@ def start_drawing(ws, token="tok"):
 
 
 def draft_doc(prefix="acme-web"):
-    """The PR Lens example with every lane id prefixed by a repo name."""
+    """The PR Lens example with every lane id and file path prefixed by a repo name."""
     doc = json.loads(EXAMPLE.read_text())
     ids = {lane["id"]: f"{prefix}/{lane['id']}" for lane in doc["lanes"]}
     for lane in doc["lanes"]:
         lane["id"] = ids[lane["id"]]
     for node in doc["nodes"]:
         node["lane"] = ids[node["lane"]]
+        for file in node.get("files", []):
+            file["path"] = f"{prefix}/{file['path']}"
 
     def rename_scopes(o):
         if isinstance(o, dict):
@@ -135,6 +137,27 @@ def test_save_rejects_unprefixed_lane(env, tmp_path):
     start_drawing(ws)
     with pytest.raises(taskmap.MapError, match="'web'"):
         taskmap.save(ws.key, "tok", write_draft(tmp_path, json.loads(EXAMPLE.read_text())))
+
+
+def test_save_rejects_repo_relative_file_paths(env, tmp_path):
+    """A card's files must be workstream-relative (`<repo>/...`), or clicking it can never open its diff: the PR Lens
+    examples use repo-relative paths, so a drawer copying them is told which paths to fix."""
+    ws, *_ = two_repos(env)
+    start_drawing(ws)
+    doc = draft_doc()
+    doc["nodes"][1]["files"][0]["path"] = "app/api/broadcasts/queue/route.ts"
+    doc["dataModel"] = {"stores": [{"id": "s", "label": "S", "platform": "Postgres"}], "tables": [
+        {"id": "t", "label": "T", "store": "s", "delta": "added", "columns": [{"name": "id", "type": "uuid"}],
+         "files": [{"path": "acme-ml-pipeline/db/t.sql"}, {"path": "migrations/0001.sql"}]}]}
+    with pytest.raises(taskmap.MapError) as err:
+        taskmap.save(ws.key, "tok", write_draft(tmp_path, doc))
+    problems = str(err.value).splitlines()
+    assert [p for p in problems if "files" in p] == [
+        "nodes[1].files[0].path 'app/api/broadcasts/queue/route.ts' must start with the folder of a repo in this "
+        "map, e.g. acme-web/app/api/broadcasts/queue/route.ts",
+        "dataModel.tables[0].files[1].path 'migrations/0001.sql' must start with the folder of a repo in this map, "
+        "e.g. acme-web/migrations/0001.sql"]
+    assert taskmap.load(ws) is None
 
 
 @needs_node
@@ -252,6 +275,7 @@ def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
     assert f"Edit(/{draft})" in rules
     brief = (taskmap.map_dir(ws) / "brief.md").read_text()
     assert str(draft) in brief and "0.3.1" in brief and "acme-web/" in brief
+    assert "`acme-web/src/app.ts`, never `src/app.ts`" in brief
     drawing = taskmap.read_drawing(ws)
     assert drawing.pid == 4201 and drawing.pgid == 4101 and drawing.token in brief
     assert set(drawing.snapshot) == {"acme-web", "acme-ml-pipeline"}

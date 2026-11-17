@@ -205,6 +205,35 @@ def _validate(doc: dict) -> list[str]:
     return [line for line in (proc.stdout + proc.stderr).splitlines() if line.strip()] or ["validation failed"]
 
 
+def _items(parent: object, key: str) -> list:
+    """`parent[key]` when it is a list of objects (the validator reports any other shape), else []."""
+    value = parent.get(key) if isinstance(parent, dict) else None
+    return [x for x in value if isinstance(x, dict)] if isinstance(value, list) else []
+
+
+def _convention_problems(doc: dict, repos: list[str]) -> list[str]:
+    """Where `doc` breaks wm's conventions: every lane id and every card's file path starts with a repo's folder (a
+    repo-relative path, as in PR Lens's own examples, leaves the card unable to open its diff)."""
+    prefixes = tuple(f"{repo}/" for repo in repos)
+    example = prefixes[0] if prefixes else "repo/"
+    problems = []
+    if not isinstance(doc.get("lanes", []), list):
+        problems.append("lanes must be a list")
+    for lane in _items(doc, "lanes"):
+        lane_id = lane.get("id")
+        if not isinstance(lane_id, str) or not lane_id.startswith(prefixes):
+            problems.append(f"lane {lane_id!r} must start with the name of a repo in this map, e.g. {example}")
+    cards = [(f"nodes[{i}]", node) for i, node in enumerate(_items(doc, "nodes"))]
+    cards += [(f"dataModel.tables[{i}]", table) for i, table in enumerate(_items(doc.get("dataModel"), "tables"))]
+    for where, card in cards:
+        for j, file in enumerate(_items(card, "files")):
+            path = file.get("path")
+            if isinstance(path, str) and not path.startswith(prefixes):
+                problems.append(f"{where}.files[{j}].path {path!r} must start with the folder of a repo in this map, "
+                                f"e.g. {example}{path}")
+    return problems
+
+
 def save(key: str, token: str, draft: Path) -> None:
     """Accept a drawn map: check it, store it as the current map and mark the drawing saved. Raises MapError."""
     ws = workstream.require(db.connect(), key)
@@ -222,16 +251,7 @@ def save(key: str, token: str, draft: Path) -> None:
         first = marks[0] if marks else RepoMark(NO_SHA, NO_SHA, "")
         doc["provenance"] = {"repo": {"owner": "wm", "name": ws.key}, "base": {"sha": first.fork},
                              "head": {"sha": first.head}}
-        problems = _validate(doc)
-        prefixes = tuple(f"{repo}/" for repo in drawing.snapshot)
-        lanes = doc.get("lanes", [])
-        if not isinstance(lanes, list):
-            raise MapError("lanes must be a list")
-        for lane in lanes:
-            lane_id = lane.get("id") if isinstance(lane, dict) else None
-            if not isinstance(lane_id, str) or not lane_id.startswith(prefixes):
-                problems.append(f"lane {lane_id!r} must start with the name of a repo in this map, e.g. "
-                                f"{prefixes[0] if prefixes else 'repo/'}")
+        problems = _validate(doc) + _convention_problems(doc, list(drawing.snapshot))
         if problems:
             raise MapError("\n".join(problems))
         _write_json(map_dir(ws) / "map.json", {"doc": doc, "drawn_at": time.time(),
@@ -401,8 +421,9 @@ commands below replace them.
 
 - Every lane id starts with the folder name of its repo and a slash, e.g. `{links[0].repo if links else "repo"}/ui`.
   A repo may have several lanes; each lane belongs to exactly one repo.
-- File paths are relative to the workstream folder, so they start with the repo's folder:
-  `{links[0].repo if links else "repo"}/src/app.ts`.
+- Every file path (`files[].path` on nodes and data-model tables) is relative to the workstream folder, so it
+  starts with its repo's folder: `{links[0].repo if links else "repo"}/src/app.ts`, never `src/app.ts`. The PR Lens
+  examples use repo-relative paths; here those would leave a card unable to open its diff, and save refuses them.
 - Edges and flow steps may cross repos (a web client calling an API route). Those are the point of a task map.
 - `provenance` is filled in by wm when you save; leave it as the skeleton has it.
 
