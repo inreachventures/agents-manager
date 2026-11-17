@@ -1,0 +1,31 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self'; style-src 'unsafe-inline'; img-src data:">
+<title>Task map</title>
+<style>
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f7; }
+  body.dark { background: #0d1117; }
+  #viewport { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; }
+  #viewport.dragging { cursor: grabbing; }
+  #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+  #stage svg { display: block; }
+  #note {
+    position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
+    padding: 24px; text-align: center; color: #59636e;
+    font: 13px -apple-system, BlinkMacSystemFont, sans-serif;
+  }
+  body.dark #note { color: #9198a1; }
+  body.noting #note { display: flex; }
+  body.noting #viewport { display: none; }
+</style>
+</head>
+<body>
+<div id="viewport"><div id="stage"></div></div>
+<div id="note"></div>
+<script src="prlens.js"></script>
+<script src="map.js"></script>
+</body>
+</html>

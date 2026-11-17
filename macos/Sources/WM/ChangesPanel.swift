@@ -41,7 +41,11 @@ struct ChangesPanel: View {
                 AllHeader(repos: shown)
             }
             Divider()
-            if diff.repos.isEmpty {
+            if model.mode == .map && !diff.repos.isEmpty {
+                MapPanel(ws: ws, repo: solo,
+                         changed: diff.repos.flatMap { repo in repo.files.map { "\(repo.repo)/\($0.path)" } })
+                    .id(ws.key)  // its lens and page error belong to one workstream
+            } else if diff.repos.isEmpty {
                 ContentUnavailableView("No repos yet", systemImage: "folder.badge.plus",
                                        description: Text("Changes show up here once repos are attached."))
                     .frame(maxHeight: .infinity)
@@ -148,6 +152,7 @@ private struct AllHeader: View {
             Spacer()
             let additions = repos.reduce(0) { $0 + $1.additions }, deletions = repos.reduce(0) { $0 + $1.deletions }
             if additions + deletions > 0 { LineCounts(additions: additions, deletions: deletions) }
+            ModeSwitch()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -169,6 +174,7 @@ private struct SoloHeader: View {
                 if repo.additions + repo.deletions > 0 {
                     LineCounts(additions: repo.additions, deletions: repo.deletions)
                 }
+                ModeSwitch()
             }
             HStack(spacing: 8) {
                 Text("\(repo.branch) → \(repo.base)")
@@ -186,6 +192,24 @@ private struct SoloHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+}
+
+/// Diff | Map: what the panel shows below its header, per workstream.
+private struct ModeSwitch: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        Picker("Show", selection: $model.mode) {
+            Text("Diff").tag(ChangesMode.diff)
+            Text("Map").tag(ChangesMode.map)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .help("The changes as a diff, or as a map of the workstream's task")
     }
 }
 

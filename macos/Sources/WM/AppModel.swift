@@ -17,6 +17,9 @@ enum ActiveSheet: Identifiable {
     }
 }
 
+/// What the changes panel shows: the files' diff, or the task map.
+enum ChangesMode { case diff, map }
+
 struct Toast: Identifiable, Equatable {
     enum Level { case info, warning, error }
     let id = UUID()
@@ -40,11 +43,13 @@ final class AppModel {
         didSet {
             guard phase == .ready else { return }
             UserDefaults.standard.set(showChanges, forKey: "showChanges")
-            if showChanges { Task { await loadDiff() } }
+            if showChanges { Task { await loadDiff(); await loadMap() } }
         }
     }
     var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
     var diff: DiffResult?
+    var changesMode: [String: ChangesMode] = [:]  // per workstream: diff (the default) or map
+    var map: MapResult?
     var busy: String?
     var refreshing = false
     var toasts: [Toast] = []
@@ -58,6 +63,7 @@ final class AppModel {
     @ObservationIgnored private var env: [String: String] = [:]
     @ObservationIgnored private var attaching: String?
     @ObservationIgnored private var diffLoading = false
+    @ObservationIgnored private var mapLoading = false
     @ObservationIgnored private var diffLoop: Task<Void, Never>?
     @ObservationIgnored private var restarts = 0
     @ObservationIgnored private var quitting = false
@@ -79,6 +85,16 @@ final class AppModel {
         guard let key = selection, let repo = soloRepos[key], selected?.repos.contains(where: { $0.repo == repo }) == true
         else { return nil }
         return repo
+    }
+
+    /// What the changes panel shows for the selected workstream.
+    var mode: ChangesMode {
+        get { selection.flatMap { changesMode[$0] } ?? .diff }
+        set {
+            guard let key = selection, mode != newValue else { return }
+            changesMode[key] = newValue
+            if newValue == .map { Task { await loadMap() } }
+        }
     }
 
     /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is.
@@ -132,6 +148,7 @@ final class AppModel {
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(3))
                 await self?.loadDiff(polling: true)
+                await self?.loadMap(polling: true)
             }
         }
     }
@@ -218,8 +235,9 @@ final class AppModel {
     private func selectionChanged() {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
+        map = nil
         terminalFailed = nil
-        Task { await loadDiff() }
+        Task { await loadDiff(); await loadMap() }
         syncTerminal()
     }
 
@@ -333,6 +351,34 @@ final class AppModel {
         if let digest = diff?.digest, diff?.key == ws.key { params["since"] = digest }
         guard let result: DiffResult = try? await backend.call("diff", params), result.unchanged != true else { return }
         if result.key == selected?.key { diff = result }
+    }
+
+    /// The task map, while the panel shows it; `polling` as for `loadDiff`.
+    func loadMap(polling: Bool = false) async {
+        guard showChanges, mode == .map, !mapLoading, !polling || NSApp.isActive, let ws = selected,
+              ws.status != .archived, phase == .ready else { return }
+        mapLoading = true
+        defer { mapLoading = false }
+        var params: [String: Any] = ["key": ws.key]
+        if let digest = map?.digest, map?.key == ws.key { params["since"] = digest }
+        guard let data = try? await backend.callRaw("map", params),
+              let result = try? await Task.detached(priority: .userInitiated, operation: {
+                  try MapResult.parse(data, decoder: Backend.decoder)
+              }).value,
+              result.unchanged != true else { return }
+        if result.key == selected?.key { map = result }
+    }
+
+    /// Draw the selected workstream's map again now; how it goes shows in the map's status line.
+    func redrawMap() async {
+        guard let ws = selected else { return }
+        do {
+            let reply: RedrawResult = try await backend.call("redraw_map", ["key": ws.key])
+            if reply.result == "unavailable" { toast("\(ws.key) has no worktrees to draw a map of", .warning) }
+        } catch {
+            toast(error.localizedDescription, .error)
+        }
+        await loadMap()
     }
 
     // MARK: - Actions (each one is a wm request; wm does the checks)

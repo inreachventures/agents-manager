@@ -89,6 +89,13 @@ final class Backend {
         return try await Task.detached(priority: .userInitiated) { try Reader.decoder.decode(T.self, from: data) }.value
     }
 
+    /// The reply as JSON, for a caller that keeps part of it as wm sent it; `decoder` decodes the rest as `call` does.
+    func callRaw(_ method: String, _ params: [String: Any] = [:]) async throws -> Data {
+        try await send(method, params)
+    }
+
+    nonisolated static var decoder: JSONDecoder { Reader.decoder }
+
     private func send(_ method: String, _ params: [String: Any]) async throws -> Data {
         guard let input, isRunning else { throw BackendError(message: "wm is not running") }
         let id = nextID

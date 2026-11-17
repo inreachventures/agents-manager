@@ -182,6 +182,59 @@ struct DiffLine: Decodable, Equatable {
     var text: String
 }
 
+// MARK: - Task map
+
+/// `map`'s reply: the workstream's task map and how it stands. The map itself, a PR Lens graph document, is kept as
+/// the JSON wm sent (`doc`) and handed to the page unchanged: the snake_case decoder would rewrite keys inside it.
+struct MapResult: Decodable, Equatable {
+    var key: String
+    var digest: String?
+    var unchanged: Bool?  // the server's map matches `digest` sent with the request
+    var drawnAt: Double?
+    var stale: [Stale]  // repos whose changes differ from what the map was drawn from; [] = up to date
+    var drawingSince: Double?  // a drawing is in progress
+    var failure: Failure?  // the last drawing failed, and none has saved since
+    var doc: Data?  // set by `parse`, not decoded
+    var lenses: [String] = []  // the lenses the document declares that the page draws, in that order
+
+    struct Stale: Decodable, Equatable {
+        var repo: String
+        var reason: String
+    }
+
+    struct Failure: Decodable, Equatable {
+        var at: Double
+        var reason: String
+    }
+
+    static let drawable = ["architecture", "data-flow", "data-model"]
+
+    enum CodingKeys: String, CodingKey { case key, digest, unchanged, drawnAt, stale, drawingSince, failure }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        key = try c.decode(String.self, forKey: .key)
+        digest = try c.decodeIfPresent(String.self, forKey: .digest)
+        unchanged = try c.decodeIfPresent(Bool.self, forKey: .unchanged)
+        drawnAt = try c.decodeIfPresent(Double.self, forKey: .drawnAt)
+        stale = try c.decodeIfPresent([Stale].self, forKey: .stale) ?? []
+        drawingSince = try c.decodeIfPresent(Double.self, forKey: .drawingSince)
+        failure = try c.decodeIfPresent(Failure.self, forKey: .failure)
+    }
+
+    /// The reply as JSON: the envelope decoded as usual, the map pulled out as it came.
+    static func parse(_ data: Data, decoder: JSONDecoder) throws -> MapResult {
+        var result = try decoder.decode(MapResult.self, from: data)
+        let reply = try JSONSerialization.jsonObject(with: data) as? [String: Any]
+        if let map = reply?["map"] as? [String: Any] {
+            result.doc = try JSONSerialization.data(withJSONObject: map)
+            let declared = map["lenses"] as? [String] ?? []
+            result.lenses = drawable.filter(declared.contains)
+        }
+        return result
+    }
+}
+
 // MARK: - Action results
 
 struct NewResult: Decodable { var key: String }
@@ -192,6 +245,7 @@ struct SwitchResult: Decodable { var switched: Bool }
 struct ColorResult: Decodable { var applied: Bool }
 struct ReposResult: Decodable { var repos: [String] }
 struct RefreshResult: Decodable { var failed: [String] }
+struct RedrawResult: Decodable { var result: String }
 
 struct AddRepoResult: Decodable {
     var repo: String

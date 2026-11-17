@@ -30,6 +30,7 @@ app() {
     cp "$bin/WM" "$app/Contents/MacOS/WM"
     ditto "$bin/Sparkle.framework" "$app/Contents/Frameworks/Sparkle.framework"  # ditto keeps the symlinks inside
     [ -d "$bin/SwiftTerm_SwiftTerm.bundle" ] && cp -R "$bin/SwiftTerm_SwiftTerm.bundle" "$app/Contents/Resources/"
+    cp -R Resources/map "$app/Contents/Resources/map"  # the task map's page and PR Lens
 
     local iconset; iconset=$(mktemp -d)/AppIcon.iconset
     swift scripts/make-icon.swift "$iconset"
