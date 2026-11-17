@@ -9,7 +9,6 @@ struct MapPanel: View {
     let ws: Workstream
     let repo: String?  // the repo chip's pick, which narrows the map
     let changed: [String]  // workstream-relative paths in the current diff
-    @State private var lens: String?
     @State private var pageError: String?
 
     var body: some View {
@@ -27,7 +26,10 @@ struct MapPanel: View {
                 Divider()
                 ZStack {
                     MapWebView(doc: doc, lens: shownLens(map), theme: colorScheme == .dark ? "dark" : "light",
-                               repo: repo, changed: changed) { error in pageError = error }
+                               repo: repo, changed: changed, restore: model.mapRestore,
+                               onError: { error in pageError = error },
+                               onOpen: { files, point, pan in model.openFromMap(files, at: point, pan: pan) },
+                               onRestored: { model.mapRestore = nil })
                     if let pageError {
                         ContentUnavailableView {
                             Label("Can't draw this map", systemImage: "exclamationmark.triangle")
@@ -97,7 +99,7 @@ struct MapPanel: View {
             .foregroundStyle(.secondary)
             Spacer(minLength: 6)
             if map.lenses.count > 1 {
-                Picker("Lens", selection: Binding(get: { shownLens(map) }, set: { lens = $0 })) {
+                Picker("Lens", selection: Binding(get: { shownLens(map) }, set: { model.mapLenses[ws.key] = $0 })) {
                     ForEach(map.lenses, id: \.self) { Text(Self.lensNames[$0] ?? $0).tag($0) }
                 }
                 .pickerStyle(.segmented)
@@ -114,7 +116,7 @@ struct MapPanel: View {
     private static let lensNames = ["architecture": "Architecture", "data-flow": "Data flow", "data-model": "Data model"]
 
     private func shownLens(_ map: MapResult) -> String {
-        if let lens, map.lenses.contains(lens) { return lens }
+        if let lens = model.mapLenses[ws.key], map.lenses.contains(lens) { return lens }
         return map.lenses.first ?? "architecture"
     }
 
@@ -156,7 +158,10 @@ struct MapWebView: NSViewRepresentable {
     var theme: String
     var repo: String?
     var changed: [String]
+    var restore: MapPan?  // pan and zoom to put back once the map shows
     var onError: (String?) -> Void  // the page's error, nil once it draws
+    var onOpen: ([MapFile], CGPoint, MapPan?) -> Void  // a card clicked: its changed files, the click (screen), the pan
+    var onRestored: () -> Void  // `restore` is applied
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -173,6 +178,11 @@ struct MapWebView: NSViewRepresentable {
 
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onError = onError
+        context.coordinator.onOpen = onOpen
+        if let restore {
+            context.coordinator.restore = restore
+            DispatchQueue.main.async { onRestored() }  // not while SwiftUI is updating the view
+        }
         context.coordinator.update(Shown(doc: doc, lens: lens, theme: theme, repo: repo, changed: changed))
     }
 
@@ -192,6 +202,8 @@ struct MapWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
         var onError: ((String?) -> Void)?
+        var onOpen: (([MapFile], CGPoint, MapPan?) -> Void)?
+        var restore: MapPan?  // to put back with the next show, or now if the map shows already
         private var page: URL?
         private var loaded = false
         private var wanted: Shown?
@@ -216,13 +228,21 @@ struct MapWebView: NSViewRepresentable {
         }
 
         private func push() {
-            guard loaded, let web = webView, let wanted, wanted != shown else { return }
+            guard loaded, let web = webView, let wanted else { return }
+            let pan: Any = restore?.json ?? NSNull()
+            restore = nil
+            if wanted == shown {
+                if !(pan is NSNull) {
+                    web.callAsyncJavaScript("window.wmMap.restore(pan)", arguments: ["pan": pan], in: nil, in: .page)
+                }
+                return
+            }
             shown = wanted
             let args: [String: Any] = ["doc": String(decoding: wanted.doc, as: UTF8.self), "lens": wanted.lens,
                                        "theme": wanted.theme, "repo": wanted.repo ?? NSNull(),
-                                       "changed": wanted.changed]
-            web.callAsyncJavaScript("window.wmMap.show({doc, lens, theme, repo, changed})", arguments: args,
-                                    in: nil, in: .page) { [weak self] result in
+                                       "changed": wanted.changed, "pan": pan]
+            web.callAsyncJavaScript("window.wmMap.show({doc, lens, theme, repo, changed}); window.wmMap.restore(pan)",
+                                    arguments: args, in: nil, in: .page) { [weak self] result in
                 if case .failure(let error) = result { self?.report(error.localizedDescription) }
             }
         }
@@ -253,8 +273,24 @@ struct MapWebView: NSViewRepresentable {
             switch type {
             case "error": report(body["message"] as? String ?? "The map page failed.")
             case "rendered": report(nil)
+            case "open": open(body)
             default: break
             }
+        }
+
+        /// A card clicked: its changed files, and the click turned from the page's view into screen coordinates.
+        private func open(_ body: [String: Any]) {
+            guard let web = webView, let window = web.window, let raw = body["files"] as? [[String: Any]] else { return }
+            let files = raw.compactMap { file -> MapFile? in
+                guard let path = file["path"] as? String else { return nil }
+                return MapFile(path: path, startLine: (file["startLine"] as? NSNumber)?.intValue)
+            }
+            guard !files.isEmpty else { return }
+            let x = (body["x"] as? NSNumber)?.doubleValue ?? web.bounds.midX
+            let y = (body["y"] as? NSNumber)?.doubleValue ?? web.bounds.midY
+            let local = NSPoint(x: x, y: web.isFlipped ? y : web.bounds.height - y)
+            let screen = window.convertPoint(toScreen: web.convert(local, to: nil))
+            onOpen?(files, screen, MapPan(body["view"]))
         }
     }
 }

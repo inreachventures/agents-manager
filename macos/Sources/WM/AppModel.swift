@@ -20,6 +20,21 @@ enum ActiveSheet: Identifiable {
 /// What the changes panel shows: the files' diff, or the task map.
 enum ChangesMode { case diff, map }
 
+/// Where a click on a map card goes in the diff: a file of `repo` (`path` relative to it), at `startLine` if set.
+struct DiffJump: Equatable {
+    var repo: String
+    var path: String
+    var startLine: Int?
+}
+
+/// The map as it was when a card was clicked, for "Back to map": its workstream, lens, repo filter, pan and zoom.
+struct MapViewState: Equatable {
+    var key: String
+    var lens: String?
+    var repo: String?
+    var pan: MapPan?
+}
+
 struct Toast: Identifiable, Equatable {
     enum Level { case info, warning, error }
     let id = UUID()
@@ -50,6 +65,10 @@ final class AppModel {
     var diff: DiffResult?
     var changesMode: [String: ChangesMode] = [:]  // per workstream: diff (the default) or map
     var map: MapResult?
+    var mapLenses: [String: String] = [:]  // per workstream: the lens picked in the map (none: the first it has)
+    var jump: DiffJump?  // a map card's file for the diff to open and scroll to; the diff clears it once there
+    var backToMap: MapViewState?  // set by a jump from the map, until the user goes back or moves on
+    var mapRestore: MapPan?  // the pan and zoom for the map page to put back once it shows again
     var busy: String?
     var refreshing = false
     var toasts: [Toast] = []
@@ -93,8 +112,50 @@ final class AppModel {
         set {
             guard let key = selection, mode != newValue else { return }
             changesMode[key] = newValue
+            backToMap = nil  // switched by hand: the way back is gone
             if newValue == .map { Task { await loadMap() } }
         }
+    }
+
+    /// A click on a map card, with its changed files: one goes straight to its diff; several ask which, with a menu
+    /// at `point` (screen coordinates). `pan`: the map's pan and zoom then, for the way back.
+    func openFromMap(_ files: [MapFile], at point: CGPoint, pan: MapPan?) {
+        guard let key = selection else { return }
+        let from = MapViewState(key: key, lens: mapLenses[key], repo: soloRepo, pan: pan)
+        if files.count == 1 {
+            jump(to: files[0], from: from)
+            return
+        }
+        let menu = NSMenu()
+        for file in files {
+            let item = NSMenuItem(title: file.path, action: nil, keyEquivalent: "")
+            item.target = MenuAction.shared
+            item.action = #selector(MenuAction.run(_:))
+            item.representedObject = MenuAction.Run { [weak self] in self?.jump(to: file, from: from) }
+            menu.addItem(item)
+        }
+        menu.popUp(positioning: nil, at: point, in: nil)
+    }
+
+    private func jump(to file: MapFile, from: MapViewState) {
+        guard from.key == selection, let slash = file.path.firstIndex(of: "/") else { return }
+        let repo = String(file.path[..<slash]), path = String(file.path[file.path.index(after: slash)...])
+        backToMap = from
+        soloRepos[from.key] = repo
+        changesMode[from.key] = .diff
+        jump = DiffJump(repo: repo, path: path, startLine: file.startLine)
+    }
+
+    /// "Back to map": the map again, with the lens, repo filter, pan and zoom it had when the card was clicked.
+    func returnToMap() {
+        guard let back = backToMap, back.key == selection else { return }
+        backToMap = nil
+        jump = nil
+        soloRepos[back.key] = back.repo
+        if let lens = back.lens { mapLenses[back.key] = lens }
+        mapRestore = back.pan
+        changesMode[back.key] = .map
+        Task { await loadMap() }
     }
 
     /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is.
@@ -236,6 +297,9 @@ final class AppModel {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
         map = nil
+        jump = nil
+        backToMap = nil
+        mapRestore = nil
         terminalFailed = nil
         Task { await loadDiff(); await loadMap() }
         syncTerminal()
@@ -521,4 +585,17 @@ final class AppModel {
     func dismiss(_ toast: Toast) {
         withAnimation(.snappy) { toasts.removeAll { $0.id == toast.id } }
     }
+}
+
+/// The target of menu items built in code: runs the closure an item carries as its `representedObject`.
+@MainActor
+private final class MenuAction: NSObject {
+    static let shared = MenuAction()
+
+    final class Run {
+        let body: @MainActor () -> Void
+        init(_ body: @escaping @MainActor () -> Void) { self.body = body }
+    }
+
+    @objc func run(_ item: NSMenuItem) { (item.representedObject as? Run)?.body() }
 }

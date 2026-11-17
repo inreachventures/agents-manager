@@ -1,6 +1,7 @@
 #if DEBUG
 import AppKit
 import SwiftUI
+import WebKit
 
 /// Development builds only. With WM_DEBUG_DIR set, the app runs the commands written to $WM_DEBUG_DIR/cmd, one per
 /// line, so a script can drive it and take snapshots of its own windows (no screen-recording permission needed):
@@ -8,6 +9,9 @@ import SwiftUI
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · type [TEXT] · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
 ///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
+///   mode map|diff (as the Diff | Map switch) · lens NAME · map-open PATH[,PATH…] [LINE] (as a click on a card with
+///   those workstream-relative files) · back-to-map · snap-map NAME (the map page alone) · map-cards (the clickable
+///   cards, in window points from the top left, to out)
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -92,13 +96,57 @@ enum DebugControl {
             window?.setFrameOrigin(NSPoint(x: -5000, y: 200))
         case "create":
             Task { await model.create(ticket: rest.first ?? "") }
+        case "mode":
+            model.mode = rest.first == "map" ? .map : .diff
+        case "lens":
+            if let key = model.selection, let lens = rest.first { model.mapLenses[key] = lens }
+        case "map-open":  // through the page's message handler, as a click on a card would
+            guard let web = window.flatMap({ firstWebView(in: $0.contentView) }), let paths = rest.first else { return }
+            let line = rest.count > 1 ? Int(rest[1]) : nil
+            let files: [[String: Any]] = paths.split(separator: ",").map { path in
+                line.map { ["path": String(path), "startLine": $0] } ?? ["path": String(path)]
+            }
+            web.callAsyncJavaScript("window.webkit.messageHandlers.wm.postMessage({type: 'open', node: 'debug', "
+                                    + "files: files, view: window.wmMap.viewState()})",
+                                    arguments: ["files": files], in: nil, in: .page)
+        case "back-to-map":
+            model.returnToMap()
+        case "snap-map":
+            guard let web = window.flatMap({ firstWebView(in: $0.contentView) }) else { return }
+            web.takeSnapshot(with: nil) { image, _ in
+                guard let tiff = image?.tiffRepresentation, let rep = NSBitmapImageRep(data: tiff) else { return }
+                try? rep.representation(using: .png, properties: [:])?
+                    .write(to: URL(fileURLWithPath: "\(dir)/\(rest.first ?? "snap")-map.png"))
+            }
+        case "map-cards":  // each clickable card's centre, as `click` takes it, and the page's pan and zoom
+            guard let window, let web = firstWebView(in: window.contentView) else { return }
+            let frame = web.convert(web.bounds, to: nil)
+            let top = window.frame.height - frame.maxY  // the web view's top, from the window's top
+            let js = """
+                var svg = document.querySelector('#stage svg'), m = svg && svg.getScreenCTM();
+                return JSON.stringify({view: wmMap.viewState(), cards: wmMap.state.cards.map(function (c) {
+                  var p = svg.createSVGPoint(); p.x = c.box.x + c.box.width / 2; p.y = c.box.y + c.box.height / 2;
+                  var q = p.matrixTransform(m);
+                  return {id: c.id, x: q.x, y: q.y, files: c.files.map(function (f) { return f.path; })};
+                })});
+                """
+            web.callAsyncJavaScript(js, arguments: [:], in: nil, in: .page) { result in
+                guard case .success(let value) = result, let text = value as? String else { return }
+                let out = "webview=\(frame.minX),\(top) \(frame.width)x\(frame.height)\n\(text)\n"
+                try? out.write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+            }
         case "dump":
             let out = ["selection=\(model.selection ?? "nil") solo=\(model.soloRepo ?? "all")",
                        "selected=\(model.selected?.key ?? "nil") terminal=\(model.terminal.key ?? "nil")",
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
                        "tour=\(model.tourStop.map { "\($0)" } ?? "nil") setup=\(model.setup != nil)",
                        "windows=\(NSApp.windows.filter(\.isVisible).map { String(describing: type(of: $0)) })",
-                       "rows=\(model.state.workstreams.map(\.key))"].joined(separator: "\n")
+                       "rows=\(model.state.workstreams.map(\.key))",
+                       "mode=\(model.mode) lens=\(model.selection.flatMap { model.mapLenses[$0] } ?? "-")",
+                       "jump=\(model.jump.map { "\($0)" } ?? "nil")",
+                       "backToMap=\(model.backToMap.map { "\($0)" } ?? "nil")",
+                       "map=\(model.map.map { "\($0.key) doc=\($0.doc != nil) drawing=\($0.drawingSince != nil)" } ?? "nil")"]
+                .joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
         case "settings":  // renders Settings in a scratch window and snapshots it as NAME-settings.png
             let host = NSWindow(contentViewController: NSHostingController(rootView: SettingsView().environment(model)))
@@ -176,6 +224,13 @@ enum DebugControl {
               let image = create(bounds, list, 1 << 3)?.takeRetainedValue() else { return }
         try? NSBitmapImageRep(cgImage: image).representation(using: .png, properties: [:])?
             .write(to: URL(fileURLWithPath: path))
+    }
+
+    private static func firstWebView(in view: NSView?) -> WKWebView? {
+        guard let view else { return nil }
+        if let web = view as? WKWebView { return web }
+        for sub in view.subviews { if let web = firstWebView(in: sub) { return web } }
+        return nil
     }
 
     private static func firstTable(in view: NSView?) -> NSTableView? {

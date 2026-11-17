@@ -1,7 +1,8 @@
 // The task map page: the app hands it a PR Lens graph document with show(), and it draws it with PrLens.render,
 // narrowed to one repo when the repo chip picks one, with pan (drag or scroll) and zoom (pinch or ⌘-scroll).
 // Messages to the app go through webkit.messageHandlers.wm: {type: "error", message} when the document can't be
-// drawn, {type: "rendered"} when it was.
+// drawn, {type: "rendered"} when it was, and {type: "open", node, files: [{path, startLine?}], x, y, view} when a card
+// with changed files is clicked (x, y: the click in the page's view; view: viewState(), to come back to).
 (function () {
   "use strict";
 
@@ -62,11 +63,54 @@
     return out;
   }
 
+  /** The cards a click opens, as [{id, box, files}]: each node (and data-model table) the render's `atlas` boxes that
+   * has at least one file in `changed` (workstream-relative paths), with only those files ({path, startLine?}). */
+  function clickableCards(doc, atlas, changed) {
+    var inDiff = new Set(changed);
+    var cards = [];
+    function add(items, boxes) {
+      (items || []).forEach(function (item) {
+        var box = boxes && boxes[item.id];
+        if (!box) return;
+        var files = [];
+        (item.files || []).forEach(function (file) {
+          if (!inDiff.has(file.path) || files.some(function (f) { return f.path === file.path; })) return;
+          files.push(file.startLine ? { path: file.path, startLine: file.startLine } : { path: file.path });
+        });
+        if (files.length > 0) cards.push({ id: item.id, box: box, files: files });
+      });
+    }
+    add(doc.nodes, atlas.nodes);
+    add(doc.dataModel && doc.dataModel.tables, atlas.tables);
+    return cards;
+  }
+
+  function inside(box, p) {
+    return p.x >= box.x && p.x <= box.x + box.width && p.y >= box.y && p.y <= box.y + box.height;
+  }
+
+  /** The card at `p` (viewBox units), or null. A flow step is never a card, even inside the box of a node that heads
+   * columns in two flows (the atlas boxes such a node with one rectangle covering both cards); where boxes overlap,
+   * the smallest wins. */
+  function cardAt(cards, atlas, p) {
+    var steps = atlas.messages || {};
+    for (var flow in steps) {
+      for (var id in steps[flow]) { if (inside(steps[flow][id], p)) return null; }
+    }
+    var best = null;
+    cards.forEach(function (card) {
+      if (inside(card.box, p) && (!best || card.box.width * card.box.height < best.box.width * best.box.height)) {
+        best = card;
+      }
+    });
+    return best;
+  }
+
   // ---------------------------------------------------------------------------------------------------------------
   // The page. Only set up in a browser: under node this file just exports the functions above.
 
   if (typeof document === "undefined") {
-    if (typeof module !== "undefined") module.exports = { filterToRepo: filterToRepo, lensesOf: lensesOf };
+    if (typeof module !== "undefined") module.exports = { filterToRepo: filterToRepo, lensesOf: lensesOf, clickableCards: clickableCards, cardAt: cardAt };
     return;
   }
 
@@ -77,7 +121,8 @@
   var size = null;  // the drawing's {width, height}, viewBox units
   var shown = null;  // what the last show() drew: {lens, repo}
   var touched = false;  // panned or zoomed by hand since the last fit
-  var state = { changed: [], atlas: null };  // for clicking a card through to its diff (the paths in the diff)
+  var state = { changed: [], atlas: null, cards: [] };  // for clicking a card through to its diff
+  var hovered = null;  // the card under the pointer, outlined
   var MIN_SCALE = 0.05, MAX_SCALE = 4;
 
   function post(message) {
@@ -141,6 +186,8 @@
       var lens = lenses.indexOf(opts.lens) >= 0 ? opts.lens : lenses[0];
       var repo = opts.repo || null;
       state.changed = opts.changed || [];
+      state.cards = [];
+      hover(null);
 
       if (repo) {
         var narrowed = filterToRepo(doc, repo);
@@ -168,6 +215,7 @@
       var title = stage.querySelector("svg > title");  // otherwise the whole map shows it as a tooltip
       if (title) title.remove();
       state.atlas = result.atlas;
+      state.cards = clickableCards(doc, result.atlas, state.changed);
       size = { width: result.width, height: result.height };
       document.body.classList.remove("noting");
       var refit = !shown || shown.lens !== lens || shown.repo !== repo;
@@ -179,25 +227,75 @@
     }
   }
 
-  // Pan by dragging.
+  /** The point under (clientX, clientY) in the drawing's viewBox units. */
+  function toViewBox(clientX, clientY) {
+    var svg = stage.querySelector("svg");
+    var ctm = svg && svg.getScreenCTM();
+    if (!ctm) return null;
+    var point = svg.createSVGPoint();
+    point.x = clientX;
+    point.y = clientY;
+    return point.matrixTransform(ctm.inverse());
+  }
+
+  function cardUnder(event) {
+    if (!state.atlas || state.cards.length === 0) return null;
+    var p = toViewBox(event.clientX, event.clientY);
+    return p ? cardAt(state.cards, state.atlas, p) : null;
+  }
+
+  /** Outline `card` (null: none) and give it the pointer. */
+  function hover(card) {
+    if (card === hovered) return;
+    hovered = card;
+    var old = stage.querySelector("rect.wm-hover");
+    if (old) old.remove();
+    viewport.classList.toggle("over-card", !!card);
+    var svg = stage.querySelector("svg");
+    if (!card || !svg) return;
+    var pad = 3;
+    var rect = document.createElementNS("http://www.w3.org/2000/svg", "rect");
+    rect.setAttribute("class", "wm-hover");
+    rect.setAttribute("x", card.box.x - pad);
+    rect.setAttribute("y", card.box.y - pad);
+    rect.setAttribute("width", card.box.width + 2 * pad);
+    rect.setAttribute("height", card.box.height + 2 * pad);
+    rect.setAttribute("rx", 10);
+    svg.appendChild(rect);
+  }
+
+  // Pan by dragging; a click that hardly moved opens the card under it.
   var drag = null;
   viewport.addEventListener("pointerdown", function (event) {
     if (event.button !== 0) return;
-    drag = { id: event.pointerId, x: event.clientX - view.x, y: event.clientY - view.y };
+    drag = { id: event.pointerId, x: event.clientX - view.x, y: event.clientY - view.y,
+             startX: event.clientX, startY: event.clientY, moved: false };
     viewport.setPointerCapture(event.pointerId);
     viewport.classList.add("dragging");
   });
   viewport.addEventListener("pointermove", function (event) {
-    if (!drag || event.pointerId !== drag.id) return;
+    if (!drag) { hover(cardUnder(event)); return; }
+    if (event.pointerId !== drag.id) return;
+    if (Math.abs(event.clientX - drag.startX) + Math.abs(event.clientY - drag.startY) > 4) drag.moved = true;
+    if (!drag.moved) return;
     view.x = event.clientX - drag.x;
     view.y = event.clientY - drag.y;
     touched = true;
     apply();
   });
+  viewport.addEventListener("pointerleave", function () { if (!drag) hover(null); });
   function endDrag(event) {
     if (!drag || event.pointerId !== drag.id) return;
+    var clicked = !drag.moved && event.type === "pointerup";
     drag = null;
     viewport.classList.remove("dragging");
+    if (!clicked) return;
+    var card = cardUnder(event);
+    if (card) {
+      var rect = viewport.getBoundingClientRect();
+      post({ type: "open", node: card.id, files: card.files, x: event.clientX - rect.left,
+             y: event.clientY - rect.top, view: window.wmMap.viewState() });
+    }
   }
   viewport.addEventListener("pointerup", endDrag);
   viewport.addEventListener("pointercancel", endDrag);
@@ -216,6 +314,7 @@
       touched = true;
       apply();
     }
+    hover(cardUnder(event));
   }, { passive: false });
   viewport.addEventListener("gesturestart", function (event) {
     event.preventDefault();

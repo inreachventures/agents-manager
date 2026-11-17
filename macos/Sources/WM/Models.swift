@@ -235,6 +235,35 @@ struct MapResult: Decodable, Equatable {
     }
 }
 
+/// A file a map card names, as the page sends it on a click: workstream-relative (`<repo>/<path>`), with the line the
+/// card's part of it starts at when the map has one.
+struct MapFile: Equatable {
+    var path: String
+    var startLine: Int?
+}
+
+/// The map's pan and zoom, as the page's `viewState()` gives it and `restore()` takes it back.
+struct MapPan: Equatable {
+    var x: Double
+    var y: Double
+    var scale: Double
+
+    init(x: Double, y: Double, scale: Double) {
+        self.x = x
+        self.y = y
+        self.scale = scale
+    }
+
+    init?(_ json: Any?) {
+        guard let d = json as? [String: Any], let x = (d["x"] as? NSNumber)?.doubleValue,
+              let y = (d["y"] as? NSNumber)?.doubleValue, let scale = (d["scale"] as? NSNumber)?.doubleValue
+        else { return nil }
+        self.init(x: x, y: y, scale: scale)
+    }
+
+    var json: [String: Double] { ["x": x, "y": y, "scale": scale] }
+}
+
 // MARK: - Action results
 
 struct NewResult: Decodable { var key: String }

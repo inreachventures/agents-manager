@@ -55,27 +55,56 @@ struct ChangesPanel: View {
                                                                      : "The branch matches its base."))
                     .frame(maxHeight: .infinity)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
-                        ForEach(shown) { repo in
-                            Section {
-                                if let error = repo.error {
-                                    Text(error).font(.caption).foregroundStyle(.red).padding(12)
-                                }
-                                ForEach(rows(repo)) { row in
-                                    rowView(row)
-                                }
-                            } header: {
-                                if solo == nil {  // a single repo is named in the panel's header already
-                                    RepoHeader(repo: repo, state: ws.repos.first { $0.repo == repo.repo })
+                if let back = model.backToMap, back.key == ws.key {
+                    BackToMap()
+                    Divider()
+                }
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
+                            ForEach(shown) { repo in
+                                Section {
+                                    if let error = repo.error {
+                                        Text(error).font(.caption).foregroundStyle(.red).padding(12)
+                                    }
+                                    ForEach(rows(repo)) { row in
+                                        rowView(row)
+                                    }
+                                } header: {
+                                    if solo == nil {  // a single repo is named in the panel's header already
+                                        RepoHeader(repo: repo, state: ws.repos.first { $0.repo == repo.repo })
+                                    }
                                 }
                             }
                         }
                     }
+                    .id(solo ?? "")  // start at the top when switching repos
+                    .task(id: model.jump) { await go(to: model.jump, in: diff, proxy: proxy) }
                 }
-                .id(solo ?? "")  // start at the top when switching repos
             }
         }
+    }
+
+    /// A jump from a map card: open its file and scroll to the hunk holding its start line (else the first hunk after
+    /// it, else the file's header). The jump is cleared once done, found or not.
+    private func go(to jump: DiffJump?, in diff: DiffResult, proxy: ScrollViewProxy) async {
+        guard let jump else { return }
+        defer { if model.jump == jump { model.jump = nil } }  // not a newer jump that came meanwhile
+        let files = diff.repos.first { $0.repo == jump.repo }?.files.filter { $0.path == jump.path } ?? []
+        guard let file = files.first(where: { !$0.untracked }) ?? files.first else { return }
+        let id = "\(jump.repo)/\(file.id)"
+        if file.lineCount > Self.bigFile { expanded.insert(id) } else { folded.remove(id) }
+        var target = id
+        if let line = jump.startLine {
+            let ranges = file.hunks.map { hunk in hunk.lines.compactMap(\.new) }
+            if let h = ranges.firstIndex(where: { ($0.min() ?? .max) <= line && line <= ($0.max() ?? .min) })
+                ?? ranges.firstIndex(where: { ($0.min() ?? .min) > line }) {
+                target = "\(id)#\(h)"
+            }
+        }
+        try? await Task.sleep(for: .milliseconds(50))  // the rows the opened file adds are laid out first
+        guard !Task.isCancelled else { return }
+        proxy.scrollTo(target, anchor: .top)
     }
 
     /// One flat list of rows per repo, each with its own id, so the lazy stack only builds what is on screen.
@@ -192,6 +221,27 @@ private struct SoloHeader: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
+    }
+}
+
+/// After a jump from a map card: the way back to the map as it was.
+private struct BackToMap: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        HStack {
+            Button {
+                withAnimation(.snappy(duration: 0.2)) { model.returnToMap() }
+            } label: {
+                Label("Back to map", systemImage: "chevron.left")
+            }
+            .buttonStyle(.link)
+            .font(.caption)
+            .help("The map again, as it was when you clicked the card")
+            Spacer()
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 5)
     }
 }
 

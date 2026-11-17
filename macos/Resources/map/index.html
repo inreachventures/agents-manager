@@ -9,9 +9,12 @@
   html, body { margin: 0; height: 100%; overflow: hidden; background: #f4f5f7; }
   body.dark { background: #0d1117; }
   #viewport { position: absolute; inset: 0; overflow: hidden; cursor: grab; touch-action: none; }
+  #viewport.over-card { cursor: pointer; }
   #viewport.dragging { cursor: grabbing; }
   #stage { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
   #stage svg { display: block; }
+  #stage rect.wm-hover { fill: none; stroke: #0969da; stroke-width: 2; pointer-events: none; }
+  body.dark #stage rect.wm-hover { stroke: #4493f8; }
   #note {
     position: absolute; inset: 0; display: none; align-items: center; justify-content: center;
     padding: 24px; text-align: center; color: #59636e;
