@@ -25,22 +25,78 @@ struct NewWorkstreamSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var ticket = ""
 
+    /// What `wm` will make of the box: it upper-cases the ticket and requires the shape below
+    /// (`TICKET_RE` in src/agentmgr/naming.py; keep the two in step).
+    private enum Check: Equatable {
+        case blank
+        case valid(String)
+        case invalid(String)
+    }
+
+    private static let ticketPattern = #/^[A-Z][A-Z0-9]*-[0-9]+$/#
+
+    private var check: Check {
+        let t = ticket.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if t.isEmpty { return .blank }
+        guard t.wholeMatch(of: Self.ticketPattern) != nil else {
+            return .invalid("That isn't a ticket ID. Use letters, a hyphen and a number, like PROJ-313.")
+        }
+        let all = model.state.workstreams + model.state.archived
+        if let ws = all.first(where: { $0.key == t || $0.ticket == t }) {
+            let by = ws.key == t ? "" : " by \(ws.key)"
+            let archived = ws.status == .archived ? " (archived)" : ""
+            return .invalid("\(t) is already taken\(by)\(archived). Pick another ticket.")
+        }
+        return .valid(t)
+    }
+
     var body: some View {
         SheetFrame(title: "New Workstream") {
             Text("A Claude session opens. Describe the task there, by voice or text: Claude names the workstream, writes TASK.md and attaches the repos, then waits for your go.")
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
-            TextField("Ticket (optional), e.g. PROJ-313", text: $ticket)
-                .textFieldStyle(.roundedBorder)
-                .onSubmit(create)
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Ticket ID (optional)").font(.headline)
+                TextField("e.g. PROJ-313", text: $ticket)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(create)
+                hint
+                    .font(.callout)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
         } buttons: {
             Button("Cancel", role: .cancel) { dismiss() }.keyboardShortcut(.cancelAction)
             Button("Create", action: create).keyboardShortcut(.defaultAction)
+                .disabled(isInvalid)
         }
     }
 
+    @ViewBuilder private var hint: some View {
+        switch check {
+        case .blank:
+            Text("Only a ticket ID goes here, not the task. It becomes the workstream's key and branch prefix. Leave it blank for an automatic key like WS-17; you can still mention a ticket to Claude later.")
+                .foregroundStyle(.secondary)
+        case .valid(let t):
+            Text("Key \(t), branches named \(t.lowercased())-<name>.")
+                .foregroundStyle(.secondary)
+        case .invalid(let reason):
+            Label(reason, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+        }
+    }
+
+    private var isInvalid: Bool {
+        if case .invalid = check { return true }
+        return false
+    }
+
     private func create() {
-        let ticket = ticket.trimmingCharacters(in: .whitespaces)
+        let ticket: String
+        switch check {
+        case .invalid: return
+        case .blank: ticket = ""
+        case .valid(let t): ticket = t
+        }
         dismiss()
         Task { await model.create(ticket: ticket) }
     }

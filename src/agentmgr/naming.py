@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 import unicodedata
 
-TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")
+TICKET_RE = re.compile(r"^[A-Z][A-Z0-9]*-\d+$")  # mirrored in macos/Sources/WM/Sheets.swift (NewWorkstreamSheet)
 MAX_NAME_WORDS = 3
 
 
