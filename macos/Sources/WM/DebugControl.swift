@@ -161,7 +161,8 @@ enum DebugControl {
             let top = window.frame.height - frame.maxY  // the web view's top, from the window's top
             let js = """
                 var svg = document.querySelector('#stage svg'), m = svg && svg.getScreenCTM();
-                return JSON.stringify({view: wmMap.viewState(), cards: wmMap.state.cards.map(function (c) {
+                var clickable = wmMap.state.cards.filter(function (c) { return c.files.length > 0; });
+                return JSON.stringify({view: wmMap.viewState(), cards: clickable.map(function (c) {
                   var p = svg.createSVGPoint(); p.x = c.box.x + c.box.width / 2; p.y = c.box.y + c.box.height / 2;
                   var q = p.matrixTransform(m);
                   return {id: c.id, x: q.x, y: q.y, files: c.files.map(function (f) { return f.path; })};

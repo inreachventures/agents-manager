@@ -182,9 +182,14 @@ struct MapWebView: NSViewRepresentable {
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onError = onError
         context.coordinator.onOpen = onOpen
-        if let restore {
-            context.coordinator.restore = restore
-            DispatchQueue.main.async { onRestored() }  // not while SwiftUI is updating the view
+        // Hand the pan to put back over once: SwiftUI may update the view again before `onRestored` clears it, and
+        // applying it again then would undo a pan made since.
+        if restore != context.coordinator.handedRestore {
+            context.coordinator.handedRestore = restore
+            if let restore {
+                context.coordinator.restore = restore
+                DispatchQueue.main.async { onRestored() }  // not while SwiftUI is updating the view
+            }
         }
         context.coordinator.update(Shown(doc: doc, lens: lens, theme: theme, repo: repo, changed: changed))
     }
@@ -207,6 +212,7 @@ struct MapWebView: NSViewRepresentable {
         var onError: ((String?) -> Void)?
         var onOpen: (([MapFile], CGPoint, MapPan?) -> Void)?
         var restore: MapPan?  // to put back with the next show, or now if the map shows already
+        var handedRestore: MapPan?  // the `restore` last taken from the view, until the view's goes back to nil
         private var page: URL?
         private var loaded = false
         private var wanted: Shown?

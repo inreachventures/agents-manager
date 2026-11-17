@@ -63,25 +63,59 @@
     return out;
   }
 
-  /** The cards a click opens, as [{id, box, files}]: each node (and data-model table) the render's `atlas` boxes that
-   * has at least one file in `changed` (workstream-relative paths), with only those files ({path, startLine?}). */
-  function clickableCards(doc, atlas, changed) {
+  /** Every card drawn, as [{id, box, files}], `files` being the card's files in `changed` (workstream-relative paths)
+   * as {path, startLine?}: only a card with some is clickable. Boxes are in viewBox units: nodes and data-model tables
+   * from the render's `atlas`, except in the data-flow lens when `flowBoxes` lines up with the flows (see
+   * flowCardBoxes): there the atlas boxes a node heading columns in two flows with one rectangle covering both cards
+   * and everything between them, so each card gets its own box instead. */
+  function cardsOf(doc, atlas, changed, flowBoxes) {
     var inDiff = new Set(changed);
+    function filesOf(item) {
+      var files = [];
+      (item.files || []).forEach(function (file) {
+        if (!inDiff.has(file.path) || files.some(function (f) { return f.path === file.path; })) return;
+        files.push(file.startLine ? { path: file.path, startLine: file.startLine } : { path: file.path });
+      });
+      return files;
+    }
     var cards = [];
-    function add(items, boxes) {
-      (items || []).forEach(function (item) {
-        var box = boxes && boxes[item.id];
-        if (!box) return;
-        var files = [];
-        (item.files || []).forEach(function (file) {
-          if (!inDiff.has(file.path) || files.some(function (f) { return f.path === file.path; })) return;
-          files.push(file.startLine ? { path: file.path, startLine: file.startLine } : { path: file.path });
-        });
-        if (files.length > 0) cards.push({ id: item.id, box: box, files: files });
+    var nodes = new Map(doc.nodes.map(function (node) { return [node.id, node]; }));
+    var perFlow = flowBoxes ? flowCardBoxes(doc, atlas, flowBoxes) : null;
+    if (perFlow) {
+      perFlow.forEach(function (card) {
+        cards.push({ id: card.id, box: card.box, files: filesOf(nodes.get(card.id) || {}) });
+      });
+    } else {
+      doc.nodes.forEach(function (node) {
+        if (atlas.nodes && atlas.nodes[node.id]) cards.push({ id: node.id, box: atlas.nodes[node.id], files: filesOf(node) });
       });
     }
-    add(doc.nodes, atlas.nodes);
-    add(doc.dataModel && doc.dataModel.tables, atlas.tables);
+    ((doc.dataModel && doc.dataModel.tables) || []).forEach(function (table) {
+      if (atlas.tables && atlas.tables[table.id]) {
+        cards.push({ id: table.id, box: atlas.tables[table.id], files: filesOf(table) });
+      }
+    });
+    return cards;
+  }
+
+  /** The data-flow lens draws each flow's participants as cards, flow after flow, in order. `boxes`: the card outlines
+   * in the drawing, in document order. Returns [{id, box}], one per card, or null when they don't line up with the
+   * flows' participants (a count that differs, or a card outside its node's atlas box). */
+  function flowCardBoxes(doc, atlas, boxes) {
+    var ids = [];
+    (doc.flows || []).forEach(function (flow) {
+      flow.participants.forEach(function (participant) { ids.push(participant.node); });
+    });
+    if (ids.length === 0 || ids.length !== boxes.length || !atlas.nodes) return null;
+    var cards = [];
+    for (var i = 0; i < ids.length; i++) {
+      var outer = atlas.nodes[ids[i]], box = boxes[i], slack = 0.5;
+      if (!outer || box.x < outer.x - slack || box.y < outer.y - slack
+          || box.x + box.width > outer.x + outer.width + slack || box.y + box.height > outer.y + outer.height + slack) {
+        return null;
+      }
+      cards.push({ id: ids[i], box: box });
+    }
     return cards;
   }
 
@@ -89,9 +123,9 @@
     return p.x >= box.x && p.x <= box.x + box.width && p.y >= box.y && p.y <= box.y + box.height;
   }
 
-  /** The card at `p` (viewBox units), or null. A flow step is never a card, even inside the box of a node that heads
-   * columns in two flows (the atlas boxes such a node with one rectangle covering both cards); where boxes overlap,
-   * the smallest wins. */
+  /** The clickable card at `p` (viewBox units), or null. Where boxes overlap the smallest is the card under `p`, and
+   * if that one has no changed files nothing is (an unchanged card inside a bigger box stays inert). A flow step is
+   * never a card. */
   function cardAt(cards, atlas, p) {
     var steps = atlas.messages || {};
     for (var flow in steps) {
@@ -103,14 +137,15 @@
         best = card;
       }
     });
-    return best;
+    return best && best.files.length > 0 ? best : null;
   }
 
   // ---------------------------------------------------------------------------------------------------------------
   // The page. Only set up in a browser: under node this file just exports the functions above.
 
   if (typeof document === "undefined") {
-    if (typeof module !== "undefined") module.exports = { filterToRepo: filterToRepo, lensesOf: lensesOf, clickableCards: clickableCards, cardAt: cardAt };
+    if (typeof module !== "undefined") module.exports = { filterToRepo: filterToRepo, lensesOf: lensesOf, cardsOf: cardsOf,
+                                                       flowCardBoxes: flowCardBoxes, cardAt: cardAt };
     return;
   }
 
@@ -215,7 +250,7 @@
       var title = stage.querySelector("svg > title");  // otherwise the whole map shows it as a tooltip
       if (title) title.remove();
       state.atlas = result.atlas;
-      state.cards = clickableCards(doc, result.atlas, state.changed);
+      state.cards = cardsOf(doc, result.atlas, state.changed, lens === "data-flow" ? drawnCards() : null);
       size = { width: result.width, height: result.height };
       document.body.classList.remove("noting");
       var refit = !shown || shown.lens !== lens || shown.repo !== repo;
@@ -236,6 +271,23 @@
     point.x = clientX;
     point.y = clientY;
     return point.matrixTransform(ctm.inverse());
+  }
+
+  /** The card outlines in the drawing, in document order and viewBox units: each `rect.card` is a card's outline, in
+   * groups that may move it (PR Lens shifts the whole drawing by its margin). */
+  function drawnCards() {
+    var svg = stage.querySelector("svg");
+    if (!svg) return [];
+    return Array.prototype.map.call(svg.querySelectorAll("g.cardsh > rect.card"), function (rect) {
+      var m = svg.createSVGMatrix();
+      for (var el = rect.parentNode; el && el !== svg; el = el.parentNode) {
+        var moved = el.transform && el.transform.baseVal.consolidate();
+        if (moved) m = moved.matrix.multiply(m);
+      }
+      var x = rect.x.baseVal.value, y = rect.y.baseVal.value;
+      return { x: m.a * x + m.c * y + m.e, y: m.b * x + m.d * y + m.f,
+               width: rect.width.baseVal.value * m.a, height: rect.height.baseVal.value * m.d };
+    });
   }
 
   function cardUnder(event) {

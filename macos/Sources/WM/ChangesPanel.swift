@@ -99,7 +99,7 @@ struct ChangesPanel: View {
             let ranges = file.hunks.map { hunk in hunk.lines.compactMap(\.new) }
             if let h = ranges.firstIndex(where: { ($0.min() ?? .max) <= line && line <= ($0.max() ?? .min) })
                 ?? ranges.firstIndex(where: { ($0.min() ?? .min) > line }) {
-                target = "\(id)#\(h)"
+                target = h == 0 ? id : "\(id)#\(h)"  // the first hunk sits under the file's row: show its path too
             }
         }
         try? await Task.sleep(for: .milliseconds(50))  // the rows the opened file adds are laid out first
