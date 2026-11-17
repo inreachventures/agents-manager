@@ -6,7 +6,7 @@ import SwiftUI
 /// line, so a script can drive it and take snapshots of its own windows (no screen-recording permission needed):
 ///   snap NAME · select KEY · select-archived KEY · select-row N · repo NAME|all (a top-bar chip)
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
-///   click X Y (from the top left) · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
+///   click X Y (from the top left) · type [TEXT] · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
 ///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
 @MainActor
 enum DebugControl {
@@ -120,6 +120,11 @@ enum DebugControl {
             NSApp.appearance = NSAppearance(named: rest.first == "light" ? .aqua : .darkAqua)
         case "size":
             window?.setContentSize(NSSize(width: Double(rest[0]) ?? 1200, height: Double(rest[1]) ?? 760))
+        case "type":  // replaces the text of the focused field (in the sheet if one is open); no TEXT clears it
+            guard let window, let target = window.attachedSheet ?? Optional(window),
+                  let editor = target.firstResponder as? NSTextView else { return }
+            editor.selectAll(nil)
+            editor.insertText(rest.joined(separator: " "), replacementRange: editor.selectedRange())
         case "key":  // to the sheet if one is open: return | escape
             guard let window, let target = window.attachedSheet ?? Optional(window) else { return }
             let (chars, code): (String, UInt16) = rest.first == "escape" ? ("\u{1b}", 53) : ("\r", 36)
