@@ -99,6 +99,8 @@ class Jobs:
         if tid:
             job["id"] = str(tid)
             self.jobs[job["id"]] = job
+            if job["id"] in self._ended:  # its notice was written before the tool result (a quick job)
+                job["status"], job["ended_at"] = "completed", at
 
     def notice(self, text: str, at: float | None) -> None:
         for body in NOTICE.findall(text):
@@ -148,6 +150,12 @@ class Jobs:
                         self.notice(b.get("text", ""), at)
             elif isinstance(content, str):
                 self.notice(content, at)
+        # newer Claude Code versions write the notice where it's queued, not as a user message
+        if e.get("type") == "queue-operation" and isinstance(e.get("content"), str):
+            self.notice(e["content"], at)
+        attachment = e.get("attachment")
+        if isinstance(attachment, dict) and isinstance(attachment.get("prompt"), str):
+            self.notice(attachment["prompt"], at)
 
 
 JOB_HINTS = (b"run_in_background", b'"Monitor"', b"task-notification", b'"TaskStop"', b"backgroundTaskId",
@@ -288,9 +296,11 @@ class Reader:
             e = json.loads(line)
         except ValueError:
             return
-        if e.get("isSidechain") or e.get("type") not in ("user", "assistant"):
+        if e.get("isSidechain"):
             return
-        self.jobs.feed(e)
+        self.jobs.feed(e)  # before the filter below: job notices also come as queue entries and attachments
+        if e.get("type") not in ("user", "assistant"):
+            return
         mid, at = e.get("uuid") or str(len(self.messages)), e.get("timestamp")
         content = (e.get("message") or {}).get("content")
         if e.get("isCompactSummary"):
@@ -352,7 +362,10 @@ class Reader:
 def merge_background(running: list[dict], jobs: Jobs | None, background: dict | None) -> list[dict]:
     """The transcript's running jobs plus what Claude Code listed as in flight at the last stop, minus any the
     transcript has since seen end. Both sources name tasks by the same id."""
-    out = list(running)
+    listed = {t["id"] for t in (background or {}).get("tasks") or []}
+    # a job that started before the last stop but isn't on Claude Code's list has ended, whatever the transcript says
+    out = [j for j in running if not background or j["id"] in listed
+           or (j["started_at"] or 0) > background["at"]]
     seen = {j["id"] for j in out}
     for t in (background or {}).get("tasks") or []:
         if t["id"] in seen or (jobs is not None and jobs.ended(t["id"])):

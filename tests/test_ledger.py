@@ -402,3 +402,35 @@ def test_stop_trusts_claude_codes_list_of_running_work(env, monkeypatch, capsys)
     run_hook(monkeypatch, capsys, "Stop", {**base, "background_tasks": [], "session_crons": []})
     row = db.get_workstream(db.connect(), ws.key)
     assert row.status == db.YOUR_TURN and row.status_reason is None
+
+
+def test_job_notices_in_queue_entries_end_jobs_even_before_the_job_is_recorded(tmp_path):
+    path = tmp_path / "s.jsonl"
+    notice = ("<task-notification><task-id>b1</task-id><status>completed</status>"
+              "<summary>Background command CI completed</summary></task-notification>")
+    write_transcript(
+        path,
+        entry("assistant", [{"type": "tool_use", "id": "t1", "name": "Bash",
+                             "input": {"command": "gh pr checks --watch", "description": "Wait for CI",
+                                       "run_in_background": True}}]),
+        {"type": "queue-operation", "operation": "enqueue", "timestamp": "2026-11-13T10:01:00Z", "content": notice},
+        entry("user", [{"type": "tool_result", "tool_use_id": "t1", "content": "running"}],
+              toolUseResult={"backgroundTaskId": "b1"}),
+        entry("assistant", [{"type": "tool_use", "id": "t2", "name": "Bash",
+                             "input": {"command": "sleep 99", "description": "Benchmark",
+                                       "run_in_background": True}}]),
+        entry("user", [{"type": "tool_result", "tool_use_id": "t2", "content": "running"}],
+              toolUseResult={"backgroundTaskId": "b2"}))
+    assert [j["id"] for j in transcript.running_jobs(path)] == ["b2"]
+    write_transcript(path, {"type": "attachment", "timestamp": "2026-11-13T10:02:00Z",
+                            "attachment": {"type": "queued_command", "prompt": notice.replace("b1", "b2")}})
+    assert transcript.running_jobs(path) == []
+    assert transcript.reader_for(path).running_jobs() == []
+
+
+def test_claude_codes_stop_list_overrides_a_job_the_transcript_never_saw_end(tmp_path):
+    job = {"id": "b9", "kind": "command", "text": "x", "status": "running", "started_at": 100.0,
+           "ended_at": None, "timeout": None}
+    assert transcript.merge_background([job], None, {"at": 200.0, "tasks": []}) == []
+    assert transcript.merge_background([job], None, {"at": 50.0, "tasks": []}) == [job]  # started after the stop
+    assert transcript.merge_background([job], None, None) == [job]
