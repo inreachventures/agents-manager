@@ -1,5 +1,6 @@
 import json
 import shutil
+import subprocess
 import time
 
 import pytest
@@ -166,3 +167,24 @@ def test_save_writes_map_and_overwrites_provenance(env, tmp_path):
     assert prov["head"]["sha"] == snap["acme-web"].head
     assert saved["snapshot"] == snap and saved["token"] == "tok"
     assert taskmap.read_drawing(ws).saved is True
+
+
+def test_read_drawing_ignores_wrong_shape(env):
+    ws, *_ = two_repos(env)
+    taskmap.map_dir(ws).mkdir(parents=True, exist_ok=True)
+    for body in ('{"token": "t"}', "[1, 2]", '{"token": "t", "pid": 1, "started_at": 0, "snapshot": {"a": 5}}'):
+        (taskmap.map_dir(ws) / "drawing.json").write_text(body)
+        assert taskmap.read_drawing(ws) is None
+
+
+@needs_node
+def test_save_reports_a_validator_timeout(env, tmp_path, monkeypatch):
+    ws, *_ = two_repos(env)
+    start_drawing(ws)
+
+    def hang(*args, **kwargs):
+        raise subprocess.TimeoutExpired(args[0], kwargs["timeout"])
+
+    monkeypatch.setattr(taskmap.subprocess, "run", hang)
+    with pytest.raises(taskmap.MapError, match="did not finish"):
+        taskmap.save(ws.key, "tok", write_draft(tmp_path, draft_doc()))

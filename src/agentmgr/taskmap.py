@@ -22,6 +22,7 @@ from . import db, diffs, gitops, workstream
 
 PRLENS = importlib.resources.files("agentmgr") / "data" / "prlens"
 NO_SHA = "0" * 40
+VALIDATE_TIMEOUT = 30
 
 
 class MapError(RuntimeError):
@@ -129,9 +130,9 @@ def _write_json(path: Path, data: dict) -> None:
 def read_drawing(ws: db.Workstream) -> Drawing | None:
     try:
         raw = json.loads((map_dir(ws) / "drawing.json").read_text())
-    except (OSError, ValueError):
+        return Drawing(**{**raw, "snapshot": _marks(raw["snapshot"])})
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
-    return Drawing(**{**raw, "snapshot": _marks(raw["snapshot"])})
 
 
 def write_drawing(ws: db.Workstream, d: Drawing | None) -> None:
@@ -147,7 +148,7 @@ def load(ws: db.Workstream) -> dict | None:
         raw = json.loads((map_dir(ws) / "map.json").read_text())
         return {"doc": raw["doc"], "drawn_at": raw["drawn_at"], "snapshot": _marks(raw["snapshot"]),
                 "token": raw["token"]}
-    except (OSError, ValueError, KeyError):
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
@@ -158,7 +159,11 @@ def _validate(doc: dict) -> list[str]:
     with tempfile.TemporaryDirectory() as tmp:
         path = Path(tmp) / "map.graph.json"
         path.write_text(json.dumps(doc))
-        proc = subprocess.run([node, str(PRLENS / "prlens-validate.mjs"), str(path)], capture_output=True, text=True)
+        try:
+            proc = subprocess.run([node, str(PRLENS / "prlens-validate.mjs"), str(path)], capture_output=True,
+                                  text=True, timeout=VALIDATE_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            raise MapError(f"the validator did not finish within {VALIDATE_TIMEOUT}s") from e
     if proc.returncode == 0:
         return []
     return [line for line in (proc.stdout + proc.stderr).splitlines() if line.strip()] or ["validation failed"]
@@ -166,7 +171,11 @@ def _validate(doc: dict) -> list[str]:
 
 def save(key: str, token: str, draft: Path) -> None:
     """Accept a drawn map: check it, store it as the current map and mark the drawing saved. Raises MapError."""
-    ws = workstream.require(db.connect(), key)
+    conn = db.connect()
+    try:
+        ws = workstream.require(conn, key)
+    finally:
+        conn.close()
     with locked(ws):
         drawing = read_drawing(ws)
         if drawing is None or drawing.token != token:
@@ -183,7 +192,10 @@ def save(key: str, token: str, draft: Path) -> None:
                              "head": {"sha": first.head}}
         problems = _validate(doc)
         prefixes = tuple(f"{repo}/" for repo in drawing.snapshot)
-        for lane in doc.get("lanes", []):
+        lanes = doc.get("lanes", [])
+        if not isinstance(lanes, list):
+            raise MapError("lanes must be a list")
+        for lane in lanes:
             lane_id = lane.get("id") if isinstance(lane, dict) else None
             if not isinstance(lane_id, str) or not lane_id.startswith(prefixes):
                 problems.append(f"lane {lane_id!r} must start with the name of a repo in this map, e.g. "
