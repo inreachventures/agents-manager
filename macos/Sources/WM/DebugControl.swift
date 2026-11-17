@@ -11,7 +11,8 @@ import WebKit
 ///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
 ///   mode map|diff (as the Diff | Map switch) · lens NAME · map-open PATH[,PATH…] [LINE] (as a click on a card with
 ///   those workstream-relative files) · back-to-map · snap-map NAME (the map page alone) · map-cards (the clickable
-///   cards, in window points from the top left, to out)
+///   cards, in window points from the top left, to out) · map-hover X Y · map-click X Y (pointer events in the page)
+///   map-js CODE (run in the page, its result to out) · menu-pick N|none (the map's file menu: its items to out)
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -109,6 +110,42 @@ enum DebugControl {
             web.callAsyncJavaScript("window.webkit.messageHandlers.wm.postMessage({type: 'open', node: 'debug', "
                                     + "files: files, view: window.wmMap.viewState()})",
                                     arguments: ["files": files], in: nil, in: .page)
+        case "map-hover", "map-click":  // X Y as `click` takes them; pointer events dispatched in the page (WebKit
+            // ignores the synthetic mouse events `click` posts while the app is not active)
+            guard let window, let web = firstWebView(in: window.contentView), rest.count == 2,
+                  let x = Double(rest[0]), let y = Double(rest[1]) else { return }
+            let frame = web.convert(web.bounds, to: nil)
+            let point = ["x": x - frame.minX, "y": y - (window.frame.height - frame.maxY)]
+            let types = command == "map-hover" ? ["pointermove"] : ["pointermove", "pointerdown", "pointerup"]
+            web.callAsyncJavaScript("""
+                var v = document.getElementById('viewport');
+                types.forEach(function (t) {
+                  v.dispatchEvent(new PointerEvent(t, {clientX: point.x, clientY: point.y, button: 0, pointerId: 1,
+                                                       bubbles: true, isPrimary: true}));
+                });
+                """, arguments: ["point": point, "types": types], in: nil, in: .page) { result in
+                if case .failure(let error) = result {
+                    try? "map-click: \(error)\n".write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+                }
+            }
+        case "map-js":  // the rest of the line as the body of a function in the page; what it returns, to out
+            guard let web = window.flatMap({ firstWebView(in: $0.contentView) }) else { return }
+            web.callAsyncJavaScript(rest.joined(separator: " "), arguments: [:], in: nil, in: .page) { result in
+                let out: String
+                switch result {
+                case .success(let value): out = "\(value)"
+                case .failure(let error): out = "error: \(error)"
+                }
+                try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+            }
+        case "menu-pick":  // with the map's file menu up: N picks its Nth item (from 0), anything else closes it
+            guard let menu = model.openMenu else { return }
+            let titles = menu.items.map(\.title).joined(separator: "\n")
+            try? "menu:\n\(titles)\n".write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+            menu.cancelTracking()
+            if let n = Int(rest.first ?? ""), menu.items.indices.contains(n) {
+                DispatchQueue.main.async { menu.performActionForItem(at: n) }
+            }
         case "back-to-map":
             model.returnToMap()
         case "snap-map":

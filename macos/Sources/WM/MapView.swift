@@ -60,6 +60,7 @@ struct MapPanel: View {
                     openLogButton
                     redrawButton(map)
                 }
+                .fixedSize()  // else the actions get squeezed and "Open log" truncates
             }
             .frame(maxHeight: .infinity)
         } else {
@@ -90,9 +91,11 @@ struct MapPanel: View {
                     }
                     .help(map.stale.map { "\($0.repo): \($0.reason)" }.joined(separator: "\n"))
                 }
-                if let failure = map.failure {
-                    Text("Last drawing failed").foregroundStyle(.red).help(failure.reason)
-                    openLogButton.buttonStyle(.link)
+                if let failure = map.failure {  // an icon, so "Out of date" keeps its room in a narrow panel
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .help("The last drawing failed: " + failure.reason)
+                    openLogButton.buttonStyle(.link).foregroundStyle(.tint)
                 }
             }
             .font(.caption)

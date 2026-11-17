@@ -87,6 +87,7 @@ final class AppModel {
     @ObservationIgnored private var restarts = 0
     @ObservationIgnored private var quitting = false
     @ObservationIgnored private var focusObservers: [NSObjectProtocol] = []
+    @ObservationIgnored private(set) var openMenu: NSMenu?  // the map's file menu while it is up (for DebugControl)
 
     // MARK: - Derived
 
@@ -134,6 +135,8 @@ final class AppModel {
             item.representedObject = MenuAction.Run { [weak self] in self?.jump(to: file, from: from) }
             menu.addItem(item)
         }
+        openMenu = menu
+        defer { openMenu = nil }
         menu.popUp(positioning: nil, at: point, in: nil)
     }
 

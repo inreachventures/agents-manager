@@ -270,7 +270,7 @@
     if (event.button !== 0) return;
     drag = { id: event.pointerId, x: event.clientX - view.x, y: event.clientY - view.y,
              startX: event.clientX, startY: event.clientY, moved: false };
-    viewport.setPointerCapture(event.pointerId);
+    try { viewport.setPointerCapture(event.pointerId); } catch (e) { /* a pointer the page can't capture */ }
     viewport.classList.add("dragging");
   });
   viewport.addEventListener("pointermove", function (event) {
