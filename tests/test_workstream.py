@@ -1,4 +1,5 @@
 import json
+import os
 
 import pytest
 
@@ -346,3 +347,22 @@ def test_claude_md_imports_each_repos_own_instructions(env):
     md = (ws.path / "CLAUDE.md").read_text()
     assert "\n@acme-web/CLAUDE.md\n@acme-web/.claude/CLAUDE.md\n" in md
     assert md.index("@acme-web/CLAUDE.md") < md.index("## Rules")
+
+
+def test_sessions_find_wm_on_path(env, monkeypatch):
+    """Without wm on PATH, Claude searched the home folder for it (`find ~`), and macOS asked for Music and Photos."""
+    from agentmgr import tmux
+
+    wm = env.root / "venv" / "bin" / "wm"
+    monkeypatch.setattr(tmux, "wm_executable", lambda: str(wm))
+    monkeypatch.setenv("PATH", "/usr/bin:/bin")
+    path = ws_mod.session_path().split(os.pathsep)
+    bin_dir = env.root / "home" / "bin"
+    assert path == [str(bin_dir), "/usr/bin", "/bin"]
+    assert os.listdir(bin_dir) == ["wm"] and os.readlink(bin_dir / "wm") == str(wm)  # not the venv's python too
+    # another wm later (e.g. the app's): the link follows it, and PATH doesn't grow
+    monkeypatch.setattr(tmux, "wm_executable", lambda: "/Applications/Workstreams.app/wm")
+    monkeypatch.setenv("PATH", os.pathsep.join(path))
+    assert ws_mod.session_path().split(os.pathsep) == path
+    assert os.readlink(bin_dir / "wm") == "/Applications/Workstreams.app/wm"
+    assert "rather than searching the home folder" in (new().path / "CLAUDE.md").read_text()

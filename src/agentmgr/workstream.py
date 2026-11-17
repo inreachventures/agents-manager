@@ -523,8 +523,23 @@ def start_session(ws: db.Workstream, initial_prompt: str | None = None, resume: 
     tmux.prune_views()  # an app view whose session was killed by an older wm still runs the previous Claude
     tmux.new_session(
         ws.key, ws.path, claude_command(ws, resume=resume, initial_prompt=initial_prompt),
-        env={"AGENTMGR_WS": ws.key},
+        env={"AGENTMGR_WS": ws.key, "PATH": session_path()},
     )
+
+
+def session_path() -> str:
+    """PATH for a Claude session, with a folder holding only a `wm` link first. Sessions are told to run `wm`; when
+    it isn't on PATH (the wm inside the Mac app never is), Claude goes looking for it with `find ~`, which reads Music
+    and Photos and has macOS ask for access in the app's name. Only the link, not wm's own folder: that is often a
+    virtualenv's bin, whose python would then shadow the one the session's repos use."""
+    bin_dir = get_config().home / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    link, wm = bin_dir / "wm", tmux.wm_executable()
+    if not link.is_symlink() or os.readlink(link) != wm:
+        link.unlink(missing_ok=True)
+        link.symlink_to(wm)
+    rest = [d for d in os.environ.get("PATH", "").split(os.pathsep) if d and d != str(bin_dir)]
+    return os.pathsep.join([str(bin_dir), *rest])
 
 
 def session_alive(ws: db.Workstream) -> bool:
