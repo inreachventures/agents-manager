@@ -171,11 +171,7 @@ def _validate(doc: dict) -> list[str]:
 
 def save(key: str, token: str, draft: Path) -> None:
     """Accept a drawn map: check it, store it as the current map and mark the drawing saved. Raises MapError."""
-    conn = db.connect()
-    try:
-        ws = workstream.require(conn, key)
-    finally:
-        conn.close()
+    ws = workstream.require(db.connect(), key)
     with locked(ws):
         drawing = read_drawing(ws)
         if drawing is None or drawing.token != token:

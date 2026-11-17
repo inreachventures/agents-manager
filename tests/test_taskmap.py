@@ -188,3 +188,11 @@ def test_save_reports_a_validator_timeout(env, tmp_path, monkeypatch):
     monkeypatch.setattr(taskmap.subprocess, "run", hang)
     with pytest.raises(taskmap.MapError, match="did not finish"):
         taskmap.save(ws.key, "tok", write_draft(tmp_path, draft_doc()))
+
+
+def test_save_leaves_the_thread_connection_usable(env, tmp_path):
+    ws, *_ = two_repos(env)
+    start_drawing(ws)
+    with pytest.raises(taskmap.MapError):
+        taskmap.save(ws.key, "wrong", write_draft(tmp_path, draft_doc()))
+    assert [w.key for w in db.list_workstreams(db.connect())] == [ws.key]
