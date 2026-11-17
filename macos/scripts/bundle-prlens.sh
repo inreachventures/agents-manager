@@ -7,7 +7,8 @@
 #   macos/Resources/map/prlens.js                  browser IIFE: globalThis.PrLens = { render, parse }
 #   src/agentmgr/data/prlens/prlens-validate.mjs   node CLI: prlens-validate.mjs <graph.json>
 #   src/agentmgr/data/prlens/{manual.md,references/,versions.json}
-# The packages are pinned below; bump them here, rerun, and commit the result.
+# The packages are pinned below; bump them here, rerun, and commit the result. The bundles are left unminified on
+# purpose, so an upgrade's diff can be reviewed.
 set -euo pipefail
 
 RENDERER=0.6.3
@@ -127,6 +128,13 @@ for (const lens of ["architecture", "data-flow"]) {
   }
 }
 console.log("ok: render, both lenses and both themes, gives <svg");
+
+// map.js finds the data-flow lens's cards by `g.cardsh > rect.card`, one per participant of each flow, in order
+const flowSvg = render(parsed.doc, { lens: "data-flow", theme: "light" }).svg;
+const participants = parsed.doc.flows.reduce((n, flow) => n + flow.participants.length, 0);
+const cards = (flowSvg.match(/<g class="cardsh"[^>]*><rect class="card[ "]/g) || []).length;
+if (participants === 0 || cards !== participants) fail(`data-flow lens: ${cards} g.cardsh > rect.card for ${participants} participants`);
+console.log(`ok: the data-flow lens draws g.cardsh > rect.card for each of its ${participants} participants`);
 
 const bad = parse("{}");
 if (bad.ok || !bad.issues.length) fail("parse accepted an empty document");
