@@ -367,8 +367,9 @@ for everything that matters: no daemon, no web server, sessions in the manager's
   (vendored `prlens-validate.mjs`, needs Node: `wm doctor` reports it) and stores it with a snapshot per repo (HEAD,
   fork point, diff digest) under `<workstream>/.wm/map/`, never in a repo. The server's `map` request compares that
   snapshot with the repos now (digests reused from `diff` if under 5s old) and lists out-of-date repos with a reason;
-  `redraw_map` starts a drawing and a 30s loop reaps ended or hung ones. The renderer (`prlens.js`) is a SwiftPM
-  resource shown in a `WKWebView`; both files come from PR Lens at one pinned version, built by
+  `redraw_map` starts a drawing and a 30s loop reaps ended or hung ones. The renderer (`prlens.js`) sits in
+  `macos/Resources/map/` beside the page that shows it in a `WKWebView`; `build-app.sh` copies that folder into the
+  app, which loads it through `Bundle.main`. It and the validator come from PR Lens at one pinned version, built by
   `macos/scripts/bundle-prlens.sh`. To upgrade: change the pin, run the script, review the diff, commit.
 - **Self-contained release**: `build-app.sh --release` puts wm and a relocatable CPython (python-build-standalone,
   checksummed; dependencies pinned with hashes) inside the app, one build per chip. Its launcher sets

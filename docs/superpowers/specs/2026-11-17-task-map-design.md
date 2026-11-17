@@ -97,7 +97,8 @@ One graph document per workstream. Conventions wm imposes on top of PR Lens's fo
 
 `macos/scripts/bundle-prlens.sh`, run by hand when PR Lens is upgraded, with the one pinned PR Lens version:
 
-- Builds `prlens.js` (renderer: `render` and what it reaches) as a SwiftPM resource under `macos/Sources/WM/`.
+- Builds `prlens.js` (renderer: `render` and what it reaches) into `macos/Resources/map/`, which `build-app.sh`
+  copies into the app.
 - Builds `prlens-validate.mjs` (schema parser plus integrity checks, as the CLI's `validate` runs them) into wm's
   package data (`src/agentmgr/data/prlens/`). It takes a file path, prints every problem with its field, and exits
   non-zero on any.
@@ -128,8 +129,8 @@ content.
   - `AGENTMGR_MAP_DRAWING=1` in its environment, so every wm hook it triggers returns immediately: no status change,
     no notification, no guard (permissions below are the guard);
   - `--allowedTools` limited to: reading files anywhere in the workstream folder; read-only git (`git -C <worktree>
-    diff|log|show|status`); writing the draft file only; the validate command; the save command. In `-p` mode
-    anything else is denied without a prompt;
+    diff --find-renames <fork point>`, and `log|show|status`; `--no-index` is denied); writing the draft file only;
+    the validate command; the save command. In `-p` mode anything else is denied without a prompt;
   - output to `.wm/map/last-run.log`.
 - Kills the process after 15 minutes.
 
@@ -139,7 +140,8 @@ was **requested again**, and any repo moved since its snapshot, `start_drawing` 
 costs at most two drawings, and the last one sees the final state.
 
 `wm map save <key> --token <t> <draft.json>` (hidden command, only the drawing process calls it):
-- Runs the vendored validator, then wm's own checks: every lane id prefixed by an attached repo's folder. Overwrites
+- Runs the vendored validator, then wm's own checks: every lane id, and every file path on a node or data-model
+  table, prefixed by an attached repo's folder. Overwrites
   `provenance`. Rejects with the field at fault, so the process fixes the draft and retries.
 - Rejects a token that is not the in-progress drawing's (an old drawing must not overwrite a newer one).
 - Writes `.wm/map/map.json` atomically, with the token's snapshot and the save time beside it. `.wm/` is in the
@@ -148,8 +150,10 @@ costs at most two drawings, and the last one sees the final state.
 ### When it gets drawn
 
 - **After each commit.** `on_post_tool_use`, on a Bash call that ran `git commit` and moved HEAD in one of the
-  workstream's worktrees, calls `start_drawing`. It emits nothing back to Claude. It fires the same way whether the
-  main session or one of its subagents committed.
+  workstream's worktrees, calls `start_drawing`. "Moved" is against the drawing in progress, else the heads the last
+  drawing started from (`.wm/map/attempted.json`, kept even when it failed, so a command that only looks like a commit
+  doesn't retry it), else the map. It emits nothing back to Claude. It fires the same way whether the main session or
+  one of its subagents committed.
 - **Redraw button.** `rpc_redraw_map` calls `start_drawing`. Available whenever the workstream is not archived,
   including while Claude is working and when the session is stopped; disabled while a drawing is in progress.
 - The session is never told about the map. Its `CLAUDE.md` does not change.

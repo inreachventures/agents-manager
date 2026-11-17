@@ -57,7 +57,7 @@ struct MapPanel: View {
                 Text(failure.reason)
             } actions: {
                 HStack {
-                    openLogButton
+                    if failure.log == true { openLogButton }
                     redrawButton(map)
                 }
                 .fixedSize()  // else the actions get squeezed and "Open log" truncates
@@ -95,7 +95,7 @@ struct MapPanel: View {
                     Image(systemName: "exclamationmark.triangle.fill")
                         .foregroundStyle(.red)
                         .help("The last drawing failed: " + failure.reason)
-                    openLogButton.buttonStyle(.link).foregroundStyle(.tint)
+                    if failure.log == true { openLogButton.buttonStyle(.link).foregroundStyle(.tint) }
                 }
             }
             .font(.caption)

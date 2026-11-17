@@ -270,11 +270,13 @@ def draft_path(ws: db.Workstream) -> Path:
 
 
 def last_failure(ws: db.Workstream) -> dict | None:
-    """Why the last drawing failed, as {"at", "reason"}; None once a drawing has saved."""
+    """Why the last drawing failed, as {"at", "reason", "log"}; None once a drawing has saved. `log`: the drawing ran
+    and its `last-run.log` is there to open (a drawing that never started has none of its own)."""
     try:
         raw = json.loads((map_dir(ws) / "failure.json").read_text())
-        return {"at": float(raw["at"]), "reason": str(raw["reason"])}
-    except (OSError, ValueError, KeyError, TypeError):
+        return {"at": float(raw["at"]), "reason": str(raw["reason"]),
+                "log": raw.get("ran") is True and (map_dir(ws) / "last-run.log").is_file()}
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
 
 
@@ -287,8 +289,9 @@ def attempted_heads(ws: db.Workstream) -> dict[str, str] | None:
     return {str(repo): str(head) for repo, head in heads.items()} if isinstance(heads, dict) else None
 
 
-def _record_failure(ws: db.Workstream, reason: str) -> None:
-    _write_json(map_dir(ws) / "failure.json", {"at": time.time(), "reason": reason})
+def _record_failure(ws: db.Workstream, reason: str, ran: bool) -> None:
+    """`ran`: the drawing process ran (so its log is this failure's), rather than never starting."""
+    _write_json(map_dir(ws) / "failure.json", {"at": time.time(), "reason": reason, "ran": ran})
 
 
 def _log_tail(ws: db.Workstream) -> str:
@@ -486,7 +489,7 @@ def _reap(conn, ws: db.Workstream) -> str | None:
         if not drawing.saved:
             reason = (f"timed out after {DRAWING_TIMEOUT // 60} minutes" if alive
                       else _log_tail(ws) or "the drawing stopped without saving a map")
-            _record_failure(ws, reason)
+            _record_failure(ws, reason, ran=True)
         if drawing.requested_again:
             rerun = bool(freshness(ws.key, drawing.snapshot, snapshot(conn, ws), db.list_repos(conn, ws.key)))
     return start_drawing(conn, ws) if rerun else None
@@ -512,11 +515,11 @@ def start_drawing(conn, ws: db.Workstream) -> str:
             write_drawing(ws, drawing)
             return "queued"
         if shutil.which("node") is None:
-            _record_failure(ws, NO_NODE)
+            _record_failure(ws, NO_NODE, ran=False)
             return "no-node"
         claude = shutil.which(get_config().claude_cmd)
         if claude is None:
-            _record_failure(ws, workstream.claude_missing() or "Claude Code isn't installed")
+            _record_failure(ws, workstream.claude_missing() or "Claude Code isn't installed", ran=False)
             return "no-claude"
         links = db.list_repos(conn, ws.key)
         drawing = Drawing(token=secrets.token_hex(16), pid=None, pgid=None, started_at=time.time(),
@@ -530,7 +533,7 @@ def start_drawing(conn, ws: db.Workstream) -> str:
         try:
             drawing.pid, drawing.pgid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")
         except (OSError, ValueError) as e:
-            _record_failure(ws, f"the drawing could not start: {e}")
+            _record_failure(ws, f"the drawing could not start: {e}", ran=False)
             return "failed"
         write_drawing(ws, drawing)
     return "started"

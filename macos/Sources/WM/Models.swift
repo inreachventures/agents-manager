@@ -205,6 +205,7 @@ struct MapResult: Decodable, Equatable {
     struct Failure: Decodable, Equatable {
         var at: Double
         var reason: String
+        var log: Bool?  // the drawing ran and left `last-run.log` to open (one that never started has none)
     }
 
     static let drawable = ["architecture", "data-flow", "data-model"]

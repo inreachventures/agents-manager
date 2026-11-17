@@ -345,6 +345,7 @@ def test_exit_without_save_records_failure_with_log_tail(env, monkeypatch):
     assert taskmap.read_drawing(ws) is None
     failure = taskmap.last_failure(ws)
     assert failure["reason"] == "\n".join(lines[-20:]) and failure["at"] <= time.time()
+    assert failure["log"] is True  # the app offers to open it
 
 
 def test_exit_after_save_records_no_failure(env, monkeypatch):
@@ -376,9 +377,13 @@ def test_timeout_kills_and_records(env, monkeypatch):
 def test_no_node_records_failure(env, monkeypatch):
     ws, *_ = two_repos(env)
     fakes = Fakes(monkeypatch, node=False)
+    taskmap.map_dir(ws).mkdir(parents=True)
+    (taskmap.map_dir(ws) / "last-run.log").write_text("an earlier drawing's output\n")
     assert taskmap.start_drawing(db.connect(), ws) == "no-node"
     assert fakes.calls == [] and taskmap.read_drawing(ws) is None
-    assert taskmap.last_failure(ws)["reason"] == "The task map needs Node.js"
+    # nothing ran, so the log there is an earlier drawing's, not this failure's
+    assert taskmap.last_failure(ws) == {"at": pytest.approx(time.time(), abs=60),
+                                        "reason": "The task map needs Node.js", "log": False}
 
 
 def test_archive_cancels_drawing(env, monkeypatch):

@@ -370,9 +370,10 @@ def test_map_reports_failure(env):
 
     ws = ws_mod.new(launch=False, name="map", repo_queries=["web"])
     srv = server.Server(io.StringIO())
-    taskmap._record_failure(ws, "claude exited 1")
+    taskmap._record_failure(ws, "claude exited 1", ran=True)
+    (taskmap.map_dir(ws) / "last-run.log").write_text("claude exited 1\n")
     failure = ask(srv, "map", key=ws.key)["result"]["failure"]
-    assert failure["reason"] == "claude exited 1" and failure["at"] > 0
+    assert failure["reason"] == "claude exited 1" and failure["at"] > 0 and failure["log"] is True
 
 
 def test_the_map_loop_reaps_each_active_workstream(env, monkeypatch):
