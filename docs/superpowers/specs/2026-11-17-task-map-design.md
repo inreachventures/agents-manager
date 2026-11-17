@@ -20,8 +20,8 @@ workstream**, covering every attached repo, with the calls that cross between th
 
 | | |
 |---|---|
-| Goals | One map per workstream, across all its repos. A Diff / Map switch in the Changes panel. Architecture and data-flow lenses (plus data-model when the map has one), light and dark following the app. The repo chip narrows the map to one repo. The map says when it is out of date and offers Redraw. It is redrawn after each commit, whichever agent made it, without touching the workstream's session. |
-| Non-goals | Attaching the map to PRs (later: a PNG of the whole task map on each repo's PR; GitHub has no image upload API, so this needs a hosting decision). PR Lens's hosted features: review findings, the canvas, payload panels, walkthrough playback. Clicking a card to jump to its file in the diff. A map in the terminal dashboard (`wm` TUI). One map per repo. |
+| Goals | One map per workstream, across all its repos. A Diff / Map switch in the Changes panel. Clicking a card jumps to its changes in the diff. Architecture and data-flow lenses (plus data-model when the map has one), light and dark following the app. The repo chip narrows the map to one repo. The map says when it is out of date and offers Redraw. It is redrawn after each commit, whichever agent made it, without touching the workstream's session. |
+| Non-goals | Attaching the map to PRs (later: a PNG of the whole task map on each repo's PR; GitHub has no image upload API, so this needs a hosting decision). PR Lens's hosted features: review findings, the canvas, payload panels, walkthrough playback. A map in the terminal dashboard (`wm` TUI). One map per repo. |
 | Anti-goals | A map that looks current but isn't. Drawing that changes the session's status, sends notifications, raises permission prompts, or adds anything to the session's conversation. Map files committed to a repo. A runtime dependency on Node for the app itself. Unreviewed third-party code running unattended: no npm downloads at runtime. Sending code anywhere new: the map is drawn by Claude on the same subscription that already reads the code, and nothing goes to PR Lens's hosted service. |
 
 ## Approaches
@@ -175,10 +175,33 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - **Repo chip narrows the map.** With a repo picked, the page renders a sub-document holding that repo's lanes and
   nodes, plus any node from another repo that an edge or step connects to it, shown in its own lane as context, so
   a cross-repo call stays visible. Done in the page's JS before `render`.
+- **Clicking a card jumps to its diff.** See below.
 - Empty and error states: no map yet ("Drawn after the next commit", with Redraw); Node missing; last drawing
   failed (its reason and a way to open the log); a document the renderer rejects (its error, with Redraw);
   archived workstream (as the diff view does today).
 - `wm doctor` reports whether `node` is available for the task map.
+
+### From a card to its diff
+
+- **Hit-testing.** The rendered SVG does not carry node ids on its elements, but `render` returns an `atlas` with
+  each node's box in viewBox units. The page maps a click into viewBox coordinates (the SVG's screen transform,
+  inverted) and finds the node whose box contains it. In the data-flow lens the atlas boxes the participant cards
+  heading each column, so those are clickable; flow steps carry no files and are not.
+- **What is clickable.** A card is clickable when at least one of its files (workstream-relative, so the first
+  segment is the repo folder) is in the current diff. Swift passes the page the set of changed file paths with the
+  document; clickable cards get a pointer cursor and a hover outline, the rest stay inert. The untouched neighbours
+  that give the blast radius are usually inert, by design.
+- **The jump.** The page posts the node's changed files (path plus `startLine` when the map has one) to Swift through
+  a `WKScriptMessageHandler`. With one file, Swift jumps straight there; with several, a small menu at the click
+  lists them. A jump switches the panel to Diff, picks that repo with the repo chip, opens the file if it is folded
+  or over the big-file threshold, and scrolls to its row (`<repo>/<path>`). With a `startLine`, it scrolls to the
+  hunk whose new-side range covers it, else the nearest hunk below, else the file's header.
+- **Scrolling.** `ChangesPanel`'s list gets a `ScrollViewReader`; row ids already address files (`repo/path`) and
+  hunks (`repo/path#n`).
+- **Stale maps.** If the clicked file has left the diff since the map was drawn (it can, while the map is out of
+  date), the card is simply not clickable, because clickability is computed from the current diff.
+- **Getting back.** After a jump, the Diff view shows "Back to map" at the top until the user switches view or
+  workstream. It returns to the Map with the same lens, repo filter and pan/zoom.
 
 ## Tests
 
@@ -192,7 +215,9 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - Bundle: the script's smoke tests. CI runs the vendored validator against PR Lens's example graph if `node` is
   present on the runner, so a broken vendored file is caught.
 - App: by hand on a real multi-repo workstream: a commit from a subagent produces a map with no status change or
-  notification; the repo filter on a cross-repo edge; light and dark; each empty and error state.
+  notification; the repo filter on a cross-repo edge; light and dark; each empty and error state; clicking a card
+  with one changed file, with several, with a line range inside a big folded file, an inert unchanged card, in both
+  lenses, and Back to map restoring the view.
 
 ## Left to the builder
 
