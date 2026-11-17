@@ -2,6 +2,8 @@ import json
 import subprocess
 import time
 
+import pytest
+
 from agentmgr import db, gh, view
 
 
@@ -87,25 +89,47 @@ def test_refresh_rechecks_failed_base_ci(env, monkeypatch):
 
 def test_fetch_prs(monkeypatch):
     """One search per prefix finds the branch's own PRs and those of the workstream's other branches; a branch whose
-    name lacks the prefix is looked up by name."""
+    name lacks the prefix is looked up by name. Another developer's wm hands out the same WS-<n> keys, so of the other
+    branches only your own PRs count; the worktree branch's own PRs count whoever opened them."""
     calls = []
-    prs = [{"number": 1, "headRefName": "ws-1-x"}, {"number": 2, "headRefName": "ws-1-stack-top"},
-           {"number": 3, "headRefName": "WS-1-Upper"}, {"number": 4, "headRefName": "ws-12-other"}]
+    me, them = {"login": "me"}, {"login": "them"}
+    prs = [{"number": 1, "headRefName": "ws-1-x", "author": them}, {"number": 2, "headRefName": "ws-1-stack-top",
+           "author": me}, {"number": 3, "headRefName": "WS-1-Upper", "author": me},
+           {"number": 4, "headRefName": "ws-12-other", "author": me},
+           {"number": 5, "headRefName": "ws-1-their-work", "author": them}]
 
     def run(args, **kw):
         calls.append(args)
+        if args[:2] == ["gh", "api"]:
+            return subprocess.CompletedProcess(args, 0, "me\n", "")
         if "--head" in args:
-            out = [{"number": 9, "headRefName": "custom"}]
+            out = [{"number": 9, "headRefName": "custom", "author": them}]
         else:
             out = prs
         return subprocess.CompletedProcess(args, 0, json.dumps(out), "")
 
     monkeypatch.setattr("agentmgr.gh.subprocess.run", run)
+    gh._login.cache_clear()
     assert sorted(p["number"] for p in gh.fetch_prs(".", "ws-1-x", ["ws-1-"])) == [1, 2, 3]
-    assert len(calls) == 1 and calls[0][calls[0].index("--search") + 1] == "head:ws-1-"
+    searches = [c for c in calls if "--search" in c]
+    assert len(searches) == 1 and searches[0][searches[0].index("--search") + 1] == "head:ws-1-"
     calls.clear()
-    assert sorted(p["number"] for p in gh.fetch_prs(".", "custom", ["ws-1-"])) == [1, 2, 3, 9]
-    assert len(calls) == 2
+    assert sorted(p["number"] for p in gh.fetch_prs(".", "custom", ["ws-1-"])) == [2, 3, 9]
+    assert len(calls) == 2  # the login is looked up once
+
+
+def test_fetch_prs_without_a_login_fails(monkeypatch):
+    """No way to tell your PRs from someone else's: fail (refresh shows n/a) rather than show theirs as yours."""
+    def run(args, **kw):
+        if args[:2] == ["gh", "api"]:
+            return subprocess.CompletedProcess(args, 1, "", "gh: not logged in")
+        return subprocess.CompletedProcess(args, 0, json.dumps([{"number": 1, "headRefName": "ws-1-y",
+                                                                 "author": {"login": "a"}}]), "")
+
+    monkeypatch.setattr("agentmgr.gh.subprocess.run", run)
+    gh._login.cache_clear()
+    with pytest.raises(RuntimeError, match="not logged in"):
+        gh.fetch_prs(".", "ws-1-x", ["ws-1-"])
 
 
 def _pr(number, head, state, merged_at=None, base="main", **kw):

@@ -294,8 +294,12 @@ def add_repo(key: str, query: str, branch: str | None = None, allow_foreign_bran
             create_from, created = None, False
             notes.append(f"reusing existing local branch {branch}")
         elif branch in gitops.remote_branches(repo.path):
-            create_from, created = None, False
-            notes.append(f"tracking existing origin/{branch}")
+            # Each developer's wm counts its own WS-<n> keys, so this may be someone else's branch: don't build on it
+            # unless asked to.
+            raise WorkstreamError(
+                f"branch {branch} already exists on origin in {repo.name}, perhaps another developer's (their wm hands "
+                f"out the same keys). To continue it: wm add-repo {key} {repo.name} --branch {branch}"
+            )
         else:
             create_from, created = base, True
 

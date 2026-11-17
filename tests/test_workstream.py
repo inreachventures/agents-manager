@@ -128,6 +128,19 @@ def test_existing_branch_rules(env):
         ws_mod.add_repo(ws2.key, "web", branch="main", allow_foreign_branch=True)
 
 
+def test_generated_branch_already_on_origin(env):
+    """Another developer's wm hands out the same WS-<n> keys, so a generated branch name already on origin may be
+    theirs: refuse rather than quietly build on it, and say how to continue it on purpose."""
+    web = env.code / "acme-web"
+    sh(web, "git", "push", "-q", "origin", "HEAD:refs/heads/proj-8-their-work")
+    with pytest.raises(WorkstreamError, match="already exists on origin.*--branch proj-8-their-work"):
+        new(ticket="PROJ-8", name="their work", repo_queries=["web"])
+    assert db.get_workstream(db.connect(), "PROJ-8") is None
+    ws = new(ticket="PROJ-8", name="their work")
+    res = ws_mod.add_repo(ws.key, "web", branch="proj-8-their-work")
+    assert not res.created_branch and res.link.branch == "proj-8-their-work"
+
+
 def test_remove_repo_safety(env):
     ws = new(name="a b", repo_queries=["web"])
     wt = ws.path / "acme-web"
