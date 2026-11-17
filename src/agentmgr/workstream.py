@@ -168,6 +168,7 @@ def new(ticket: str | None = None, name: str | None = None, repo_queries: list[s
 
 
 def _ensure_ticket_free(conn, ticket: str) -> None:
+    # The app's New Workstream sheet mirrors this check and the archived-key one in new() (macos/.../Sheets.swift)
     for ws in db.list_workstreams(conn):
         if ws.ticket == ticket or ws.key == ticket:
             raise WorkstreamError(f"ticket {ticket} is already used by active workstream {ws.key}")
