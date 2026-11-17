@@ -752,6 +752,9 @@ def archive(key: str, force: bool = False, delete_branches: bool = True) -> list
 
     log = []
     tmux.kill_session(ws.key)
+    from . import taskmap  # taskmap imports this module
+
+    taskmap.cancel(ws)  # a drawing reads the worktrees about to go
     for r in reports:
         no_own_commits = r.status is not None and r.status.ahead_of_base == 0
         delete = delete_branches and (r.merged or (r.link.created_branch and no_own_commits))

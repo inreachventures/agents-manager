@@ -1,7 +1,8 @@
 """The task map: a PR Lens graph of what a workstream changes across its repos, and how to tell it has gone stale.
 
 Map files live under `<workstream folder>/.wm/map/`, never inside a repo: `map.json` is the saved map, `drawing.json`
-the drawing in progress, `lock` serialises changes to the drawing state."""
+the drawing in progress, `lock` serialises changes to the drawing state, `brief.md` tells the drawing process what to
+do, `draft.json` is what it writes, `last-run.log` its output and `failure.json` why the last drawing failed."""
 
 from __future__ import annotations
 
@@ -11,18 +12,31 @@ import hashlib
 import importlib.resources
 import json
 import os
+import secrets
+import shlex
 import shutil
+import signal
 import subprocess
 import tempfile
 import time
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
-from . import db, diffs, gitops, workstream
+from . import db, diffs, gitops, tmux, workstream
+from .config import get_config
 
 PRLENS = importlib.resources.files("agentmgr") / "data" / "prlens"
 NO_SHA = "0" * 40
 VALIDATE_TIMEOUT = 30
+DRAWING_ENV = "AGENTMGR_MAP_DRAWING"
+DRAWING_TIMEOUT = 15 * 60
+PROMPT = "Draw this workstream's task map: follow .wm/map/brief.md"
+NO_NODE = "The task map needs Node.js"
+LOG_TAIL = 20
+# Set by the Claude Code session whose hook starts a drawing; a drawing must not look like part of that session.
+SESSION_ENV = ("CLAUDECODE", "CLAUDE_PID", "CLAUDE_CODE_ENTRYPOINT", "CLAUDE_CODE_SESSION_ID",
+               "CLAUDE_CODE_CHILD_SESSION", "CLAUDE_CODE_SESSION_ATTENDED", "CLAUDE_CODE_MESSAGING_SOCKET",
+               "CLAUDE_CODE_MESSAGING_TOKEN", "CLAUDE_CODE_EXECPATH", "CLAUDE_CODE_SSE_PORT")
 
 
 class MapError(RuntimeError):
@@ -203,3 +217,244 @@ def save(key: str, token: str, draft: Path) -> None:
                                                 "token": token})
         drawing.saved = True
         write_drawing(ws, drawing)
+        (map_dir(ws) / "failure.json").unlink(missing_ok=True)
+
+
+# ---------------------------------------------------------------------------- the drawing process
+
+
+def draft_path(ws: db.Workstream) -> Path:
+    return map_dir(ws) / "draft.json"
+
+
+def last_failure(ws: db.Workstream) -> dict | None:
+    """Why the last drawing failed, as {"at", "reason"}; None once a drawing has saved."""
+    try:
+        raw = json.loads((map_dir(ws) / "failure.json").read_text())
+        return {"at": float(raw["at"]), "reason": str(raw["reason"])}
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+
+
+def _record_failure(ws: db.Workstream, reason: str) -> None:
+    _write_json(map_dir(ws) / "failure.json", {"at": time.time(), "reason": reason})
+
+
+def _log_tail(ws: db.Workstream) -> str:
+    try:
+        lines = (map_dir(ws) / "last-run.log").read_text(errors="replace").splitlines()
+    except OSError:
+        return ""
+    return "\n".join(lines[-LOG_TAIL:]).strip()
+
+
+def _alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:  # someone else's process: the pid was reused, so the drawing is gone
+        return False
+    return True
+
+
+def _kill(pid: int) -> None:
+    """SIGTERM the drawing's process group: claude and whatever it runs."""
+    try:
+        group = os.getpgid(pid)
+        if group != os.getpgid(0):  # never our own group
+            os.killpg(group, signal.SIGTERM)
+    except (ProcessLookupError, PermissionError):
+        pass
+
+
+def _spawn(argv: list[str], cwd: Path, env: dict, log: Path) -> int:
+    """Start `argv` detached, output to `log`; returns its pid. `sh` backgrounds it and exits at once, so the caller
+    can exit too and nothing is left a zombie: the process is reparented to launchd. It runs in the process group of
+    that `sh`, a new session, so `_kill` reaches everything it starts."""
+    proc = subprocess.run(["/bin/sh", "-c", 'exec "$@" >"$LOG" 2>&1 </dev/null &\necho $!', "sh", *argv],
+                          env={**env, "LOG": str(log)}, cwd=cwd, start_new_session=True, capture_output=True,
+                          text=True)
+    return int(proc.stdout.strip())
+
+
+def _commands(ws: db.Workstream, links: list[db.RepoLink], token: str) -> dict:
+    """The commands the drawing process may run, exactly as the brief spells them and the allow rules match them."""
+    draft = shlex.quote(str(draft_path(ws)))
+    validate = f"node {shlex.quote(str(PRLENS / 'prlens-validate.mjs'))}"
+    save = f"{shlex.quote(tmux.wm_executable())} map save"
+    return {"git": {link.repo: f"git -C {shlex.quote(link.worktree_path)}" for link in links},
+            "validate": validate, "save": save, "validate_draft": f"{validate} {draft}",
+            "save_draft": f"{save} {ws.key} --token {token} {draft}"}
+
+
+def allowed_tools(ws: db.Workstream, links: list[db.RepoLink], token: str) -> list[str]:
+    """Everything the drawing process may do without asking; in `-p` mode anything else is denied, never prompted.
+    `//` starts an absolute path in a permission rule, and an `Edit` rule also covers the Write tool (a `Write(path)`
+    rule is accepted but never matched)."""
+    cmds = _commands(ws, links, token)
+    rules = ["Read", "Glob", "Grep"]
+    for git in cmds["git"].values():
+        rules += [f"Bash({git} {sub} *)" for sub in ("diff", "log", "show", "status")]
+    rules += [f"Edit(/{draft_path(ws)})", f"Bash({cmds['validate']} *)", f"Bash({cmds['save']} *)"]
+    return rules
+
+
+# `--output=<file>` makes git diff/log/show write a file anywhere
+DISALLOWED_TOOLS = ["WebFetch", "WebSearch", "Bash(git * --output*)"]
+
+
+def brief_text(ws: db.Workstream, links: list[db.RepoLink], drawing: Drawing, existing: dict | None) -> str:
+    versions = json.loads((PRLENS / "versions.json").read_text())
+    cmds = _commands(ws, links, drawing.token)
+    marks = [m for m in drawing.snapshot.values() if not m.error]
+    first = marks[0] if marks else RepoMark(NO_SHA, NO_SHA, "")
+    skeleton = {
+        "schemaVersion": versions["schemaVersion"], "kind": "graph", "title": ws.label,
+        "summary": "One paragraph: what does this workstream change?", "lenses": ["architecture", "data-flow"],
+        "provenance": {"repo": {"owner": "wm", "name": ws.key}, "base": {"sha": first.fork},
+                       "head": {"sha": first.head}},
+        "lanes": [], "nodes": [], "edges": [], "flows": [],
+    }
+    repos = []
+    for link in links:
+        mark = drawing.snapshot.get(link.repo)
+        git = cmds["git"][link.repo]
+        if mark is None or mark.error:
+            repos.append(f"- `{link.repo}/`: branch `{link.branch}`, base `{link.base}`. Unavailable right now"
+                         f"{f' ({mark.error})' if mark and mark.error else ''}: leave it out of the map.")
+            continue
+        repos.append(f"- `{link.repo}/`: branch `{link.branch}`, base `{link.base}`, forked at `{mark.fork}`.\n"
+                     f"  Its changes, committed and not: `{git} diff --find-renames {mark.fork}`. Also allowed: "
+                     f"`{git} log ...`, `{git} show ...`, `{git} status`.")
+    if existing:
+        redraw = (f"A map was drawn before: `{map_dir(ws) / 'map.json'}` (the document is its `doc` field). Redraw "
+                  "from it: keep the id of every lane, node, edge and flow that still exists, so its card stays in "
+                  "place, and change only what the code has changed since.")
+    else:
+        redraw = "There is no map yet: draw it from scratch."
+    return f"""# Draw the task map of workstream {ws.key} ({ws.label})
+
+The task map is one PR Lens graph document showing what this workstream changes across all its repos: their
+components, how they connect (across repos too), and how data flows through them. wm shows it beside the diff.
+You run unattended: nobody will answer a question or approve a permission. Do only what this brief says.
+
+## The repos
+
+The workstream folder is `{ws.path}`; each repo is a subfolder of it.
+
+{chr(10).join(repos) if repos else "- (no repos are attached)"}
+
+Read any file in the workstream folder with Read, Glob and Grep.
+
+## The document format
+
+Follow `{PRLENS / 'manual.md'}` for what a good map shows, and `{PRLENS / 'references'}/` for the document's
+shape (`graph-document.md`, and `example.graph.json`, a complete valid document). Use them for the format only:
+skip their steps that write `.pr-lens/`, run `npx`, render, comment or push a canvas. You cannot run those; the
+commands below replace them.
+
+## wm's conventions
+
+- Every lane id starts with the folder name of its repo and a slash, e.g. `{links[0].repo if links else "repo"}/ui`.
+  A repo may have several lanes; each lane belongs to exactly one repo.
+- File paths are relative to the workstream folder, so they start with the repo's folder:
+  `{links[0].repo if links else "repo"}/src/app.ts`.
+- Edges and flow steps may cross repos (a web client calling an API route). Those are the point of a task map.
+- `provenance` is filled in by wm when you save; leave it as the skeleton has it.
+
+## The draft
+
+{redraw}
+
+Write the document to `{draft_path(ws)}` (only this file), starting from this skeleton:
+
+```json
+{json.dumps(skeleton, indent=2)}
+```
+
+Check it with:
+
+    {cmds['validate_draft']}
+
+Fix every problem it reports and run it again until it prints `ok`. Then save it with:
+
+    {cmds['save_draft']}
+
+If save reports problems, fix them in the draft and save again. When save prints `saved`, you are done: stop.
+"""
+
+
+def _reap(conn, ws: db.Workstream) -> str | None:
+    """Clear a drawing that has ended (or ran too long); rerun it once if it was requested again and a repo moved.
+    Returns what that rerun's `start_drawing` returned, None if there was none."""
+    rerun = False
+    with locked(ws):
+        drawing = read_drawing(ws)
+        if drawing is None:
+            return None
+        alive = drawing.pid is not None and _alive(drawing.pid)
+        timed_out = time.time() - drawing.started_at > DRAWING_TIMEOUT
+        if alive and not timed_out:
+            return None
+        if alive:
+            _kill(drawing.pid)
+        write_drawing(ws, None)
+        if not drawing.saved:
+            reason = (f"timed out after {DRAWING_TIMEOUT // 60} minutes" if alive
+                      else _log_tail(ws) or "the drawing stopped without saving a map")
+            _record_failure(ws, reason)
+        if drawing.requested_again:
+            rerun = bool(freshness(ws.key, drawing.snapshot, snapshot(conn, ws), db.list_repos(conn, ws.key)))
+    return start_drawing(conn, ws) if rerun else None
+
+
+def reap(conn, ws: db.Workstream) -> None:
+    _reap(conn, ws)
+
+
+def start_drawing(conn, ws: db.Workstream) -> str:
+    """Start Claude drawing the map in the background: "started", "queued" (one is running; it reruns once it ends,
+    if a repo moved meanwhile), "no-node" or "no-claude" (recorded as the last failure)."""
+    if (rerun := _reap(conn, ws)) is not None:
+        return rerun
+    with locked(ws):
+        drawing = read_drawing(ws)
+        if drawing is not None:
+            drawing.requested_again = True
+            write_drawing(ws, drawing)
+            return "queued"
+        if shutil.which("node") is None:
+            _record_failure(ws, NO_NODE)
+            return "no-node"
+        claude = shutil.which(get_config().claude_cmd)
+        if claude is None:
+            _record_failure(ws, workstream.claude_missing() or "Claude Code isn't installed")
+            return "no-claude"
+        links = db.list_repos(conn, ws.key)
+        drawing = Drawing(token=secrets.token_hex(16), pid=None, started_at=time.time(), snapshot=snapshot(conn, ws))
+        (map_dir(ws) / "brief.md").write_text(brief_text(ws, links, drawing, load(ws)))
+        draft_path(ws).unlink(missing_ok=True)
+        argv = [claude, "-p", PROMPT, "--permission-mode", "dontAsk", "--no-session-persistence",
+                "--allowedTools", *allowed_tools(ws, links, drawing.token), "--disallowedTools", *DISALLOWED_TOOLS]
+        env = {k: v for k, v in os.environ.items() if k not in SESSION_ENV} | {DRAWING_ENV: "1"}
+        try:
+            drawing.pid = _spawn(argv, ws.path, env, map_dir(ws) / "last-run.log")
+        except (OSError, ValueError) as e:
+            _record_failure(ws, f"the drawing could not start: {e}")
+            return "failed"
+        write_drawing(ws, drawing)
+    return "started"
+
+
+def cancel(ws: db.Workstream) -> None:
+    """Stop a drawing in progress and forget it (the workstream is being archived)."""
+    if not map_dir(ws).is_dir():
+        return
+    with locked(ws):
+        drawing = read_drawing(ws)
+        if drawing is None:
+            return
+        if drawing.pid is not None and _alive(drawing.pid):
+            _kill(drawing.pid)
+        write_drawing(ws, None)

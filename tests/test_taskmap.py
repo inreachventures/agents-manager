@@ -1,4 +1,5 @@
 import json
+import os
 import shutil
 import subprocess
 import time
@@ -196,3 +197,215 @@ def test_save_leaves_the_thread_connection_usable(env, tmp_path):
     with pytest.raises(taskmap.MapError):
         taskmap.save(ws.key, "wrong", write_draft(tmp_path, draft_doc()))
     assert [w.key for w in db.list_workstreams(db.connect())] == [ws.key]
+
+
+# ---------------------------------------------------------------------------- drawing process
+
+
+class Fakes:
+    """`_spawn`, `_alive` and `_kill` replaced: spawns are recorded, every pid is alive until marked dead."""
+
+    def __init__(self, monkeypatch, node=True):
+        self.calls, self.dead, self.killed = [], set(), []
+        real_which = shutil.which
+
+        def which(cmd, *args, **kwargs):
+            if cmd == "node":
+                return "/fake/bin/node" if node else None
+            if cmd == "claude":
+                return "/fake/bin/claude"
+            return real_which(cmd, *args, **kwargs)
+
+        def spawn(argv, cwd, env, log):
+            self.calls.append({"argv": argv, "cwd": cwd, "env": env, "log": log})
+            return 4200 + len(self.calls)
+
+        monkeypatch.setattr(taskmap.shutil, "which", which)
+        monkeypatch.setattr(taskmap, "_spawn", spawn)
+        monkeypatch.setattr(taskmap, "_alive", lambda pid: pid not in self.dead)
+        monkeypatch.setattr(taskmap, "_kill", self.killed.append)
+
+
+def allowed(argv):
+    return argv[argv.index("--allowedTools") + 1:argv.index("--disallowedTools")]
+
+
+def test_start_drawing_spawns_with_flag_and_allowed_tools(env, monkeypatch):
+    from agentmgr import tmux
+
+    ws, web, ml = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    monkeypatch.setenv("CLAUDECODE", "1")
+    assert taskmap.start_drawing(db.connect(), ws) == "started"
+    [call] = fakes.calls
+    assert call["env"][taskmap.DRAWING_ENV] == "1"
+    assert "CLAUDECODE" not in call["env"]
+    assert call["cwd"] == ws.path and call["log"] == taskmap.map_dir(ws) / "last-run.log"
+    assert call["argv"][:3] == ["/fake/bin/claude", "-p", "Draw this workstream's task map: follow .wm/map/brief.md"]
+    rules = allowed(call["argv"])
+    for wt in (web, ml):
+        assert f"Bash(git -C {wt} diff *)" in rules
+    assert f"Bash({tmux.wm_executable()} map save *)" in rules
+    draft = taskmap.map_dir(ws) / "draft.json"
+    assert f"Edit(/{draft})" in rules
+    brief = (taskmap.map_dir(ws) / "brief.md").read_text()
+    assert str(draft) in brief and "0.3.1" in brief and "acme-web/" in brief
+    drawing = taskmap.read_drawing(ws)
+    assert drawing.pid == 4201 and drawing.token in brief and set(drawing.snapshot) == {"acme-web", "acme-ml-pipeline"}
+
+
+def test_second_request_is_queued_then_rerun_once(env, monkeypatch):
+    ws, web, ml = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    assert taskmap.start_drawing(conn, ws) == "started"
+    assert taskmap.start_drawing(conn, ws) == "queued"
+    assert taskmap.read_drawing(ws).requested_again is True
+    fakes.dead.add(4201)
+    commit(web, "a.txt")
+    taskmap.reap(conn, ws)
+    assert len(fakes.calls) == 2
+    drawing = taskmap.read_drawing(ws)
+    assert drawing.pid == 4202 and drawing.requested_again is False
+    assert drawing.snapshot["acme-web"].head == sh(web, "git", "rev-parse", "HEAD")
+
+
+def test_queued_request_not_rerun_when_nothing_moved(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    taskmap.start_drawing(conn, ws)
+    taskmap.start_drawing(conn, ws)
+    fakes.dead.add(4201)
+    taskmap.reap(conn, ws)
+    assert len(fakes.calls) == 1
+    assert taskmap.read_drawing(ws) is None
+
+
+def test_start_after_a_queued_drawing_ended_draws_once(env, monkeypatch):
+    """The rerun a finished drawing owes already sees the latest state, so the request that noticed it is not
+    queued behind it."""
+    ws, web, ml = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    taskmap.start_drawing(conn, ws)
+    taskmap.start_drawing(conn, ws)
+    fakes.dead.add(4201)
+    commit(web, "a.txt")
+    assert taskmap.start_drawing(conn, ws) == "started"
+    assert len(fakes.calls) == 2
+    assert taskmap.read_drawing(ws).requested_again is False
+
+
+def test_exit_without_save_records_failure_with_log_tail(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    taskmap.start_drawing(conn, ws)
+    lines = [f"line {i}" for i in range(30)]
+    (taskmap.map_dir(ws) / "last-run.log").write_text("\n".join(lines) + "\n")
+    taskmap.reap(conn, ws)
+    assert taskmap.read_drawing(ws) is not None  # still running
+    fakes.dead.add(4201)
+    taskmap.reap(conn, ws)
+    assert taskmap.read_drawing(ws) is None
+    failure = taskmap.last_failure(ws)
+    assert failure["reason"] == "\n".join(lines[-20:]) and failure["at"] <= time.time()
+
+
+def test_exit_after_save_records_no_failure(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    taskmap.start_drawing(conn, ws)
+    drawing = taskmap.read_drawing(ws)
+    drawing.saved = True
+    taskmap.write_drawing(ws, drawing)
+    fakes.dead.add(4201)
+    taskmap.reap(conn, ws)
+    assert taskmap.read_drawing(ws) is None and taskmap.last_failure(ws) is None
+
+
+def test_timeout_kills_and_records(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    conn = db.connect()
+    taskmap.start_drawing(conn, ws)
+    later = taskmap.read_drawing(ws).started_at + taskmap.DRAWING_TIMEOUT + 1
+    monkeypatch.setattr(taskmap.time, "time", lambda: later)
+    taskmap.reap(conn, ws)
+    assert fakes.killed == [4201]
+    assert taskmap.read_drawing(ws) is None
+    assert taskmap.last_failure(ws)["reason"] == "timed out after 15 minutes"
+
+
+def test_no_node_records_failure(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch, node=False)
+    assert taskmap.start_drawing(db.connect(), ws) == "no-node"
+    assert fakes.calls == [] and taskmap.read_drawing(ws) is None
+    assert taskmap.last_failure(ws)["reason"] == "The task map needs Node.js"
+
+
+def test_archive_cancels_drawing(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    fakes = Fakes(monkeypatch)
+    taskmap.start_drawing(db.connect(), ws)
+    ws_mod.archive(ws.key, force=True)
+    assert fakes.killed == [4201]
+    assert taskmap.read_drawing(ws) is None
+
+
+def test_brief_redraws_from_existing_map(env, monkeypatch):
+    ws, *_ = two_repos(env)
+    Fakes(monkeypatch)
+    taskmap.map_dir(ws).mkdir(parents=True, exist_ok=True)
+    (taskmap.map_dir(ws) / "map.json").write_text(json.dumps(
+        {"doc": {"title": "t"}, "drawn_at": 1.0, "snapshot": {}, "token": "old"}))
+    taskmap.start_drawing(db.connect(), ws)
+    brief = (taskmap.map_dir(ws) / "brief.md").read_text()
+    assert str(taskmap.map_dir(ws) / "map.json") in brief and "keep" in brief
+
+
+def test_cli_map_save(env, tmp_path):
+    from typer.testing import CliRunner
+
+    from agentmgr.cli import app
+
+    ws, *_ = two_repos(env)
+    start_drawing(ws)
+    result = CliRunner().invoke(app, ["map", "save", ws.key, "--token", "wrong",
+                                      str(write_draft(tmp_path, draft_doc()))])
+    assert result.exit_code == 1
+    assert "token" in result.output
+
+
+@needs_node
+def test_cli_map_save_success_clears_failure(env, tmp_path):
+    from typer.testing import CliRunner
+
+    from agentmgr.cli import app
+
+    ws, *_ = two_repos(env)
+    start_drawing(ws)
+    taskmap.map_dir(ws).mkdir(parents=True, exist_ok=True)
+    (taskmap.map_dir(ws) / "failure.json").write_text(json.dumps({"at": 1.0, "reason": "earlier"}))
+    result = CliRunner().invoke(app, ["map", "save", ws.key, "--token", "tok",
+                                      str(write_draft(tmp_path, draft_doc()))])
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "saved"
+    assert taskmap.load(ws) is not None and taskmap.last_failure(ws) is None
+
+
+def test_spawn_detaches_and_kill_stops_the_group(tmp_path):
+    log = tmp_path / "run.log"
+    pid = taskmap._spawn(["/bin/sh", "-c", "echo started; sleep 30"], tmp_path, dict(os.environ), log)
+    deadline = time.time() + 5
+    while "started" not in (log.read_text() if log.exists() else "") and time.time() < deadline:
+        time.sleep(0.05)
+    assert "started" in log.read_text()
+    assert taskmap._alive(pid)
+    taskmap._kill(pid)
+    while taskmap._alive(pid) and time.time() < deadline:
+        time.sleep(0.05)
+    assert not taskmap._alive(pid)

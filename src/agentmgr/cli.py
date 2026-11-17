@@ -332,6 +332,10 @@ def doctor() -> None:
                     "starts a session.", fg="yellow")
     if not shutil.which("wm"):
         typer.secho("! `wm` is not on PATH; Claude sessions call it during intake", fg="yellow")
+    if node := shutil.which("node"):
+        typer.echo(f"✓ node: {node} (draws the task map)")
+    else:
+        typer.secho("! node: not found; the task map needs Node.js", fg="yellow")
     if not ok:
         raise typer.Exit(1)
 
@@ -413,6 +417,31 @@ def dashboard() -> None:
     from .tui import run
 
     run()
+
+
+map_app = typer.Typer(help="The task map (used by the drawing process).")
+app.add_typer(map_app, name="map", hidden=True)
+
+
+@map_app.command("save")
+def map_save(
+    key: str,
+    draft: str,
+    token: Annotated[str, typer.Option("--token")],
+) -> None:
+    """Check a drawn map and store it as the workstream's map."""
+    from pathlib import Path
+
+    from . import taskmap
+    from .workstream import WorkstreamError
+
+    try:
+        taskmap.save(key, token, Path(draft))
+    except (taskmap.MapError, WorkstreamError) as e:
+        for line in str(e).splitlines():
+            typer.echo(line, err=True)
+        raise typer.Exit(1) from e
+    typer.echo("saved")
 
 
 @app.command("app-server", hidden=True)
