@@ -41,11 +41,7 @@ struct ChangesPanel: View {
                 AllHeader(repos: shown)
             }
             Divider()
-            if model.mode == .map && !diff.repos.isEmpty {
-                MapPanel(ws: ws, repo: solo,
-                         changed: diff.repos.flatMap { repo in repo.files.map { "\(repo.repo)/\($0.path)" } })
-                    .id(ws.key)  // its lens and page error belong to one workstream
-            } else if diff.repos.isEmpty {
+            if diff.repos.isEmpty {
                 ContentUnavailableView("No repos yet", systemImage: "folder.badge.plus",
                                        description: Text("Changes show up here once repos are attached."))
                     .frame(maxHeight: .infinity)
@@ -55,10 +51,6 @@ struct ChangesPanel: View {
                                                                      : "The branch matches its base."))
                     .frame(maxHeight: .infinity)
             } else {
-                if let back = model.backToMap, back.key == ws.key {
-                    BackToMap()
-                    Divider()
-                }
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0, pinnedViews: [.sectionHeaders]) {
@@ -181,7 +173,7 @@ private struct AllHeader: View {
             Spacer()
             let additions = repos.reduce(0) { $0 + $1.additions }, deletions = repos.reduce(0) { $0 + $1.deletions }
             if additions + deletions > 0 { LineCounts(additions: additions, deletions: deletions) }
-            ModeSwitch()
+            MapToggle()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 12)
@@ -203,7 +195,7 @@ private struct SoloHeader: View {
                 if repo.additions + repo.deletions > 0 {
                     LineCounts(additions: repo.additions, deletions: repo.deletions)
                 }
-                ModeSwitch()
+                MapToggle()
             }
             HStack(spacing: 8) {
                 Text("\(repo.branch) → \(repo.base)")
@@ -224,42 +216,19 @@ private struct SoloHeader: View {
     }
 }
 
-/// After a jump from a map card: the way back to the map as it was.
-private struct BackToMap: View {
-    @Environment(AppModel.self) private var model
-
-    var body: some View {
-        HStack {
-            Button {
-                withAnimation(.snappy(duration: 0.2)) { model.returnToMap() }
-            } label: {
-                Label("Back to map", systemImage: "chevron.left")
-            }
-            .buttonStyle(.link)
-            .font(.caption)
-            .help("The map again, as it was when you clicked the card")
-            Spacer()
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 5)
-    }
-}
-
-/// Diff | Map: what the panel shows below its header, per workstream.
-private struct ModeSwitch: View {
+/// Opens the task map in the window's middle, or closes it.
+private struct MapToggle: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
         @Bindable var model = model
-        Picker("Show", selection: $model.mode) {
-            Text("Diff").tag(ChangesMode.diff)
-            Text("Map").tag(ChangesMode.map)
+        Toggle(isOn: $model.mapOpen) {
+            Label("Map", systemImage: "map")
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
+        .toggleStyle(.button)
         .controlSize(.small)
         .fixedSize()
-        .help("The changes as a diff, or as a map of the workstream's task")
+        .help(model.mapOpen ? "Close the task map (Esc)" : "Show the workstream's task map beside its changes (⌥⌘M)")
     }
 }
 

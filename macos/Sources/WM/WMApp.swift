@@ -89,6 +89,9 @@ struct WMCommands: Commands {
         CommandGroup(after: .sidebar) {
             Button("Toggle Changes") { model.showChanges.toggle() }
                 .keyboardShortcut("0", modifiers: [.command, .option])
+            Button(model.mapOpen ? "Close Task Map" : "Show Task Map") { model.mapOpen.toggle() }
+                .keyboardShortcut("m", modifiers: [.command, .option])
+                .disabled(model.selected == nil || model.selected?.status == .archived)
             Button("Toggle Archived Workstreams") { model.showArchived.toggle() }
                 .keyboardShortcut("a", modifiers: [.command, .option])
             Divider()

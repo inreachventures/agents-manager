@@ -1,8 +1,8 @@
 // The task map page: the app hands it a PR Lens graph document with show(), and it draws it with PrLens.render,
 // narrowed to one repo when the repo chip picks one, with pan (drag or scroll) and zoom (pinch or ⌘-scroll).
 // Messages to the app go through webkit.messageHandlers.wm: {type: "error", message} when the document can't be
-// drawn, {type: "rendered"} when it was, and {type: "open", node, files: [{path, startLine?}], x, y, view} when a card
-// with changed files is clicked (x, y: the click in the page's view; view: viewState(), to come back to).
+// drawn, {type: "rendered"} when it was, and {type: "open", node, files: [{path, startLine?}], x, y} when a card
+// with changed files is clicked (x, y: the click in the page's view).
 (function () {
   "use strict";
 
@@ -159,6 +159,7 @@
   var state = { changed: [], atlas: null, cards: [] };  // for clicking a card through to its diff
   var hovered = null;  // the card under the pointer, outlined
   var MIN_SCALE = 0.05, MAX_SCALE = 4;
+  var READABLE = 0.5;  // the smallest zoom a fit goes to: below it a card's text can't be read
 
   function post(message) {
     var handler = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.wm;
@@ -173,12 +174,15 @@
     stage.style.transform = "translate(" + view.x + "px," + view.y + "px) scale(" + view.scale + ")";
   }
 
-  /** The whole width in view, centred, from the top. */
+  /** The whole width in view, centred, from the top; a map too wide to read that way is shown at a readable size
+   * from its left edge instead (pan or pinch for the rest). */
   function fit() {
     if (!size) return;
     var pad = 12, width = Math.max(viewport.clientWidth - 2 * pad, 50);
-    view.scale = clamp(width / size.width, MIN_SCALE, 1.25);  // a small map stays near its own size
-    view.x = (viewport.clientWidth - size.width * view.scale) / 2;
+    // a small map stays near its own size
+    view.scale = clamp(Math.max(width / size.width, READABLE), MIN_SCALE, 1.25);
+    var drawn = size.width * view.scale;
+    view.x = drawn <= viewport.clientWidth ? (viewport.clientWidth - drawn) / 2 : pad;
     view.y = pad;
     touched = false;
     apply();
@@ -344,9 +348,10 @@
     if (!clicked) return;
     var card = cardUnder(event);
     if (card) {
+      touched = true;  // the changes panel opening beside the map must not refit it under the pointer
       var rect = viewport.getBoundingClientRect();
       post({ type: "open", node: card.id, files: card.files, x: event.clientX - rect.left,
-             y: event.clientY - rect.top, view: window.wmMap.viewState() });
+             y: event.clientY - rect.top });
     }
   }
   viewport.addEventListener("pointerup", endDrag);
@@ -387,7 +392,7 @@
 
   window.wmMap = {
     show: show,
-    /** Pan and zoom, to put back with restore(). */
+    /** Pan and zoom, to put back with restore() (scripted checks of debug builds use both). */
     viewState: function () { return { x: view.x, y: view.y, scale: view.scale }; },
     restore: function (saved) {
       if (!saved) return;

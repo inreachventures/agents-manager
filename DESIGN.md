@@ -360,10 +360,11 @@ for everything that matters: no daemon, no web server, sessions in the manager's
   staged and unstaged work all show, plus untracked files read from disk (ignored ones excluded; symlinks not
   followed). Output flags are forced, so the user's diff config can't change the format the parser reads. Capped per
   file, per repo and in untracked files, so a lockfile or an un-ignored build folder can't flood the app.
-- **Task map**: a PR Lens graph of what the workstream changes across its repos, in a Diff / Map switch on the
-  changes panel. `taskmap.start_drawing` runs a headless `claude -p` in the workstream folder after a commit (hooks
-  call it), on Redraw, or when a repo moved during a drawing; it is confined to read-only git, node and its draft, and
-  its process never touches the session's status or notifies. Claude writes the content; `wm map save` validates it
+- **Task map**: a PR Lens graph of what the workstream changes across its repos, opened full width in the
+  window's middle in place of the session (⌥⌘M), with a card's files opening in the changes panel beside it.
+  `taskmap.start_drawing` runs a headless `claude -p` in the workstream folder after a commit (hooks call it), on
+  Redraw, or when a repo moved during a drawing; it is confined to read-only git, node and its draft, and its process
+  never touches the session's status or notifies. Claude writes the content; `wm map save` validates it
   (vendored `prlens-validate.mjs`, needs Node: `wm doctor` reports it) and stores it with a snapshot per repo (HEAD,
   fork point, diff digest) under `<workstream>/.wm/map/`, never in a repo. The server's `map` request compares that
   snapshot with the repos now (digests reused from `diff` if under 5s old) and lists out-of-date repos with a reason;

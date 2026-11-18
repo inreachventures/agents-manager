@@ -74,6 +74,12 @@ struct DetailView: View {
                         }
                         .help("Add repo, rebase, archive…")
                     }
+                    if let ws = model.selected, ws.status != .archived {
+                        Toggle(isOn: $model.mapOpen) {
+                            Label("Task Map", systemImage: "map")
+                        }
+                        .help(model.mapOpen ? "Close the task map (Esc)" : "Show the workstream's task map (⌥⌘M)")
+                    }
                     Button {
                         model.showChanges.toggle()
                     } label: {
@@ -109,6 +115,9 @@ struct DetailView: View {
                         Button("Restore") { Task { await model.restore(ws.key) } }
                             .buttonStyle(.borderedProminent)
                     }
+                } else if model.mapOpen {
+                    MapPanel(ws: ws)
+                        .id(ws.key)  // its page error belongs to one workstream
                 } else if model.terminalFailed == ws.key {
                     Placeholder(symbol: "exclamationmark.triangle", title: "Couldn't show the session",
                                 text: "The terminal closed as soon as it attached.") {
@@ -251,8 +260,9 @@ struct RepoChips: View {
     }
 
     private func chip(_ repo: RepoState, index: Int) -> some View {
-        let on = model.showChanges && model.soloRepo == repo.repo
-        let action = on ? "Click to show every repo's changes" : "Click to show only its changes"
+        let on = model.mapOpen ? model.mapRepo == repo.repo : model.showChanges && model.soloRepo == repo.repo
+        let action = model.mapOpen ? (on ? "Click to show every repo in the map" : "Click to show only its part of the map")
+            : on ? "Click to show every repo's changes" : "Click to show only its changes"
         return Button {
             withAnimation(.snappy(duration: 0.2)) { model.pickRepo(repo.repo) }
         } label: {

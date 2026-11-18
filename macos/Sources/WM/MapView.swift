@@ -1,18 +1,33 @@
 import SwiftUI
 import WebKit
 
-/// The task map in the changes panel: how it stands on one line (drawn when, up to date or not, a drawing in progress,
-/// Redraw), the lens switch, and the map, or why there is none.
+/// The task map, in the window's middle while it is open: how it stands on one line (drawn when, up to date or not, a
+/// drawing in progress, Redraw, Close), the lens switch, and the map, or why there is none. The repo chips narrow
+/// it; a card with changed files opens them in the changes panel beside it.
 struct MapPanel: View {
     @Environment(AppModel.self) private var model
     @Environment(\.colorScheme) private var colorScheme
     let ws: Workstream
-    let repo: String?  // the repo chip's pick, which narrows the map
-    let changed: [String]  // workstream-relative paths in the current diff
     @State private var pageError: String?
 
+    private var repo: String? { model.mapRepo }
+
+    /// Workstream-relative paths in the current diff: the cards with one of them can be clicked.
+    private var changed: [String] {
+        guard let diff = model.diff, diff.key == ws.key else { return [] }
+        return diff.repos.flatMap { repo in repo.files.map { "\(repo.repo)/\($0.path)" } }
+    }
+
     var body: some View {
-        if let map = model.map, map.key == ws.key {
+        if ws.repos.isEmpty {
+            ContentUnavailableView {
+                Label("No repos yet", systemImage: "folder.badge.plus")
+            } description: {
+                Text("The map shows what the workstream's repos change, once it has some.")
+            } actions: {
+                closeButton
+            }
+        } else if let map = model.map, map.key == ws.key {
             content(map)
         } else if let error = model.mapLoadError, error.key == ws.key {
             ContentUnavailableView {
@@ -20,7 +35,10 @@ struct MapPanel: View {
             } description: {
                 Text(error.message)
             } actions: {
-                Button("Try again") { Task { await model.loadMap() } }
+                HStack {
+                    Button("Try again") { Task { await model.loadMap() } }
+                    closeButton
+                }
             }
         } else {
             ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -34,10 +52,9 @@ struct MapPanel: View {
                 Divider()
                 ZStack {
                     MapWebView(doc: doc, lens: shownLens(map), theme: colorScheme == .dark ? "dark" : "light",
-                               repo: repo, changed: changed, restore: model.mapRestore,
+                               repo: repo, changed: changed,
                                onError: { error in pageError = error },
-                               onOpen: { files, point, pan in model.openFromMap(files, at: point, pan: pan) },
-                               onRestored: { model.mapRestore = nil })
+                               onOpen: { files, point in model.openFromMap(files, at: point) })
                     if let pageError {
                         ContentUnavailableView {
                             Label("Can't draw this map", systemImage: "exclamationmark.triangle")
@@ -119,9 +136,17 @@ struct MapPanel: View {
                 .fixedSize()
             }
             redrawButton(map).controlSize(.small)
+            closeButton.controlSize(.small)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 6)
+    }
+
+    /// Back to the session (Esc).
+    private var closeButton: some View {
+        Button("Close") { model.mapOpen = false }
+            .keyboardShortcut(.cancelAction)
+            .help("Close the map and show the session again (Esc)")
     }
 
     private static let lensNames = ["architecture": "Architecture", "data-flow": "Data flow", "data-model": "Data model"]
@@ -169,10 +194,8 @@ struct MapWebView: NSViewRepresentable {
     var theme: String
     var repo: String?
     var changed: [String]
-    var restore: MapPan?  // pan and zoom to put back once the map shows
     var onError: (String?) -> Void  // the page's error, nil once it draws
-    var onOpen: ([MapFile], CGPoint, MapPan?) -> Void  // a card clicked: its changed files, the click (screen), the pan
-    var onRestored: () -> Void  // `restore` is applied
+    var onOpen: ([MapFile], CGPoint) -> Void  // a card clicked: its changed files, and the click (screen coordinates)
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -190,15 +213,6 @@ struct MapWebView: NSViewRepresentable {
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onError = onError
         context.coordinator.onOpen = onOpen
-        // Hand the pan to put back over once: SwiftUI may update the view again before `onRestored` clears it, and
-        // applying it again then would undo a pan made since.
-        if restore != context.coordinator.handedRestore {
-            context.coordinator.handedRestore = restore
-            if let restore {
-                context.coordinator.restore = restore
-                DispatchQueue.main.async { onRestored() }  // not while SwiftUI is updating the view
-            }
-        }
         context.coordinator.update(Shown(doc: doc, lens: lens, theme: theme, repo: repo, changed: changed))
     }
 
@@ -218,9 +232,7 @@ struct MapWebView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         weak var webView: WKWebView?
         var onError: ((String?) -> Void)?
-        var onOpen: (([MapFile], CGPoint, MapPan?) -> Void)?
-        var restore: MapPan?  // to put back with the next show, or now if the map shows already
-        var handedRestore: MapPan?  // the `restore` last taken from the view, until the view's goes back to nil
+        var onOpen: (([MapFile], CGPoint) -> Void)?
         private var page: URL?
         private var loaded = false
         private var wanted: Shown?
@@ -245,20 +257,12 @@ struct MapWebView: NSViewRepresentable {
         }
 
         private func push() {
-            guard loaded, let web = webView, let wanted else { return }
-            let pan: Any = restore?.json ?? NSNull()
-            restore = nil
-            if wanted == shown {
-                if !(pan is NSNull) {
-                    web.callAsyncJavaScript("window.wmMap.restore(pan)", arguments: ["pan": pan], in: nil, in: .page)
-                }
-                return
-            }
+            guard loaded, let web = webView, let wanted, wanted != shown else { return }
             shown = wanted
             let args: [String: Any] = ["doc": String(decoding: wanted.doc, as: UTF8.self), "lens": wanted.lens,
                                        "theme": wanted.theme, "repo": wanted.repo ?? NSNull(),
-                                       "changed": wanted.changed, "pan": pan]
-            web.callAsyncJavaScript("window.wmMap.show({doc, lens, theme, repo, changed}); window.wmMap.restore(pan)",
+                                       "changed": wanted.changed]
+            web.callAsyncJavaScript("window.wmMap.show({doc, lens, theme, repo, changed})",
                                     arguments: args, in: nil, in: .page) { [weak self] result in
                 if case .failure(let error) = result { self?.report(error.localizedDescription) }
             }
@@ -307,7 +311,7 @@ struct MapWebView: NSViewRepresentable {
             let y = (body["y"] as? NSNumber)?.doubleValue ?? web.bounds.midY
             let local = NSPoint(x: x, y: web.isFlipped ? y : web.bounds.height - y)
             let screen = window.convertPoint(toScreen: web.convert(local, to: nil))
-            onOpen?(files, screen, MapPan(body["view"]))
+            onOpen?(files, screen)
         }
     }
 }

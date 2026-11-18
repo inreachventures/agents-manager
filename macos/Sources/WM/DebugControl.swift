@@ -9,8 +9,8 @@ import WebKit
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · type [TEXT] · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
 ///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
-///   mode map|diff (as the Diff | Map switch) · lens NAME · map-open PATH[,PATH…] [LINE] (as a click on a card with
-///   those workstream-relative files) · back-to-map · snap-map NAME (the map page alone) · map-cards (the clickable
+///   mode map|diff (opens or closes the task map) · lens NAME · map-open PATH[,PATH…] [LINE] (as a click on a card with
+///   those workstream-relative files) · snap-map NAME (the map page alone) · map-cards (the clickable
 ///   cards, in window points from the top left, to out) · map-hover X Y · map-click X Y (pointer events in the page)
 ///   map-js CODE (run in the page, its result to out) · menu-pick N|none (the map's file menu: its items to out)
 @MainActor
@@ -98,7 +98,7 @@ enum DebugControl {
         case "create":
             Task { await model.create(ticket: rest.first ?? "") }
         case "mode":
-            model.mode = rest.first == "map" ? .map : .diff
+            model.mapOpen = rest.first == "map"
         case "lens":
             if let key = model.selection, let lens = rest.first { model.mapLenses[key] = lens }
         case "map-open":  // through the page's message handler, as a click on a card would
@@ -108,7 +108,7 @@ enum DebugControl {
                 line.map { ["path": String(path), "startLine": $0] } ?? ["path": String(path)]
             }
             web.callAsyncJavaScript("window.webkit.messageHandlers.wm.postMessage({type: 'open', node: 'debug', "
-                                    + "files: files, view: window.wmMap.viewState()})",
+                                    + "files: files})",
                                     arguments: ["files": files], in: nil, in: .page)
         case "map-hover", "map-click":  // X Y as `click` takes them; pointer events dispatched in the page (WebKit
             // ignores the synthetic mouse events `click` posts while the app is not active)
@@ -146,8 +146,6 @@ enum DebugControl {
             if let n = Int(rest.first ?? ""), menu.items.indices.contains(n) {
                 DispatchQueue.main.async { menu.performActionForItem(at: n) }
             }
-        case "back-to-map":
-            model.returnToMap()
         case "snap-map":
             guard let web = window.flatMap({ firstWebView(in: $0.contentView) }) else { return }
             web.takeSnapshot(with: nil) { image, _ in
@@ -174,15 +172,14 @@ enum DebugControl {
                 try? out.write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
             }
         case "dump":
-            let out = ["selection=\(model.selection ?? "nil") solo=\(model.soloRepo ?? "all")",
+            let out = ["selection=\(model.selection ?? "nil") solo=\(model.soloRepo ?? "all") mapRepo=\(model.mapRepo ?? "all")",
                        "selected=\(model.selected?.key ?? "nil") terminal=\(model.terminal.key ?? "nil")",
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
                        "tour=\(model.tourStop.map { "\($0)" } ?? "nil") setup=\(model.setup != nil)",
                        "windows=\(NSApp.windows.filter(\.isVisible).map { String(describing: type(of: $0)) })",
                        "rows=\(model.state.workstreams.map(\.key))",
-                       "mode=\(model.mode) lens=\(model.selection.flatMap { model.mapLenses[$0] } ?? "-")",
+                       "mapOpen=\(model.mapOpen) changes=\(model.showChanges) lens=\(model.selection.flatMap { model.mapLenses[$0] } ?? "-")",
                        "jump=\(model.jump.map { "\($0)" } ?? "nil")",
-                       "backToMap=\(model.backToMap.map { "\($0)" } ?? "nil")",
                        "map=\(model.map.map { "\($0.key) doc=\($0.doc != nil) drawing=\($0.drawingSince != nil)" } ?? "nil")"]
                 .joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)

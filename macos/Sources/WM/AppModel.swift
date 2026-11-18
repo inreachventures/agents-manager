@@ -17,22 +17,11 @@ enum ActiveSheet: Identifiable {
     }
 }
 
-/// What the changes panel shows: the files' diff, or the task map.
-enum ChangesMode { case diff, map }
-
 /// Where a click on a map card goes in the diff: a file of `repo` (`path` relative to it), at `startLine` if set.
 struct DiffJump: Equatable {
     var repo: String
     var path: String
     var startLine: Int?
-}
-
-/// The map as it was when a card was clicked, for "Back to map": its workstream, lens, repo filter, pan and zoom.
-struct MapViewState: Equatable {
-    var key: String
-    var lens: String?
-    var repo: String?
-    var pan: MapPan?
 }
 
 struct Toast: Identifiable, Equatable {
@@ -57,19 +46,35 @@ final class AppModel {
     var showChanges = false {
         didSet {
             guard phase == .ready else { return }
-            UserDefaults.standard.set(showChanges, forKey: "showChanges")
-            if showChanges { Task { await loadDiff(); await loadMap() } }
+            // not the map stepping it aside, or bringing it back for a card: only what the user chose to show
+            if !mapOpen { UserDefaults.standard.set(showChanges, forKey: "showChanges") }
+            if showChanges { Task { await loadDiff() } }
         }
     }
     var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
+    // per workstream: the one repo the map shows (none: all). Picked with the repo chips like `soloRepos`, but a card's
+    // jump narrows only the panel: the map stays as the user left it.
+    var mapRepos: [String: String] = [:]
     var diff: DiffResult?
-    var changesMode: [String: ChangesMode] = [:]  // per workstream: diff (the default) or map
+    /// The task map fills the window's middle in place of the session, for whichever workstream is selected; the
+    /// changes panel steps aside while it is open (a card clicked brings it back, at that card's files).
+    var mapOpen = false {
+        didSet {
+            guard oldValue != mapOpen else { return }
+            if mapOpen {
+                changesBeforeMap = showChanges
+                showChanges = false
+                Task { await loadDiff(); await loadMap() }  // the diff too: it says which cards have files to open
+            } else {
+                jump = nil
+                showChanges = changesBeforeMap
+            }
+        }
+    }
     var map: MapResult?
     var mapLoadError: MapLoadError?  // why the selected workstream's map couldn't be fetched, while there is none to show
     var mapLenses: [String: String] = [:]  // per workstream: the lens picked in the map (none: the first it has)
     var jump: DiffJump?  // a map card's file for the diff to open and scroll to; the diff clears it once there
-    var backToMap: MapViewState?  // set by a jump from the map, until the user goes back or moves on
-    var mapRestore: MapPan?  // the pan and zoom for the map page to put back once it shows again
     var busy: String?
     var refreshing = false
     var toasts: [Toast] = []
@@ -84,6 +89,7 @@ final class AppModel {
     @ObservationIgnored private var attaching: String?
     @ObservationIgnored private var diffLoading = false
     @ObservationIgnored private var mapLoading = false
+    @ObservationIgnored private var changesBeforeMap = true  // the changes panel was showing when the map opened
     @ObservationIgnored private var diffLoop: Task<Void, Never>?
     @ObservationIgnored private var restarts = 0
     @ObservationIgnored private var quitting = false
@@ -101,6 +107,13 @@ final class AppModel {
 
     var waitingCount: Int { state.workstreams.filter(\.waitingUnseen).count }
 
+    /// The repo the map shows on its own, if any, for the selected workstream.
+    var mapRepo: String? {
+        guard let key = selection, let repo = mapRepos[key], selected?.repos.contains(where: { $0.repo == repo }) == true
+        else { return nil }
+        return repo
+    }
+
     /// The repo the changes panel shows on its own, if any, for the selected workstream.
     var soloRepo: String? {
         guard let key = selection, let repo = soloRepos[key], selected?.repos.contains(where: { $0.repo == repo }) == true
@@ -108,24 +121,12 @@ final class AppModel {
         return repo
     }
 
-    /// What the changes panel shows for the selected workstream.
-    var mode: ChangesMode {
-        get { selection.flatMap { changesMode[$0] } ?? .diff }
-        set {
-            guard let key = selection, mode != newValue else { return }
-            changesMode[key] = newValue
-            backToMap = nil  // switched by hand: the way back is gone
-            if newValue == .map { Task { await loadMap() } }
-        }
-    }
-
     /// A click on a map card, with its changed files: one goes straight to its diff; several ask which, with a menu
-    /// at `point` (screen coordinates). `pan`: the map's pan and zoom then, for the way back.
-    func openFromMap(_ files: [MapFile], at point: CGPoint, pan: MapPan?) {
+    /// at `point` (screen coordinates). The map stays as it is.
+    func openFromMap(_ files: [MapFile], at point: CGPoint) {
         guard let key = selection else { return }
-        let from = MapViewState(key: key, lens: mapLenses[key], repo: soloRepo, pan: pan)
         if files.count == 1 {
-            jump(to: files[0], from: from)
+            jump(to: files[0], in: key)
             return
         }
         let menu = NSMenu()
@@ -133,7 +134,7 @@ final class AppModel {
             let item = NSMenuItem(title: file.path, action: nil, keyEquivalent: "")
             item.target = MenuAction.shared
             item.action = #selector(MenuAction.run(_:))
-            item.representedObject = MenuAction.Run { [weak self] in self?.jump(to: file, from: from) }
+            item.representedObject = MenuAction.Run { [weak self] in self?.jump(to: file, in: key) }
             menu.addItem(item)
         }
         openMenu = menu
@@ -141,43 +142,32 @@ final class AppModel {
         menu.popUp(positioning: nil, at: point, in: nil)
     }
 
-    private func jump(to file: MapFile, from: MapViewState) {
-        guard from.key == selection, let slash = file.path.firstIndex(of: "/") else { return }
+    /// The changes panel beside the map, showing `file`'s repo alone and scrolled to it; the map stays as it is.
+    private func jump(to file: MapFile, in key: String) {
+        guard key == selection, let slash = file.path.firstIndex(of: "/") else { return }
         let repo = String(file.path[..<slash]), path = String(file.path[file.path.index(after: slash)...])
-        backToMap = from
-        soloRepos[from.key] = repo
-        changesMode[from.key] = .diff
+        soloRepos[key] = repo
+        if !showChanges { showChanges = true }
         jump = DiffJump(repo: repo, path: path, startLine: file.startLine)
     }
 
-    /// "Back to map": the map again, with the lens, repo filter, pan and zoom it had when the card was clicked.
-    func returnToMap() {
-        guard let back = backToMap, back.key == selection else { return }
-        backToMap = nil
-        jump = nil
-        soloRepos[back.key] = back.repo
-        if let lens = back.lens { mapLenses[back.key] = lens }
-        mapRestore = back.pan
-        changesMode[back.key] = .map
-        Task { await loadMap() }
-    }
-
-    /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is.
+    /// A repo chip in the top bar: show that repo's changes alone (and its part of the map), or all of them again if
+    /// it already is. With the map open, the chip is about the map: the changes panel stays as it is.
     func pickRepo(_ repo: String?) {
         guard let key = selection else { return }
-        if repo == nil || (showChanges && soloRepo == repo) {
-            soloRepos[key] = nil
-        } else {
-            soloRepos[key] = repo
-        }
-        if !showChanges { showChanges = true }
+        let current = mapOpen ? mapRepo : (showChanges ? soloRepo : nil)
+        let pick = repo == nil || current == repo ? nil : repo
+        soloRepos[key] = pick
+        mapRepos[key] = pick
+        if !showChanges && !mapOpen { showChanges = true }
     }
 
     /// ⌘1…⌘9: the selected workstream's Nth repo.
     func pickRepo(at index: Int) {
         guard let key = selection, let repos = selected?.repos, repos.indices.contains(index) else { return }
         soloRepos[key] = repos[index].repo
-        if !showChanges { showChanges = true }
+        mapRepos[key] = repos[index].repo
+        if !showChanges && !mapOpen { showChanges = true }
     }
 
     // MARK: - Lifecycle
@@ -303,8 +293,6 @@ final class AppModel {
         map = nil
         mapLoadError = nil
         jump = nil
-        backToMap = nil
-        mapRestore = nil
         terminalFailed = nil
         Task { await loadDiff(); await loadMap() }
         syncTerminal()
@@ -412,7 +400,7 @@ final class AppModel {
 
     /// `polling`: the periodic refresh, skipped while the app is in the background.
     func loadDiff(polling: Bool = false) async {
-        guard showChanges, !diffLoading, !polling || NSApp.isActive, let ws = selected, ws.status != .archived,
+        guard showChanges || mapOpen, !diffLoading, !polling || NSApp.isActive, let ws = selected, ws.status != .archived,
               phase == .ready else { return }
         diffLoading = true
         defer { diffLoading = false }
@@ -422,9 +410,9 @@ final class AppModel {
         if result.key == selected?.key { diff = result }
     }
 
-    /// The task map, while the panel shows it; `polling` as for `loadDiff`.
+    /// The task map, while it is open; `polling` as for `loadDiff`.
     func loadMap(polling: Bool = false) async {
-        guard showChanges, mode == .map, !mapLoading, !polling || NSApp.isActive, let ws = selected,
+        guard mapOpen, !mapLoading, !polling || NSApp.isActive, let ws = selected,
               ws.status != .archived, phase == .ready else { return }
         mapLoading = true
         defer { mapLoading = false }

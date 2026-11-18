@@ -20,7 +20,7 @@ workstream**, covering every attached repo, with the calls that cross between th
 
 | | |
 |---|---|
-| Goals | One map per workstream, across all its repos. A Diff / Map switch in the Changes panel. Clicking a card jumps to its changes in the diff. Architecture and data-flow lenses (plus data-model when the map has one), light and dark following the app. The repo chip narrows the map to one repo. The map says when it is out of date and offers Redraw. It is redrawn after each commit, whichever agent made it, without touching the workstream's session. |
+| Goals | One map per workstream, across all its repos. The map opens full width in the window's middle, in place of the session. Clicking a card shows its changes in the panel beside it. Architecture and data-flow lenses (plus data-model when the map has one), light and dark following the app. The repo chip narrows the map to one repo. The map says when it is out of date and offers Redraw. It is redrawn after each commit, whichever agent made it, without touching the workstream's session. |
 | Non-goals | Attaching the map to PRs (later: a PNG of the whole task map on each repo's PR; GitHub has no image upload API, so this needs a hosting decision). PR Lens's hosted features: review findings, the canvas, payload panels, walkthrough playback. A map in the terminal dashboard (`wm` TUI). One map per repo. |
 | Anti-goals | A map that looks current but isn't. Drawing that changes the session's status, sends notifications, raises permission prompts, or adds anything to the session's conversation. Map files committed to a repo. A runtime dependency on Node for the app itself. Unreviewed third-party code running unattended: no npm downloads at runtime. Sending code anywhere new: the map is drawn by Claude on the same subscription that already reads the code, and nothing goes to PR Lens's hosted service. |
 
@@ -177,8 +177,15 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - `rpc_map(key, since)`: the map document (or none), drawn-at, freshness per repo, drawing in progress since,
   last failure, with the same digest/`unchanged` pattern as `rpc_diff`. Freshness reuses the per-repo diff digests;
   the app polls both on the same tick.
-- `ChangesPanel` gets a Diff / Map switch in its header, remembered per workstream like `soloRepos`.
-- The Map view is a `WKWebView` (`NSViewRepresentable`) loading a bundled HTML page and `prlens.js`. Swift hands it
+- **Where the map shows.** Not in the changes panel: at its usual width (about 520 points) a real map renders at a
+  fifth of its size and can't be read (found on the first real drawing, of this feature's own branch). The map opens
+  in the window's middle, in place of the session's terminal, the way canvas tools put the canvas in the main area and
+  details in a side pane. A Map toggle in the panel's header and in the toolbar, and View > Show Task Map (⌥⌘M), open
+  it; Close or Esc closes it. Open or closed is one app-wide state, not per workstream: switching workstream while it
+  is open shows that workstream's map. Opening it moves the changes panel aside (whether it was showing is
+  remembered and restored on close); the sidebar stays, so sessions' status stays in view. Not a separate window: the
+  diff it jumps to lives in the main window, and a second window only covers the first on a laptop screen.
+- The map view is a `WKWebView` (`NSViewRepresentable`) loading a bundled HTML page and `prlens.js`. Swift hands it
   the document, lens, theme and repo filter; the page calls `render` and shows the SVG with pan and zoom. Theme
   follows the app's appearance. The page loads nothing from the network.
 - Above the map, one line: drawn time; "Up to date" or "Out of date" with the per-repo reasons; "Redrawing…" while
@@ -205,15 +212,18 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
   that give the blast radius are usually inert, by design.
 - **The jump.** The page posts the node's changed files (path plus `startLine` when the map has one) to Swift through
   a `WKScriptMessageHandler`. With one file, Swift jumps straight there; with several, a small menu at the click
-  lists them. A jump switches the panel to Diff, picks that repo with the repo chip, opens the file if it is folded
-  or over the big-file threshold, and scrolls to its row (`<repo>/<path>`). With a `startLine`, it scrolls to the
+  lists them. A jump brings the changes panel back beside the map (the map stays as it is: the page doesn't refit
+  when its width changes after a click), shows all repos if the panel showed another repo alone, opens the file if
+  it is folded or over the big-file threshold, and scrolls to its row (`<repo>/<path>`). With a `startLine`, it scrolls to the
   hunk whose new-side range covers it, else the nearest hunk below, else the file's header.
 - **Scrolling.** `ChangesPanel`'s list gets a `ScrollViewReader`; row ids already address files (`repo/path`) and
   hunks (`repo/path#n`).
 - **Stale maps.** If the clicked file has left the diff since the map was drawn (it can, while the map is out of
   date), the card is simply not clickable, because clickability is computed from the current diff.
-- **Getting back.** After a jump, the Diff view shows "Back to map" at the top until the user switches view or
-  workstream. It returns to the Map with the same lens, repo filter and pan/zoom.
+- **No getting back.** The map never leaves the screen for a jump, so there is no "Back to map" and no pan and zoom to
+  restore.
+- **Opening zoom.** The page fits the map's width, but never below a readable zoom (0.5): a map too wide for that
+  opens from its left edge, to pan or pinch for the rest. Double-click fits again.
 
 ## Tests
 
@@ -229,7 +239,7 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - App: by hand on a real multi-repo workstream: a commit from a subagent produces a map with no status change or
   notification; the repo filter on a cross-repo edge; light and dark; each empty and error state; clicking a card
   with one changed file, with several, with a line range inside a big folded file, an inert unchanged card, in both
-  lenses, and Back to map restoring the view.
+  lenses, with the map staying put as the panel opens beside it.
 
 ## Left to the builder
 
