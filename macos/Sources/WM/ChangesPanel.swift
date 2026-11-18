@@ -205,7 +205,7 @@ private struct SoloHeader: View {
                     .truncationMode(.middle)
                 if let state { PRLinks(state: state) }
                 Spacer()
-                Button("All repos") { withAnimation(.snappy(duration: 0.2)) { model.pickRepo(nil) } }
+                Button("All repos") { withAnimation(.snappy(duration: 0.2)) { model.pickPanelRepo(nil) } }
                     .buttonStyle(.link)
                     .font(.caption)
                     .help("Show every repo's changes (⌘0)")
@@ -258,7 +258,7 @@ private struct RepoHeader: View {
         HStack(spacing: 6) {
             Image(systemName: "arrow.triangle.branch").font(.caption).foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Button(repo.repo) { withAnimation(.snappy(duration: 0.2)) { model.pickRepo(repo.repo) } }
+                Button(repo.repo) { withAnimation(.snappy(duration: 0.2)) { model.pickPanelRepo(repo.repo) } }
                     .buttonStyle(.plain)
                     .font(.callout.weight(.semibold))
                     .help("Show only \(repo.repo)'s changes")

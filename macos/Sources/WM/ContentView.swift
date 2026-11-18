@@ -81,7 +81,7 @@ struct DetailView: View {
                         .help(model.mapOpen ? "Close the task map (Esc)" : "Show the workstream's task map (⌥⌘M)")
                     }
                     Button {
-                        model.showChanges.toggle()
+                        model.toggleChanges()
                     } label: {
                         Label("Changes", systemImage: "sidebar.trailing")
                     }

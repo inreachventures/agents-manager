@@ -39,7 +39,7 @@ final class AppModel {
     static let shared = AppModel()
 
     var phase: Phase = .starting
-    var state = DashboardState.empty
+    var state = DashboardState.empty { didSet { closeMapIfNothingToShow() } }  // archived from under the map, say
     var selection: String? { didSet { if oldValue != selection { selectionChanged() } } }  // a workstream key
     var showArchived = false { didSet { if oldValue != showArchived { selection = nil } } }
     // Opened once the first state is in: presented at launch, the inspector would take its minimum width.
@@ -149,6 +149,29 @@ final class AppModel {
         soloRepos[key] = repo
         if !showChanges { showChanges = true }
         jump = DiffJump(repo: repo, path: path, startLine: file.startLine)
+    }
+
+    /// The panel's own repo controls ("All repos", a repo's header): which repo the changes panel shows. The map
+    /// keeps its own pick.
+    func pickPanelRepo(_ repo: String?) {
+        guard let key = selection else { return }
+        soloRepos[key] = repo
+    }
+
+    /// The Changes toggle (toolbar, ⌥⌘0). With the map open it is a choice for after the map too: closing the map
+    /// keeps it, rather than putting back how the panel was when the map opened.
+    func toggleChanges() {
+        showChanges.toggle()
+        if mapOpen {
+            changesBeforeMap = showChanges
+            UserDefaults.standard.set(showChanges, forKey: "showChanges")
+        }
+    }
+
+    /// The map is only ever open on a workstream it can show: with none selected, or an archived one, it closes, so it
+    /// isn't left open (and the panel hidden) with no Close on screen.
+    private func closeMapIfNothingToShow() {
+        if mapOpen, selected == nil || selected?.status == .archived { mapOpen = false }
     }
 
     /// A repo chip in the top bar: show that repo's changes alone (and its part of the map), or all of them again if
@@ -289,6 +312,7 @@ final class AppModel {
 
     private func selectionChanged() {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
+        closeMapIfNothingToShow()
         diff = nil
         map = nil
         mapLoadError = nil

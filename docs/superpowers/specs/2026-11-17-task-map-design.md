@@ -183,7 +183,8 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
   details in a side pane. A Map toggle in the panel's header and in the toolbar, and View > Show Task Map (⌥⌘M), open
   it; Close or Esc closes it. Open or closed is one app-wide state, not per workstream: switching workstream while it
   is open shows that workstream's map. Opening it moves the changes panel aside (whether it was showing is
-  remembered and restored on close); the sidebar stays, so sessions' status stays in view. Not a separate window: the
+  remembered and restored on close, unless the Changes toggle is used while the map is open: that choice stands);
+  it closes by itself when no workstream, or an archived one, is selected; the sidebar stays, so sessions' status stays in view. Not a separate window: the
   diff it jumps to lives in the main window, and a second window only covers the first on a laptop screen.
 - The map view is a `WKWebView` (`NSViewRepresentable`) loading a bundled HTML page and `prlens.js`. Swift hands it
   the document, lens, theme and repo filter; the page calls `render` and shows the SVG with pan and zoom. Theme
@@ -213,9 +214,10 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - **The jump.** The page posts the node's changed files (path plus `startLine` when the map has one) to Swift through
   a `WKScriptMessageHandler`. With one file, Swift jumps straight there; with several, a small menu at the click
   lists them. A jump brings the changes panel back beside the map (the map stays as it is: the page doesn't refit
-  when its width changes after a click), shows all repos if the panel showed another repo alone, opens the file if
-  it is folded or over the big-file threshold, and scrolls to its row (`<repo>/<path>`). With a `startLine`, it scrolls to the
-  hunk whose new-side range covers it, else the nearest hunk below, else the file's header.
+  when its width changes after a click), narrows the panel to the card's repo (only the panel: the map keeps the
+  repo the toolbar chips picked for it, and the panel's own "All repos" and repo headers change only the panel),
+  opens the file if it is folded or over the big-file threshold, and scrolls to its row (`<repo>/<path>`). With a
+  `startLine`, it scrolls to the hunk whose new-side range covers it, else the nearest hunk below, else the file's header.
 - **Scrolling.** `ChangesPanel`'s list gets a `ScrollViewReader`; row ids already address files (`repo/path`) and
   hunks (`repo/path#n`).
 - **Stale maps.** If the clicked file has left the diff since the map was drawn (it can, while the map is out of

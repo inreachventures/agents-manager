@@ -41,7 +41,11 @@ struct MapPanel: View {
                 }
             }
         } else {
-            ProgressView().controlSize(.small).frame(maxWidth: .infinity, maxHeight: .infinity)
+            ContentUnavailableView {
+                ProgressView().controlSize(.small)
+            } actions: {
+                closeButton
+            }
         }
     }
 

@@ -348,7 +348,9 @@
     if (!clicked) return;
     var card = cardUnder(event);
     if (card) {
-      touched = true;  // the changes panel opening beside the map must not refit it under the pointer
+      // the changes panel opening beside the map must not refit it under the pointer; a click on a card counts as
+      // touching the map, whether or not the app then opens anything
+      touched = true;
       var rect = viewport.getBoundingClientRect();
       post({ type: "open", node: card.id, files: card.files, x: event.clientX - rect.left,
              y: event.clientY - rect.top });
@@ -392,7 +394,7 @@
 
   window.wmMap = {
     show: show,
-    /** Pan and zoom, to put back with restore() (scripted checks of debug builds use both). */
+    /** Pan and zoom; restore() sets them (scripted checks of debug builds call both through `map-js`). */
     viewState: function () { return { x: view.x, y: view.y, scale: view.scale }; },
     restore: function (saved) {
       if (!saved) return;

@@ -87,7 +87,7 @@ struct WMCommands: Commands {
             Button("Show the Tour") { model.startTour() }
         }
         CommandGroup(after: .sidebar) {
-            Button("Toggle Changes") { model.showChanges.toggle() }
+            Button("Toggle Changes") { model.toggleChanges() }
                 .keyboardShortcut("0", modifiers: [.command, .option])
             Button(model.mapOpen ? "Close Task Map" : "Show Task Map") { model.mapOpen.toggle() }
                 .keyboardShortcut("m", modifiers: [.command, .option])
