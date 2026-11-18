@@ -86,26 +86,25 @@ def test_refresh_rechecks_failed_base_ci(env, monkeypatch):
 
 
 def test_fetch_prs(monkeypatch):
-    """One search per prefix finds the branch's own PRs and those of the workstream's other branches; a branch whose
-    name lacks the prefix is looked up by name."""
+    """The worktree branch's PRs are looked up by name, whoever opened them; the workstream's other branches by one
+    search per prefix, limited to your PRs (a colleague's wm hands out the same WS-<n> keys)."""
     calls = []
-    prs = [{"number": 1, "headRefName": "ws-1-x"}, {"number": 2, "headRefName": "ws-1-stack-top"},
-           {"number": 3, "headRefName": "WS-1-Upper"}, {"number": 4, "headRefName": "ws-12-other"}]
+    mine = [{"number": 1, "headRefName": "ws-1-x"}, {"number": 2, "headRefName": "ws-1-stack-top"},
+            {"number": 3, "headRefName": "WS-1-Upper"}, {"number": 4, "headRefName": "ws-12-other"}]
 
     def run(args, **kw):
         calls.append(args)
         if "--head" in args:
-            out = [{"number": 9, "headRefName": "custom"}]
+            out = [{"number": 9, "headRefName": args[args.index("--head") + 1]}]  # e.g. opened by a colleague
         else:
-            out = prs
+            out = mine
         return subprocess.CompletedProcess(args, 0, json.dumps(out), "")
 
     monkeypatch.setattr("agentmgr.gh.subprocess.run", run)
-    assert sorted(p["number"] for p in gh.fetch_prs(".", "ws-1-x", ["ws-1-"])) == [1, 2, 3]
-    assert len(calls) == 1 and calls[0][calls[0].index("--search") + 1] == "head:ws-1-"
-    calls.clear()
-    assert sorted(p["number"] for p in gh.fetch_prs(".", "custom", ["ws-1-"])) == [1, 2, 3, 9]
-    assert len(calls) == 2
+    assert sorted(p["number"] for p in gh.fetch_prs(".", "custom", ["ws-1-", "proj-1-"])) == [1, 2, 3, 9]
+    assert [c[c.index("--head") + 1] for c in calls if "--head" in c] == ["custom"]
+    assert [c[c.index("--search") + 1] for c in calls if "--search" in c] == [
+        "head:ws-1- author:@me", "head:proj-1- author:@me"]
 
 
 def _pr(number, head, state, merged_at=None, base="main", **kw):

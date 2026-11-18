@@ -19,6 +19,10 @@ class WorkstreamError(RuntimeError):
     pass
 
 
+class BranchOnOrigin(WorkstreamError):
+    """add_repo's generated branch name is already on origin and may not be this workstream's."""
+
+
 # ---------------------------------------------------------------------------- helpers
 
 
@@ -156,7 +160,15 @@ def new(ticket: str | None = None, name: str | None = None, repo_queries: list[s
         pending = [r.name for r in matched]
         if name:
             for r in matched:
-                add_repo(key, r.name, conn=conn, regenerate_files=False)
+                try:
+                    add_repo(key, r.name, conn=conn, regenerate_files=False)
+                except BranchOnOrigin as e:
+                    branch = naming.branch_name(key, ticket, name)
+                    raise WorkstreamError(
+                        f"branch {branch} already exists on origin in {r.name}, perhaps someone else's, so nothing was "
+                        f"created. Choose a different name, or create the workstream without {r.name} and continue "
+                        f"that branch with `wm add-repo <key> {r.name} --branch {branch}` if it is yours."
+                    ) from e
             pending = []
         regenerate(conn, ws, cfg, pending_repos=pending)
         if launch:
@@ -294,8 +306,13 @@ def add_repo(key: str, query: str, branch: str | None = None, allow_foreign_bran
             create_from, created = None, False
             notes.append(f"reusing existing local branch {branch}")
         elif branch in gitops.remote_branches(repo.path):
-            create_from, created = None, False
-            notes.append(f"tracking existing origin/{branch}")
+            # Maybe someone else's (another developer's wm hands out the same WS-<n> keys, or a colleague used the
+            # same ticket and name), maybe yours from another machine. Don't build on it unless the user decides to.
+            raise BranchOnOrigin(
+                f"branch {branch} already exists on origin in {repo.name}, perhaps someone else's. Ask the user: "
+                f"if it is theirs to continue, run `wm add-repo {key} {repo.name} --branch {branch}`; otherwise "
+                f"give the workstream a different name (`wm set {key} --name ...`) and add the repo again."
+            )
         else:
             create_from, created = base, True
 
