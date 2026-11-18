@@ -216,19 +216,32 @@ private struct SoloHeader: View {
     }
 }
 
-/// Opens the task map in the window's middle, or closes it.
+/// Beside the map, closes the panel (Esc), leaving the map; otherwise opens the task map in the window's middle.
 private struct MapToggle: View {
     @Environment(AppModel.self) private var model
 
     var body: some View {
-        @Bindable var model = model
-        Toggle(isOn: $model.mapOpen) {
-            Label("Map", systemImage: "map")
+        if model.mapOpen {
+            Button {
+                if model.showChanges { model.toggleChanges() }
+            } label: {
+                Label("Hide changes", systemImage: "xmark")
+            }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            // the hidden inspector keeps its views: without the condition, Esc would reopen it instead of closing the map
+            .keyboardShortcut(model.showChanges ? .cancelAction : nil)
+            .help("Hide the changes and go back to the map (Esc)")
+        } else {
+            Button {
+                model.mapOpen = true
+            } label: {
+                Label("Map", systemImage: "map")
+            }
+            .controlSize(.small)
+            .fixedSize()
+            .help("Show the workstream's task map beside its changes (⌥⌘M)")
         }
-        .toggleStyle(.button)
-        .controlSize(.small)
-        .fixedSize()
-        .help(model.mapOpen ? "Close the task map (Esc)" : "Show the workstream's task map beside its changes (⌥⌘M)")
     }
 }
 

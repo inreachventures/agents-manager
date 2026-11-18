@@ -180,8 +180,9 @@ it is **out of date**, and wm says why per repo: "acme-api: 2 new commits", "acm
 - **Where the map shows.** Not in the changes panel: at its usual width (about 520 points) a real map renders at a
   fifth of its size and can't be read (found on the first real drawing, of this feature's own branch). The map opens
   in the window's middle, in place of the session's terminal, the way canvas tools put the canvas in the main area and
-  details in a side pane. A Map toggle in the panel's header and in the toolbar, and View > Show Task Map (⌥⌘M), open
-  it; Close or Esc closes it. Open or closed is one app-wide state, not per workstream: switching workstream while it
+  details in a side pane. A Map button in the panel's header, a toolbar toggle and View > Show Task Map (⌥⌘M) open
+  it; Close or Esc closes it. While the panel is open beside the map, its header holds a close button instead, and Esc
+  closes the panel first (found in use: the panel's Map button read as the way to hide the diff, and turned the map off). Open or closed is one app-wide state, not per workstream: switching workstream while it
   is open shows that workstream's map. Opening it moves the changes panel aside (whether it was showing is
   remembered and restored on close, unless the Changes toggle is used while the map is open: that choice stands);
   it closes by itself when no workstream, or an archived one, is selected; the sidebar stays, so sessions' status stays in view. Not a separate window: the

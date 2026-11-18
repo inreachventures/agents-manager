@@ -146,11 +146,12 @@ struct MapPanel: View {
         .padding(.vertical, 6)
     }
 
-    /// Back to the session (Esc).
+    /// Back to the session. Esc too, unless the changes panel is open beside the map: then Esc closes that first.
     private var closeButton: some View {
         Button("Close") { model.mapOpen = false }
-            .keyboardShortcut(.cancelAction)
-            .help("Close the map and show the session again (Esc)")
+            .keyboardShortcut(model.showChanges ? nil : .cancelAction)
+            .help(model.showChanges ? "Close the map and show the session again"
+                                    : "Close the map and show the session again (Esc)")
     }
 
     private static let lensNames = ["architecture": "Architecture", "data-flow": "Data flow", "data-model": "Data model"]
