@@ -216,14 +216,17 @@ def on_post_tool_use(conn, ws: db.Workstream, payload: dict) -> None:
     _maybe_draw(conn, ws, payload)
 
 
-COMMIT_COMMAND = re.compile(r"\bgit\b.*\bcommit\b")
+# commands that can move a repo's head: only for these does a hook look at the heads (a command that merely mentions
+# one, like `git log --grep commit`, finds them unmoved and draws nothing)
+MOVES_HEAD = re.compile(r"\bgit\b.*\b(commit|merge|rebase|pull|cherry-pick|revert|reset|am)\b")
 
 
 def _maybe_draw(conn, ws: db.Workstream, payload: dict) -> None:
-    """After a commit that moved a repo's head past what was last drawn: the drawing in progress, else the last one
-    started (which may have failed: a command that merely looks like a commit must not retry it), else the map."""
+    """After a commit (or merge, rebase, pull...) that moved a repo's head past what was last drawn: the drawing in
+    progress, else the last one started (which may have failed: a command that merely looks like a commit must not
+    retry it), else the map."""
     try:
-        if not COMMIT_COMMAND.search((payload.get("tool_input") or {}).get("command") or ""):
+        if not MOVES_HEAD.search((payload.get("tool_input") or {}).get("command") or ""):
             return
         from . import taskmap  # here, not at the top: it pulls in the workstream and diff modules
 

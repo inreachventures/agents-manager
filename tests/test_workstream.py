@@ -46,6 +46,12 @@ def test_memory_is_shared_across_workstreams(env, monkeypatch):
     assert "## Memory" in (ws.path / "CLAUDE.md").read_text()
 
 
+def test_claude_md_points_the_session_at_the_task_map(env):
+    md = (ws_mod.new(launch=False, name="x y", repo_queries=["web"]).path / "CLAUDE.md").read_text()
+    assert "## Task map" in md
+    assert "`.wm/map/map.json`" in md and "Never edit anything in `.wm/map/`." in md
+
+
 def test_no_session_starts_without_claude_code(env, monkeypatch):
     from agentmgr import config, server, tmux
 

@@ -272,6 +272,16 @@ def test_commit_starts_drawing(env, monkeypatch, capsys):
     assert calls == [ws.key]
 
 
+@pytest.mark.parametrize("command", ["git merge origin/main", "git rebase origin/main", "git pull --rebase",
+                                     "git cherry-pick abc123", "git revert HEAD", "git reset --hard HEAD~1"])
+def test_other_head_moving_commands_start_drawing(env, monkeypatch, capsys, command):
+    ws, base, calls, wt = _draw_env(env, monkeypatch)
+    _commit(wt, "a.txt")  # the head moved, as the command would have moved it
+    payload = {**base, "tool_name": "Bash", "tool_input": {"command": command}}
+    assert run_hook(monkeypatch, capsys, "PostToolUse", payload) == ""
+    assert calls == [ws.key]
+
+
 def test_commit_from_subagent_payload_starts_drawing(env, monkeypatch, capsys):
     ws, base, calls, wt = _draw_env(env, monkeypatch)
     _commit(wt, "a.txt")

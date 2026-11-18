@@ -157,14 +157,20 @@ costs at most two drawings, and the last one sees the final state.
 
 ### When it gets drawn
 
-- **After each commit.** `on_post_tool_use`, on a Bash call that ran `git commit` and moved HEAD in one of the
-  workstream's worktrees, calls `start_drawing`. "Moved" is against the drawing in progress, else the heads the last
+- **After each commit.** `on_post_tool_use`, on a Bash call that ran a git command that can move HEAD (`commit`,
+  `merge`, `rebase`, `pull`, `cherry-pick`, `revert`, `reset`, `am`) and did move it in one of the workstream's
+  worktrees, calls `start_drawing`. Commits, merges and the rest made outside Claude don't trigger it: the map shows
+  as out of date until Redraw. "Moved" is against the drawing in progress, else the heads the last
   drawing started from (`.wm/map/attempted.json`, kept even when it failed, so a command that only looks like a commit
   doesn't retry it), else the map. It emits nothing back to Claude. It fires the same way whether the main session or
   one of its subagents committed.
 - **Redraw button.** `rpc_redraw_map` calls `start_drawing`. Available whenever the workstream is not archived,
   including while Claude is working and when the session is stopped; disabled while a drawing is in progress.
-- The session is never told about the map. Its `CLAUDE.md` does not change.
+- The session is told only where the map is: a short "Task map" section in its `CLAUDE.md` says what
+  `.wm/map/map.json` holds, to read it for an overview (after a resume, before writing a PR description), that it may
+  be out of date or wrong so the code is the authority, and never to edit `.wm/map/`. It is never asked to draw or
+  redraw: drawing stays out of the session. (A whole-codebase map was considered and left out: PR Lens is built around
+  a change, a whole repo can't be read in the time limit, and such a map would belong to the repo, not a workstream.)
 
 ### Freshness
 
