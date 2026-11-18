@@ -1,8 +1,9 @@
 // The task map page: the app hands it a PR Lens graph document with show(), and it draws it with PrLens.render,
 // narrowed to one repo when the repo chip picks one, with pan (drag or scroll) and zoom (pinch or ⌘-scroll).
 // Messages to the app go through webkit.messageHandlers.wm: {type: "error", message} when the document can't be
-// drawn, {type: "rendered"} when it was, and {type: "open", node, files: [{path, startLine?}], x, y} when a card
-// with changed files is clicked (x, y: the click in the page's view).
+// drawn, {type: "rendered"} when it was, {type: "open", node, files: [{path, startLine?}], x, y} when a card
+// with changed files is clicked (x, y: the click in the page's view), and {type: "background"} for a click anywhere
+// else (the app closes the changes panel then).
 (function () {
   "use strict";
 
@@ -354,6 +355,8 @@
       var rect = viewport.getBoundingClientRect();
       post({ type: "open", node: card.id, files: card.files, x: event.clientX - rect.left,
              y: event.clientY - rect.top });
+    } else {
+      post({ type: "background" });
     }
   }
   viewport.addEventListener("pointerup", endDrag);

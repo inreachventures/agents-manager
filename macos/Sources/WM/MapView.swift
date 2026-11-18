@@ -58,7 +58,8 @@ struct MapPanel: View {
                     MapWebView(doc: doc, lens: shownLens(map), theme: colorScheme == .dark ? "dark" : "light",
                                repo: repo, changed: changed,
                                onError: { error in pageError = error },
-                               onOpen: { files, point in model.openFromMap(files, at: point) })
+                               onOpen: { files, point in model.openFromMap(files, at: point) },
+                               onBackground: { model.hideChanges() })
                     if let pageError {
                         ContentUnavailableView {
                             Label("Can't draw this map", systemImage: "exclamationmark.triangle")
@@ -201,6 +202,7 @@ struct MapWebView: NSViewRepresentable {
     var changed: [String]
     var onError: (String?) -> Void  // the page's error, nil once it draws
     var onOpen: ([MapFile], CGPoint) -> Void  // a card clicked: its changed files, and the click (screen coordinates)
+    var onBackground: () -> Void  // a click anywhere but on a card that opens something
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
@@ -218,6 +220,7 @@ struct MapWebView: NSViewRepresentable {
     func updateNSView(_ web: WKWebView, context: Context) {
         context.coordinator.onError = onError
         context.coordinator.onOpen = onOpen
+        context.coordinator.onBackground = onBackground
         context.coordinator.update(Shown(doc: doc, lens: lens, theme: theme, repo: repo, changed: changed))
     }
 
@@ -238,6 +241,7 @@ struct MapWebView: NSViewRepresentable {
         weak var webView: WKWebView?
         var onError: ((String?) -> Void)?
         var onOpen: (([MapFile], CGPoint) -> Void)?
+        var onBackground: (() -> Void)?
         private var page: URL?
         private var loaded = false
         private var wanted: Shown?
@@ -300,6 +304,7 @@ struct MapWebView: NSViewRepresentable {
             case "error": report(body["message"] as? String ?? "The map page failed.")
             case "rendered": report(nil)
             case "open": open(body)
+            case "background": onBackground?()
             default: break
             }
         }

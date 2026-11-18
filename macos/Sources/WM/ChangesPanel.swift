@@ -223,7 +223,7 @@ private struct MapToggle: View {
     var body: some View {
         if model.mapOpen {
             Button {
-                if model.showChanges { model.toggleChanges() }
+                model.hideChanges()
             } label: {
                 Label("Hide changes", systemImage: "xmark")
             }

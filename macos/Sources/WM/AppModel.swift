@@ -168,6 +168,11 @@ final class AppModel {
         }
     }
 
+    /// Closes the changes panel, as the Changes toggle would (beside the map: its close, Esc, a click off the cards).
+    func hideChanges() {
+        if showChanges { toggleChanges() }
+    }
+
     /// The map is only ever open on a workstream it can show: with none selected, or an archived one, it closes, so it
     /// isn't left open (and the panel hidden) with no Close on screen.
     private func closeMapIfNothingToShow() {
