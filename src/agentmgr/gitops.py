@@ -167,21 +167,37 @@ def count_commits(worktree: Path, rng: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
-def count_outside(worktree: Path, *exclude: str, remotes: bool = False) -> int:
-    """Commits on HEAD reachable from none of `exclude` (refs or shas; unknown ones are skipped), nor from any remote
-    branch if `remotes`."""
+def count_outside(worktree: Path, *exclude: str, remotes: bool = False) -> int | None:
+    """Commits on HEAD reachable from none of `exclude` (refs or shas; unknown ones are skipped), nor from any branch
+    on origin if `remotes`. None if git can't tell (a damaged repository), so callers can stay on the safe side."""
     out = git(worktree, "rev-list", "--count", "--ignore-missing", "HEAD", "--not", *exclude,
-              *(["--remotes"] if remotes else []), check=False)
-    return int(out) if out.isdigit() else 0
+              *(["--remotes=origin"] if remotes else []), check=False)
+    return int(out) if out.isdigit() else None
 
 
 def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
     """Commits on HEAD that are in neither `base` nor any of the PRs whose heads are `pr_heads`: work no PR carries.
     The usual squash-merge flow keeps this at 0 even after rebasing the branch onto base and pushing the next chunk
-    under a new name, because each PR's head is excluded. 0 too if every change on the branch is in base anyway
-    (in_base), e.g. a commit cherry-picked or merged through someone else's PR."""
-    n = count_outside(worktree, base, *pr_heads)
-    return 0 if n and in_base(worktree, base) else n
+    under a new name, because each PR's head is excluded.
+
+    Also 0 when those commits, replayed onto base, change nothing: their changes reached base another way (a
+    cherry-pick, someone else's PR). Only those commits are replayed, from the parent of the oldest. in_base, which
+    merges the whole branch from its fork point, would count a commit that undoes part of an already merged PR (say,
+    removing a file the PR added) as in base, since it only puts back the fork point's state. If the commits aren't
+    a simple line (a merge among them), they're counted as they are. Raises GitError if git can't list them."""
+    rows = [line.split() for line in git(worktree, "rev-list", "--parents", "--ignore-missing", "HEAD", "--not", base,
+                                         *pr_heads).splitlines()]  # newest first: sha, parents
+    if not rows:
+        return 0
+    linear = all(len(r) == 2 for r in rows) and all(rows[i][1] == rows[i + 1][0] for i in range(len(rows) - 1))
+    if not linear:
+        return len(rows)
+    try:
+        tree = git(worktree, "merge-tree", "--write-tree", f"--merge-base={rows[-1][1]}", base,
+                   "HEAD").partition("\n")[0]
+    except GitError:  # conflicts: they change something base doesn't have (or git is older than 2.40)
+        return len(rows)
+    return 0 if tree == git(worktree, "rev-parse", f"{base}^{{tree}}", check=False) else len(rows)
 
 
 def left_right(worktree: Path, ref: str) -> tuple[int, int] | None:
@@ -218,7 +234,8 @@ def status(worktree: Path, base: str) -> Status:
     behind, ahead = left_right(worktree, base) or (0, 0)
     unpushed = ahead if unpushed is None else unpushed
     if unpushed:  # maybe pushed under another name: the branch re-cut for its next PR, the top of a stack
-        unpushed = min(unpushed, count_outside(worktree, base, remotes=True))
+        on_no_remote = count_outside(worktree, base, remotes=True)
+        unpushed = unpushed if on_no_remote is None else min(unpushed, on_no_remote)
     return Status(
         branch=branch,
         dirty=dirty,
@@ -303,7 +320,9 @@ def fingerprint(worktree: Path, refs: list[str]) -> tuple | None:
     common = common_dir(gd)
     paths = [gd / "HEAD", gd / "index", gd / "logs" / "HEAD", *(gd / marker for marker, _ in OPERATIONS),
              common / "packed-refs", common / "config", common / "reftable" / "tables.list",
-             common / "refs" / "remotes" / "origin",  # a branch pushed or fetched under a new name (Status.unpushed)
+             # a branch pushed or fetched under a new name (Status.unpushed); a later push to a nested name (a/b) only
+             # touches its subfolder, and shows within the dashboards' max_age
+             common / "refs" / "remotes" / "origin",
              *(common / ref for ref in refs)]
     return tuple(_stamp(p) for p in paths)
 

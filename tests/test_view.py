@@ -314,6 +314,28 @@ def test_changes_in_base_count_as_landed_after_a_merge(env, monkeypatch):
     assert ws_mod.cleanup_report(ws.key, refresh_prs=False)[1][0].blockers == []
 
 
+def test_a_follow_up_that_undoes_part_of_the_merged_pr_is_not_landed(env, monkeypatch):
+    """Removing a file the merged PR added, without rebasing first: the whole branch merged into main changes nothing
+    (the removal only puts back the fork point's state), but main still has the file, so the commit must block."""
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-13", name="undo part", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    for name in ("feat.txt", "debug.sh"):
+        (wt / name).write_text(name)
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-13 feature")
+    sh(wt, "git", "push", "-q", "origin", "HEAD")
+    _set_pr(ws.key, "acme-web", "merged", sh(wt, "git", "rev-parse", "HEAD"))
+    _squash_merge(env, "proj-13-undo-part", "PROJ-13 feature (#5)")
+    sh(wt, "git", "fetch", "-q", "--prune", "origin")
+    sh(wt, "git", "rm", "-q", "debug.sh")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-13 drop the debug script")
+    assert gitops.in_base(wt, "origin/main")  # why the whole-branch check can't decide this
+    assert _row(ws.key).repos[0].git == "merged · 1 commit not in PR"
+    with pytest.raises(WorkstreamError, match="1 commit\\(s\\) made after PR #5 was merged"):
+        ws_mod.archive(ws.key)
+
+
 def test_conflicting_branch_is_not_in_base(env):
     ws = ws_mod.new(launch=False, ticket="PROJ-8", name="clash", repo_queries=["web"])
     wt = ws.path / "acme-web"
@@ -372,3 +394,9 @@ def test_dashboards_reuse_git_reads_until_git_files_change(env, monkeypatch):
     sh(wt, "git", "push", "-q", "origin", "HEAD")
     sh(wt, "git", "fetch", "-q", "origin")
     assert git() == "✎ 1 uncommitted" and calls  # the remote branch appeared: read again
+    (wt / "g.txt").unlink()
+    db.set_status(db.connect(), ws.key, db.WORKING)
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "PROJ-9 more")
+    assert git() == "↑ needs push (1)"
+    sh(wt, "git", "push", "-q", "origin", "HEAD:proj-9-part-2")  # pushed under another name: shows at once
+    assert git() == "pushed · PR ?" and calls

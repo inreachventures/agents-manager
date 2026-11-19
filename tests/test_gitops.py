@@ -89,3 +89,26 @@ def test_one_database_connection_per_thread(env):
     assert db.connect(env.root / "other.db") is not conn  # another database: the thread's old one is closed
     with pytest.raises(Exception, match="closed"):
         conn.execute("SELECT 1")
+
+
+def test_not_landed_replays_only_the_commits_no_pr_carries(env):
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "feat")
+    for name in ("feat.txt", "debug.sh"):
+        (wt / name).write_text(name)
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "pr")
+    pr_head = sh(wt, "git", "rev-parse", "HEAD")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:main")  # landed (a fast-forward stands in for the squash)
+    sh(wt, "git", "fetch", "-q", "origin")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0
+    sh(wt, "git", "rm", "-q", "debug.sh")
+    sh(wt, "git", "commit", "-q", "-m", "drop debug")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 1  # main still has debug.sh
+
+    # a merge among them: counted as is, without replaying
+    sh(wt, "git", "switch", "-q", "-c", "side", "HEAD~")
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "side")
+    sh(wt, "git", "switch", "-q", "feat")
+    sh(wt, "git", "merge", "-q", "--no-edit", "side")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3
