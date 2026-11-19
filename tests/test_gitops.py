@@ -157,3 +157,35 @@ def test_not_landed_matches_a_pr_squashed_locally(env):
     sh(wt, "git", "add", ".")
     sh(wt, "git", "commit", "-q", "-m", "more")
     assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3  # the whole run no longer matches
+
+
+def _commit(wt, name, content: bytes, message):
+    (wt / name).write_bytes(content)
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", message)
+    return sh(wt, "git", "rev-parse", "HEAD")
+
+
+def test_not_landed_tells_a_whitespace_fix_from_the_pr_commit(env):
+    """Dedenting a line is a different change, though git patch-id's default ignores whitespace."""
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "pr")
+    pr_head = _commit(wt, "f.py", b"if x:\n    save()\n", "save")
+    sh(wt, "git", "switch", "-q", "-c", "local", "origin/main")
+    _commit(wt, "f.py", b"if x:\n    pass\nsave()\n", "save, always")
+    sh(wt, "git", "switch", "-q", "-c", "local-2", "origin/main")
+    _commit(wt, "f.py", b"if x:\nsave()\n", "save, dedented")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 1
+
+
+def test_not_landed_with_a_pr_head_never_fetched_and_non_utf8_files(env):
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "local")
+    _commit(wt, "menu.csv", b"caf\xe9\n", "latin-1 menu")
+    missing = "f" * 40  # a commit made on GitHub that this clone never fetched
+    assert gitops.not_landed(wt, "origin/main", [missing]) == 1
+    assert gitops.not_landed(wt, "origin/main", []) == 1
+    sh(wt, "git", "switch", "-q", "-c", "pr", "origin/main")
+    pr_head = _commit(wt, "menu.csv", b"caf\xe9\n", "same menu, for a PR")
+    sh(wt, "git", "switch", "-q", "local")
+    assert gitops.not_landed(wt, "origin/main", [missing, pr_head]) == 0

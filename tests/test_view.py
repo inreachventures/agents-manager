@@ -333,7 +333,6 @@ def test_a_follow_up_that_undoes_part_of_the_merged_pr_is_not_landed(env, monkey
     sh(wt, "git", "fetch", "-q", "--prune", "origin")
     sh(wt, "git", "rm", "-q", "debug.sh")
     sh(wt, "git", "commit", "-q", "-m", "PROJ-13 drop the debug script")
-    assert gitops.in_base(wt, "origin/main")  # why the whole-branch check can't decide this
     assert _row(ws.key).repos[0].git == "merged · 1 commit not in PR"
     with pytest.raises(WorkstreamError, match="1 commit\\(s\\) made after PR #5 was merged"):
         ws_mod.archive(ws.key)
@@ -359,7 +358,6 @@ def test_a_follow_up_that_undoes_part_of_work_landed_from_another_branch_is_not_
     sh(wt, "git", "fetch", "-q", "--prune", "origin")
     sh(wt, "git", "rm", "-q", "debug.sh")
     sh(wt, "git", "commit", "-q", "-m", "PROJ-14 drop the debug script")
-    assert gitops.in_base(wt, "origin/main")  # the whole-branch check is fooled
     assert _row(ws.key).repos[0].git.startswith("↑ needs push (2)")  # the feature commit's branch is gone
     with pytest.raises(WorkstreamError, match="unpushed"):
         ws_mod.archive(ws.key)
@@ -376,9 +374,9 @@ def test_conflicting_branch_is_not_in_base(env):
     sh(other, "git", "commit", "-q", "-am", "theirs")
     sh(other, "git", "push", "-q", "origin", "HEAD:main")
     sh(wt, "git", "fetch", "-q", "origin")
-    assert not gitops.in_base(wt, "origin/main")
+    assert gitops.not_landed(wt, "origin/main", []) == 1
     sh(wt, "git", "reset", "-q", "--hard", "origin/main")
-    assert gitops.in_base(wt, "origin/main")  # nothing of its own: trivially in base
+    assert gitops.not_landed(wt, "origin/main", []) == 0  # nothing of its own: trivially in base
 
 
 def test_old_database_gets_new_pr_columns(env):

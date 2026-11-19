@@ -604,7 +604,9 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
     ws = require(conn, key)
     if ws.status in (db.WORKING, db.NEEDS_YOU) and session_alive(ws):
         raise WorkstreamError(f"Claude is in the middle of a task in {ws.key}; rebase when it's your turn")
-    prs = db.get_prs(conn, ws.key)
+    from . import gh
+
+    prs, branch_prs = db.get_prs(conn, ws.key), db.get_branch_prs(conn, ws.key)
     steps = []
     for link in db.list_repos(conn, ws.key):
         wt, remote = Path(link.worktree_path), f"origin/{link.branch}"
@@ -633,7 +635,8 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
             skip = f"{st.dirty} uncommitted change(s)"
         elif not_pulled:
             skip = f"{not_pulled} commit(s) on {remote} that aren't local"
-        elif st.ahead_of_base and gitops.in_base(wt, link.base):
+        elif st.ahead_of_base and not gitops.not_landed(wt, link.base, gh.repo_prs(
+                link, pr, branch_prs.get(link.repo, [])).landed_heads()):
             skip = f"its changes are already in {link.base}"
         else:
             skip = None

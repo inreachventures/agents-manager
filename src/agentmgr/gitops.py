@@ -175,27 +175,54 @@ def count_outside(worktree: Path, *exclude: str, remotes: bool = False) -> int |
     return int(out) if out.isdigit() else None
 
 
-def _patch_ids(worktree: Path, *log_args: str) -> dict[str, str]:
-    """Commit sha -> patch id (git patch-id --stable) of the commits `git log` selects with `log_args`. The same
-    change has the same id whatever commit it sits on top of. Merges and empty commits have none."""
-    log = git(worktree, "log", "-p", "--no-color", "--no-ext-diff", *log_args)
-    if not log:
-        return {}
-    proc = subprocess.run(["git", "-C", str(worktree), "patch-id", "--stable"], input=log + "\n", capture_output=True,
-                          text=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+def _raw(worktree: Path, *args: str, stdin: bytes | None = None) -> bytes:
+    """git's stdout as bytes, unstripped: diffs carry file contents in any encoding, and a trailing blank context line
+    is part of the patch."""
+    proc = subprocess.run(["git", "-C", str(worktree), *args], input=stdin, capture_output=True,
+                          env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
     if proc.returncode != 0:
-        raise GitError(f"git patch-id failed in {worktree}: {proc.stderr.strip()}")
-    return {sha: pid for pid, sha in (line.split() for line in proc.stdout.splitlines() if line.strip())}
+        raise GitError(f"git {' '.join(args)} failed in {worktree}: {proc.stderr.decode(errors='replace').strip()}")
+    return proc.stdout
+
+
+# Patches compared byte for byte: --verbatim, because patch-id's default drops whitespace, which would make a fix to
+# Python indentation "the same change" as the code it fixes; no textconv or external diff, full binary content.
+PATCH_FLAGS = ("-p", "--no-color", "--no-ext-diff", "--no-textconv", "--binary", "--full-index")
+
+
+def _patch_id_lines(worktree: Path, patch: bytes) -> list[tuple[str, str]]:
+    """(patch id, commit sha) per patch in `patch` (all-zero sha for a plain diff)."""
+    if not patch:
+        return []
+    out = _raw(worktree, "patch-id", "--verbatim", stdin=patch).decode("ascii")
+    return [(pid, sha) for pid, sha in (line.split() for line in out.splitlines() if line.strip())]
+
+
+def _patch_ids(worktree: Path, *log_args: str) -> dict[str, str]:
+    """Commit sha -> patch id of the commits `git log` selects with `log_args`: the same change has the same id
+    whatever commit it sits on top of. Merges and empty commits have none."""
+    return {sha: pid for pid, sha in _patch_id_lines(worktree, _raw(worktree, "log", *PATCH_FLAGS, *log_args))}
+
+
+_pr_diff_ids: dict[tuple[str, str, str], str | None] = {}  # (worktree, base, PR head) -> _diff_id of base...head
 
 
 def _diff_id(worktree: Path, *diff_args: str) -> str | None:
     """Patch id of `git diff <diff_args>`; None for an empty diff."""
-    diff = git(worktree, "diff", "-p", "--no-color", "--no-ext-diff", *diff_args)
-    if not diff:
-        return None
-    proc = subprocess.run(["git", "-C", str(worktree), "patch-id", "--stable"], input=diff + "\n", capture_output=True,
-                          text=True, env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
-    return proc.stdout.split()[0] if proc.returncode == 0 and proc.stdout.strip() else None
+    lines = _patch_id_lines(worktree, _raw(worktree, "diff", *PATCH_FLAGS, *diff_args))
+    return lines[0][0] if lines else None
+
+
+def _pr_diff_id(worktree: Path, base: str, head: str) -> str | None:
+    """Patch id of a PR's whole change (from where it left base); None if empty or the head isn't here (a commit
+    made on GitHub and never fetched). Kept per head: a PR's fork point doesn't move until it is merged in."""
+    key = (str(worktree), base, head)
+    if key not in _pr_diff_ids:
+        try:
+            _pr_diff_ids[key] = _diff_id(worktree, f"{base}...{head}")
+        except GitError:
+            return None  # not cached: the head may be fetched later
+    return _pr_diff_ids[key]
 
 
 def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
@@ -203,12 +230,13 @@ def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
     The usual squash-merge flow keeps this at 0 even after rebasing the branch onto base and pushing the next chunk
     under a new name, because each PR's head is excluded. A commit that makes the same change as one of the PRs'
     commits counts as carried too (same patch id): the same work pushed for a PR from another base. So do commits
-    that, together, make the same change as a whole PR (one squashed locally).
+    that, together, make the same change as a whole PR (one squashed locally). Patches are compared byte for byte
+    (PATCH_FLAGS). Such a commit is in the PR's history on GitHub, even if a later commit of the PR undid it.
 
     Also 0 when the branch's commits outside base and those PRs, replayed onto base from the parent of the oldest,
     change nothing: their changes reached base another way (a cherry-pick, someone else's PR). Only those commits
-    are replayed. in_base, which merges the whole branch from its fork point, would count a commit that undoes part
-    of already merged work (say, removing a file a PR added) as in base, since it only puts back the fork point's
+    are replayed. Merging the whole branch from its fork point instead would count a commit that undoes part of
+    already merged work (say, removing a file a PR added) as in base, since it only puts back the fork point's
     state. If those commits aren't a simple line (a merge among them), they're counted as they are. Raises GitError
     if git can't list them."""
     rows = [line.split() for line in git(worktree, "rev-list", "--parents", "--ignore-missing", "HEAD", "--not", base,
@@ -224,9 +252,9 @@ def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
     linear = all(len(r) == 2 for r in rows) and all(rows[i][1] == rows[i + 1][0] for i in range(len(rows) - 1))
     if not linear:
         return uncarried
-    whole = _diff_id(worktree, rows[-1][1], "HEAD")  # a PR squashed locally into fewer commits: its whole change
-    if whole and any(_diff_id(worktree, f"{base}...{head}") == whole for head in pr_heads):
-        return 0
+    if pr_heads and (whole := _diff_id(worktree, rows[-1][1], "HEAD")):  # a PR squashed locally: its whole change
+        if any(_pr_diff_id(worktree, base, head) == whole for head in pr_heads):
+            return 0
     try:
         tree = git(worktree, "merge-tree", "--write-tree", f"--merge-base={rows[-1][1]}", base,
                    "HEAD").partition("\n")[0]
@@ -279,16 +307,6 @@ def status(worktree: Path, base: str) -> Status:
         upstream=upstream,
         unpushed=unpushed,
     )
-
-
-def in_base(worktree: Path, base: str) -> bool:
-    """True if merging HEAD into base would change nothing: every change on the branch already reached base, however
-    it got there (a regular or squash merge, a cherry-pick, a PR from another branch, e.g. the last of a stack)."""
-    try:
-        tree = git(worktree, "merge-tree", "--write-tree", base, "HEAD").partition("\n")[0]
-    except GitError:  # conflicts, or git older than 2.38
-        return False
-    return tree == git(worktree, "rev-parse", f"{base}^{{tree}}", check=False)
 
 
 def remote_url(repo: Path) -> str | None:
