@@ -144,7 +144,7 @@ class Status:
     ahead_of_base: int  # commits on branch not in base
     behind_base: int
     upstream: str | None
-    unpushed: int  # commits not in upstream (== ahead_of_base when there is no upstream)
+    unpushed: int  # commits on no remote branch and not in base: a push under any name counts
 
     @property
     def clean(self) -> bool:
@@ -167,6 +167,23 @@ def count_commits(worktree: Path, rng: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
+def count_outside(worktree: Path, *exclude: str, remotes: bool = False) -> int:
+    """Commits on HEAD reachable from none of `exclude` (refs or shas; unknown ones are skipped), nor from any remote
+    branch if `remotes`."""
+    out = git(worktree, "rev-list", "--count", "--ignore-missing", "HEAD", "--not", *exclude,
+              *(["--remotes"] if remotes else []), check=False)
+    return int(out) if out.isdigit() else 0
+
+
+def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
+    """Commits on HEAD that are in neither `base` nor any of the PRs whose heads are `pr_heads`: work no PR carries.
+    The usual squash-merge flow keeps this at 0 even after rebasing the branch onto base and pushing the next chunk
+    under a new name, because each PR's head is excluded. 0 too if every change on the branch is in base anyway
+    (in_base), e.g. a commit cherry-picked or merged through someone else's PR."""
+    n = count_outside(worktree, base, *pr_heads)
+    return 0 if n and in_base(worktree, base) else n
+
+
 def left_right(worktree: Path, ref: str) -> tuple[int, int] | None:
     """(commits on `ref` not on HEAD, commits on HEAD not on `ref`) in one git call; None if `ref` is unknown."""
     counts = git(worktree, "rev-list", "--left-right", "--count", f"{ref}...HEAD", "--", check=False).split()
@@ -175,7 +192,8 @@ def left_right(worktree: Path, ref: str) -> tuple[int, int] | None:
 
 def status(worktree: Path, base: str) -> Status:
     """Two git calls in the usual case (the dashboard runs this for every repo every few seconds): `git status`
-    gives the branch, the changes and how far HEAD is from an upstream that still exists, one rev-list the rest."""
+    gives the branch, the changes and how far HEAD is from an upstream that still exists, one rev-list the rest.
+    A third only when HEAD is ahead of that upstream, to see whether those commits are on another remote branch."""
     branch, upstream, unpushed, dirty = None, None, None, 0
     for line in git(worktree, "status", "--porcelain=v2", "--branch").splitlines():
         if line.startswith("# branch.head "):
@@ -198,13 +216,16 @@ def status(worktree: Path, base: str) -> Status:
                 upstream, unpushed = candidate, counts[1]
                 break
     behind, ahead = left_right(worktree, base) or (0, 0)
+    unpushed = ahead if unpushed is None else unpushed
+    if unpushed:  # maybe pushed under another name: the branch re-cut for its next PR, the top of a stack
+        unpushed = min(unpushed, count_outside(worktree, base, remotes=True))
     return Status(
         branch=branch,
         dirty=dirty,
         ahead_of_base=ahead,
         behind_base=behind,
         upstream=upstream,
-        unpushed=ahead if unpushed is None else unpushed,
+        unpushed=unpushed,
     )
 
 
@@ -282,6 +303,7 @@ def fingerprint(worktree: Path, refs: list[str]) -> tuple | None:
     common = common_dir(gd)
     paths = [gd / "HEAD", gd / "index", gd / "logs" / "HEAD", *(gd / marker for marker, _ in OPERATIONS),
              common / "packed-refs", common / "config", common / "reftable" / "tables.list",
+             common / "refs" / "remotes" / "origin",  # a branch pushed or fetched under a new name (Status.unpushed)
              *(common / ref for ref in refs)]
     return tuple(_stamp(p) for p in paths)
 

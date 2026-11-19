@@ -369,7 +369,8 @@ class Server:
         ws, reports = workstream.cleanup_report(key)
         repos = []
         for r in reports:
-            label, style = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
+            label, style = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.in_base,
+                                          others=r.others)
             repos.append({"repo": r.link.repo, "branch": r.link.branch, "state": label,
                           "tone": TONES.get(style, ""), "pr": r.describe_prs(), "blockers": r.blockers})
         return {"label": ws.label, "repos": repos, "blocked": any(r.blockers for r in reports)}

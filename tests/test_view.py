@@ -1,3 +1,5 @@
+import io
+import json
 import sqlite3
 from dataclasses import replace
 
@@ -218,6 +220,98 @@ def test_landed_through_other_branches(env, monkeypatch):
     sh(wt, "git", "commit", "-q", "-m", "PROJ-9 more")
     row = _row(ws.key)
     assert row.repos[0].git == "↑ needs push (2)" and not row.all_merged
+
+
+def _squash_merge(env, branch, message, *, colleague=None):
+    """Squash-merge origin/<branch> into main on origin (after a colleague's commit, if given) and delete the branch,
+    as GitHub does."""
+    other = env.root / "other"
+    if not other.exists():
+        sh(env.root, "git", "clone", "-q", str(env.origins / "acme-web.git"), str(other))
+    sh(other, "git", "fetch", "-q", "origin")
+    sh(other, "git", "reset", "-q", "--hard", "origin/main")
+    if colleague:
+        (other / colleague).write_text(colleague)
+        sh(other, "git", "add", ".")
+        sh(other, "git", "commit", "-q", "-m", f"someone else: {colleague}")
+    sh(other, "git", "merge", "-q", "--squash", f"origin/{branch}")
+    sh(other, "git", "commit", "-q", "-m", message)
+    sh(other, "git", "push", "-q", "origin", "HEAD:main", f":{branch}")
+
+
+def test_rebased_after_each_merge_and_recut_for_the_next_pr(env, monkeypatch):
+    """The usual shape of a long workstream: its first PR squash-merged, the branch rebased onto main, the next chunk
+    pushed under a new name for its own PR, and so on. Nothing is unpushed or unlanded once the last PR is merged."""
+    from agentmgr import server
+
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-11", name="recut", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    (wt / "f.txt").write_text("f")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-11 first")
+    sh(wt, "git", "push", "-q", "origin", "HEAD")
+    first = sh(wt, "git", "rev-parse", "HEAD")
+    _squash_merge(env, "proj-11-recut", "PROJ-11 first (#5)", colleague="c1.txt")
+    _set_pr(ws.key, "acme-web", "merged", first)
+    _set_branch_prs(ws.key, "acme-web", (5, "proj-11-recut", "merged", "pass"))
+    sh(wt, "git", "fetch", "-q", "--prune", "origin")
+    assert _row(ws.key).repos[0].git == "✓ merged"
+
+    # rebase onto main (the first commit is dropped: its change is there), then the next chunk under a new name
+    sh(wt, "git", "rebase", "-q", "origin/main")
+    (wt / "g.txt").write_text("g")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-11 second")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:proj-11-part-2")
+    second = sh(wt, "git", "rev-parse", "HEAD")
+    # pushed, but no PR yet: one commit (not main's squash of #5 and the colleague's) is in no PR
+    assert _row(ws.key).repos[0].git == "merged · 1 commit not in PR"
+    srv = server.Server(io.StringIO())
+    srv.call(json.dumps({"id": 1, "method": "archive_report", "params": {"key": ws.key}}))
+    [repo] = json.loads(srv.out.getvalue())["result"]["repos"]
+    assert repo["state"] == "merged · 1 commit not in PR"  # not "⚠ 1 in progress"
+    assert repo["blockers"] == ["1 commit(s) made after PR #5 was merged"]
+
+    # its PR opens: what's next is that PR, not a push
+    db.set_branch_prs(db.connect(), ws.key, "acme-web", [
+        db.PR(ws.key, "acme-web", 5, "merged", False, None, "pass", "u5", 0, head_sha=first, head="proj-11-recut",
+              base="main", merged_at=5),
+        db.PR(ws.key, "acme-web", 6, "open", False, None, "pending", "u6", 0, head_sha=second,
+              head="proj-11-part-2", base="main")])
+    assert _row(ws.key).repos[0].git == "… CI running"
+
+    # and merges, after another colleague's commit
+    _squash_merge(env, "proj-11-part-2", "PROJ-11 second (#6)", colleague="c2.txt")
+    db.set_branch_prs(db.connect(), ws.key, "acme-web", [
+        db.PR(ws.key, "acme-web", 5, "merged", False, None, None, "u5", 0, head_sha=first, head="proj-11-recut",
+              base="main", merged_at=5),
+        db.PR(ws.key, "acme-web", 6, "merged", False, None, "pass", "u6", 0, head_sha=second,
+              head="proj-11-part-2", base="main", merged_at=6)])
+    sh(wt, "git", "fetch", "-q", "--prune", "origin")
+    row = _row(ws.key)
+    assert row.repos[0].git == "✓ merged" and row.all_merged
+    _, [report] = ws_mod.cleanup_report(ws.key, refresh_prs=False)
+    assert (report.after_pr, report.blockers) == (0, [])
+    ws_mod.archive(ws.key)
+
+
+def test_changes_in_base_count_as_landed_after_a_merge(env, monkeypatch):
+    """A commit after the merged PR whose change reached main another way (a colleague's PR, a cherry-pick)."""
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-12", name="landed anyway", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "PROJ-12 first")
+    _set_pr(ws.key, "acme-web", "merged", sh(wt, "git", "rev-parse", "HEAD"))
+    (wt / "f.txt").write_text("f")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-12 follow-up")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:proj-12-elsewhere")
+    assert _row(ws.key).repos[0].git == "merged · 1 commit not in PR"
+    _squash_merge(env, "proj-12-elsewhere", "follow-up (#9)")
+    sh(wt, "git", "fetch", "-q", "--prune", "origin")
+    assert _row(ws.key).repos[0].git == "✓ merged"
+    assert ws_mod.cleanup_report(ws.key, refresh_prs=False)[1][0].blockers == []
 
 
 def test_conflicting_branch_is_not_in_base(env):

@@ -37,7 +37,13 @@ def test_status_against_base_and_upstream(env):
     sh(other, "git", "push", "-q", "origin", "HEAD:main")
     sh(wt, "git", "fetch", "-q", "origin")
     sh(wt, "git", "switch", "-q", "--detach")
-    assert _st(wt) == (None, 1, 3, 1, None, 3)
+    assert _st(wt) == (None, 1, 3, 1, None, 1)  # one and two are on origin/solo
+
+    # pushed under another branch name (a re-cut branch for the next PR): pushed all the same
+    sh(wt, "git", "switch", "-q", "solo")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:solo-part-2")
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "four")
+    assert _st(wt) == ("solo", 1, 4, 1, "origin/solo", 1)
     assert gitops.status(wt, "origin/nope").ahead_of_base == 0  # unknown base: nothing counted
 
 
