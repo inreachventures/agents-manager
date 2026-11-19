@@ -80,7 +80,10 @@ def other(number, state, checks=None, base="main", **kw):
     (st(unpushed=3), pr("merged", "pass"), [other(8, "open", "pending")], {}, "… CI running", view.BLUE),
     (st(), pr("closed"), [other(8, "open", "pass", review="REVIEW_REQUIRED")], {"in_base": True},
      "awaiting review", view.BLUE),
-    (st(dirty=1), pr("merged", "pass"), [other(8, "open")], {}, "merged · 1 uncommitted", "yellow"),
+    # ... local work first, but not called merged while a PR is open
+    (st(dirty=1), pr("merged", "pass"), [other(8, "open")], {}, "✎ 1 uncommitted", "yellow"),
+    (st(), pr("merged", "pass"), [other(8, "open", "pass")], {"after_pr": 2}, "2 commits not in PR", "yellow"),
+    (st(dirty=2), pr("closed"), [other(8, "open")], {"in_base": True}, "✎ 2 uncommitted", "yellow"),
     # nothing of its own: a merged PR from another branch is the work landing; its merge's CI is the base's
     (st(ahead=0), pr("none"), [other(8, "merged", "fail")], {}, "✗ merged · CI failing on main", "bold red"),
     (st(ahead=0), pr("closed"), [other(8, "merged", None), other(9, "merged", "pass", merged_at=2)], {},
@@ -333,6 +336,32 @@ def test_a_follow_up_that_undoes_part_of_the_merged_pr_is_not_landed(env, monkey
     assert gitops.in_base(wt, "origin/main")  # why the whole-branch check can't decide this
     assert _row(ws.key).repos[0].git == "merged · 1 commit not in PR"
     with pytest.raises(WorkstreamError, match="1 commit\\(s\\) made after PR #5 was merged"):
+        ws_mod.archive(ws.key)
+
+
+def test_a_follow_up_that_undoes_part_of_work_landed_from_another_branch_is_not_in_base(env, monkeypatch):
+    """No PR of its own: the work went out through another branch's PR, then a local commit removes a file that PR
+    added. Merging the whole branch into main changes nothing, but main still has the file: not landed, not pushed."""
+    monkeypatch.setattr("agentmgr.gh.refresh", lambda *a, **k: None)
+    ws = ws_mod.new(launch=False, ticket="PROJ-14", name="undo other", repo_queries=["web"])
+    wt = ws.path / "acme-web"
+    for name in ("feat.txt", "debug.sh"):
+        (wt / name).write_text(name)
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-14 feature")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:proj-14-part-1")
+    head = sh(wt, "git", "rev-parse", "HEAD")
+    _set_pr(ws.key, "acme-web", "none")
+    db.set_branch_prs(db.connect(), ws.key, "acme-web", [
+        db.PR(ws.key, "acme-web", 7, "merged", False, None, "pass", "u7", 0, head_sha=head, head="proj-14-part-1",
+              base="main", merged_at=7)])
+    _squash_merge(env, "proj-14-part-1", "PROJ-14 feature (#7)")
+    sh(wt, "git", "fetch", "-q", "--prune", "origin")
+    sh(wt, "git", "rm", "-q", "debug.sh")
+    sh(wt, "git", "commit", "-q", "-m", "PROJ-14 drop the debug script")
+    assert gitops.in_base(wt, "origin/main")  # the whole-branch check is fooled
+    assert _row(ws.key).repos[0].git.startswith("↑ needs push (2)")  # the feature commit's branch is gone
+    with pytest.raises(WorkstreamError, match="unpushed"):
         ws_mod.archive(ws.key)
 
 

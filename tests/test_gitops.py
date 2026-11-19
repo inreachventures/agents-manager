@@ -112,3 +112,48 @@ def test_not_landed_replays_only_the_commits_no_pr_carries(env):
     sh(wt, "git", "switch", "-q", "feat")
     sh(wt, "git", "merge", "-q", "--no-edit", "side")
     assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3
+
+
+def test_not_landed_matches_a_copy_of_a_pr_commit_on_another_base(env):
+    """The same change pushed for a PR from main, and kept locally on top of another PR's commit: carried by the PR."""
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "pr-1")
+    (wt / "a.txt").write_text("a")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "a")
+    pr_1 = sh(wt, "git", "rev-parse", "HEAD")
+    sh(wt, "git", "switch", "-q", "-c", "pr-2", "origin/main")
+    (wt / "b.txt").write_text("b")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "b")
+    pr_2 = sh(wt, "git", "rev-parse", "HEAD")
+    sh(wt, "git", "switch", "-q", "pr-1")
+    sh(wt, "git", "cherry-pick", pr_2)  # b again, as a different commit on top of a
+    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2]) == 0
+    assert gitops.not_landed(wt, "origin/main", [pr_1]) == 1
+    (wt / "c.txt").write_text("c")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "c")
+    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2]) == 1  # only c
+
+
+def test_not_landed_matches_a_pr_squashed_locally(env):
+    """A PR of several commits, kept locally as one commit making the same change: carried by the PR."""
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "pr")
+    for name in ("a.txt", "b.txt"):
+        (wt / name).write_text(name)
+        sh(wt, "git", "add", ".")
+        sh(wt, "git", "commit", "-q", "-m", name)
+    pr_head = sh(wt, "git", "rev-parse", "HEAD")
+    sh(wt, "git", "switch", "-q", "-c", "local", "origin/main")
+    sh(wt, "git", "merge", "-q", "--squash", "pr")
+    sh(wt, "git", "commit", "-q", "-m", "local mirror of the PR")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0
+    assert gitops.not_landed(wt, "origin/main", []) == 1
+    sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "nothing")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0  # an empty commit changes nothing to lose
+    (wt / "c.txt").write_text("c")
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "more")
+    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3  # the whole run no longer matches

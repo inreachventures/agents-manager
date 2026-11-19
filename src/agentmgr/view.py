@@ -92,9 +92,10 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None, *,
     """What this repo needs next, as (label, rich style). First match wins: broken, merged, already in base, closed,
     local work (which makes the PR's own checks stale), then the open PR. `pr`: the worktree branch's PR. `after_pr`:
     local commits no PR carries once `pr` merged (gitops.not_landed). `in_base`: the branch's changes reached base
-    some other way (see gitops.in_base). `others`: PRs from the workstream's other branches (gh.RepoPRs): an open one
-    says what's next once the branch's own PR is merged, closed or missing, and a merged one counts as the branch's
-    when the branch has no commits of its own."""
+    some other way (gitops.not_landed against the merged PRs only). `others`: PRs from the workstream's other
+    branches (gh.RepoPRs): an open one says what's next once the branch's own PR is merged, closed or missing (local
+    work still first, but not called merged), and a merged one counts as the branch's when the branch has no commits
+    of its own."""
     base = link.base.removeprefix("origin/")
     if st is None:
         return "⚠ worktree missing", "bold red"
@@ -105,15 +106,15 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None, *,
     prs = gh.RepoPRs(base, pr, list(others))
     open_pr, last = prs.open(), prs.last_merged()
     state = pr.state if pr else None
-    if state == "merged":
+    if state == "merged":  # with a PR still open, local work first, as for any open PR, but not called merged
         if st.dirty:
-            return f"merged · {st.dirty} uncommitted", "yellow"
+            return f"{'✎ ' if open_pr else 'merged · '}{st.dirty} uncommitted", "yellow"
         if after_pr:
-            return f"merged · {after_pr} commit{'s' * (after_pr != 1)} not in PR", "yellow"
+            return f"{'' if open_pr else 'merged · '}{after_pr} commit{'s' * (after_pr != 1)} not in PR", "yellow"
         return _pr_state(open_pr, base) if open_pr else _merged(last.checks, base)
     if in_base:
         if st.dirty:
-            return f"already in {base} · {st.dirty} uncommitted", "yellow"
+            return f"✎ {st.dirty} uncommitted" if open_pr else f"already in {base} · {st.dirty} uncommitted", "yellow"
         return _pr_state(open_pr, base) if open_pr else (f"✓ already in {base}", PURPLE)
     if open_pr:
         pr, state = open_pr, "open"  # the branch's own PR is closed or missing: the open one is what's next
@@ -192,13 +193,13 @@ def _read_git(ws: db.Workstream, link: db.RepoLink, rp: gh.RepoPRs,
     if not wt.is_dir():
         return None, None, 0, False
     pr_merged = bool(rp.own and rp.own.state == "merged")
-    heads = rp.heads()
+    heads, landed = rp.heads(), rp.landed_heads()
     refs = [f"refs/heads/{link.branch}", f"refs/remotes/origin/{link.branch}",
             f"refs/remotes/{link.base}", f"refs/heads/{link.base}"]
 
     def stamp() -> tuple | None:
         fp = gitops.fingerprint(wt, refs)
-        return fp and (fp, link.branch, link.base, pr_merged, tuple(heads), ws.status, ws.status_at)
+        return fp and (fp, link.branch, link.base, pr_merged, tuple(heads), tuple(landed), ws.status, ws.status_at)
 
     last = _git_reads.get(link.worktree_path)
     now = time.time()
@@ -208,7 +209,7 @@ def _read_git(ws: db.Workstream, link: db.RepoLink, rp: gh.RepoPRs,
         st = gitops.status(wt, link.base)
         operation = gitops.operation_in_progress(wt)
         after_pr = gitops.not_landed(wt, link.base, heads) if pr_merged else 0
-        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, landed)
     except gitops.GitError:
         st, operation, after_pr, in_base = None, None, 0, False
     # stamped after reading: `git status` may rewrite the index itself (refreshing file times), which mustn't count

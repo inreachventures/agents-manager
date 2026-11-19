@@ -187,6 +187,10 @@ class RepoPRs:
         return [p.head_sha for p in self.all if p.head_sha and (
             p.state == "open" or (p.state == "merged" and p.base in (None, self.base)))]
 
+    def landed_heads(self) -> list[str]:
+        """Head commits of the PRs merged into the base branch: local commits reachable from one reached base."""
+        return [p.head_sha for p in self.all if p.head_sha and p.state == "merged" and p.base in (None, self.base)]
+
     @property
     def active(self) -> bool:
         return any(p.state in ("open", "merged") for p in self.all)

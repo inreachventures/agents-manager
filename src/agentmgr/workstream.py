@@ -696,7 +696,7 @@ class RepoReport:
     pr: db.PR | None  # the worktree branch's PR
     blockers: list[str]
     after_pr: int = 0  # local commits no PR carries once the branch's PR merged (gitops.not_landed)
-    in_base: bool = False  # the branch's changes are in base, whatever its PR says (gitops.in_base)
+    in_base: bool = False  # the branch's changes are in base, whatever its PR says (gitops.not_landed)
     others: list[db.PR] = field(default_factory=list)  # PRs from the workstream's other branches
 
     def describe_prs(self) -> str:
@@ -727,7 +727,7 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
             pass
         st = gitops.status(wt, link.base)
         pr_merged = pr is not None and pr.state == "merged"
-        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, rp.landed_heads())
         merged = rp.landed(st.ahead_of_base, in_base)
         after_pr = gitops.not_landed(wt, link.base, rp.heads()) if pr_merged else 0
         blockers = []
