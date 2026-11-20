@@ -193,13 +193,13 @@ def _read_git(ws: db.Workstream, link: db.RepoLink, rp: gh.RepoPRs,
     if not wt.is_dir():
         return None, None, 0, False
     pr_merged = bool(rp.own and rp.own.state == "merged")
-    heads, landed = rp.heads(), rp.landed_heads()
+    open_heads, landed = rp.open_heads(), rp.landed_heads()
     refs = [f"refs/heads/{link.branch}", f"refs/remotes/origin/{link.branch}",
             f"refs/remotes/{link.base}", f"refs/heads/{link.base}"]
 
     def stamp() -> tuple | None:
         fp = gitops.fingerprint(wt, refs)
-        return fp and (fp, link.branch, link.base, pr_merged, tuple(heads), tuple(landed), ws.status, ws.status_at)
+        return fp and (fp, link.branch, link.base, pr_merged, tuple(open_heads), tuple(landed), ws.status, ws.status_at)
 
     last = _git_reads.get(link.worktree_path)
     now = time.time()
@@ -208,8 +208,8 @@ def _read_git(ws: db.Workstream, link: db.RepoLink, rp: gh.RepoPRs,
     try:
         st = gitops.status(wt, link.base)
         operation = gitops.operation_in_progress(wt)
-        after_pr = gitops.not_landed(wt, link.base, heads) if pr_merged else 0
-        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, landed)
+        after_pr = gitops.not_landed(wt, link.base, open_heads, landed) if pr_merged else 0
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, [], landed)
     except gitops.GitError:
         st, operation, after_pr, in_base = None, None, 0, False
     # stamped after reading: `git status` may rewrite the index itself (refreshing file times), which mustn't count

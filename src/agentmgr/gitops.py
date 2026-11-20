@@ -167,10 +167,10 @@ def count_commits(worktree: Path, rng: str) -> int:
     return int(out) if out.isdigit() else 0
 
 
-def count_outside(worktree: Path, *exclude: str, remotes: bool = False) -> int | None:
-    """Commits on HEAD reachable from none of `exclude` (refs or shas; unknown ones are skipped), nor from any branch
+def count_outside(worktree: Path, *exclude: str, remotes: bool = False, rev: str = "HEAD") -> int | None:
+    """Commits on `rev` reachable from none of `exclude` (refs or shas; unknown ones are skipped), nor from any branch
     on origin if `remotes`. None if git can't tell (a damaged repository), so callers can stay on the safe side."""
-    out = git(worktree, "rev-list", "--count", "--ignore-missing", "HEAD", "--not", *exclude,
+    out = git(worktree, "rev-list", "--count", "--ignore-missing", rev, "--not", *exclude,
               *(["--remotes=origin"] if remotes else []), check=False)
     return int(out) if out.isdigit() else None
 
@@ -186,8 +186,11 @@ def _raw(worktree: Path, *args: str, stdin: bytes | None = None) -> bytes:
 
 
 # Patches compared byte for byte: --verbatim, because patch-id's default drops whitespace, which would make a fix to
-# Python indentation "the same change" as the code it fixes; no textconv or external diff, full binary content.
-PATCH_FLAGS = ("-p", "--no-color", "--no-ext-diff", "--no-textconv", "--binary", "--full-index")
+# Python indentation "the same change" as the code it fixes. No textconv or external diff, and the settings a user's
+# git config could change are pinned (context lines, how submodules show). A binary file is told apart by its full
+# blob ids (--full-index), so its content isn't piped through patch-id.
+PATCH_FLAGS = ("-p", "--no-color", "--no-ext-diff", "--no-textconv", "--full-index", "-U3", "--submodule=short",
+               "--ignore-submodules=none")
 
 
 def _patch_id_lines(worktree: Path, patch: bytes) -> list[tuple[str, str]]:
@@ -198,69 +201,123 @@ def _patch_id_lines(worktree: Path, patch: bytes) -> list[tuple[str, str]]:
     return [(pid, sha) for pid, sha in (line.split() for line in out.splitlines() if line.strip())]
 
 
-def _patch_ids(worktree: Path, *log_args: str) -> dict[str, str]:
-    """Commit sha -> patch id of the commits `git log` selects with `log_args`: the same change has the same id
-    whatever commit it sits on top of. Merges and empty commits have none."""
-    return {sha: pid for pid, sha in _patch_id_lines(worktree, _raw(worktree, "log", *PATCH_FLAGS, *log_args))}
+_commit_patch_ids: dict[str, str | None] = {}  # commit sha -> patch id, None for a merge or an empty commit
+
+
+def _patch_ids(worktree: Path, shas: list[str]) -> dict[str, str | None]:
+    """Patch id of each commit: the same change has the same id whatever commit it sits on top of. Kept per sha, as a
+    commit's change never changes; the shas go on stdin, however many there are."""
+    todo = [sha for sha in dict.fromkeys(shas) if sha not in _commit_patch_ids]
+    if todo:
+        out = _raw(worktree, "log", *PATCH_FLAGS, "--diff-merges=off", "--no-walk=unsorted", "--stdin",
+                   stdin="\n".join(todo).encode())
+        found = {sha: pid for pid, sha in _patch_id_lines(worktree, out)}
+        _commit_patch_ids.update((sha, found.get(sha)) for sha in todo)
+    return {sha: _commit_patch_ids[sha] for sha in shas}
+
+
+def _diff_id(worktree: Path, *diff_args: str) -> str | None:
+    """Patch id of `git diff <diff_args>`; None for an empty diff. Raises GitError if a commit isn't here (a PR head
+    made on GitHub and never fetched)."""
+    lines = _patch_id_lines(worktree, _raw(worktree, "diff", *PATCH_FLAGS, *diff_args))
+    return lines[0][0] if lines else None
+
+
+_run_diff_ids: dict[tuple[str, str], str | None] = {}  # (from, to) commit shas -> _diff_id
+
+
+def _run_diff_id(worktree: Path, start: str, end: str) -> str | None:
+    if (start, end) not in _run_diff_ids:
+        _run_diff_ids[start, end] = _diff_id(worktree, start, end)
+    return _run_diff_ids[start, end]
 
 
 _pr_diff_ids: dict[tuple[str, str, str], str | None] = {}  # (worktree, base, PR head) -> _diff_id of base...head
 
 
-def _diff_id(worktree: Path, *diff_args: str) -> str | None:
-    """Patch id of `git diff <diff_args>`; None for an empty diff."""
-    lines = _patch_id_lines(worktree, _raw(worktree, "diff", *PATCH_FLAGS, *diff_args))
-    return lines[0][0] if lines else None
-
-
 def _pr_diff_id(worktree: Path, base: str, head: str) -> str | None:
-    """Patch id of a PR's whole change (from where it left base); None if empty or the head isn't here (a commit
-    made on GitHub and never fetched). Kept per head: a PR's fork point doesn't move until it is merged in."""
+    """Patch id of a PR's whole change (from where it left base); None if empty or the head isn't here. Kept per head:
+    a PR's fork point doesn't move until it is merged in."""
     key = (str(worktree), base, head)
     if key not in _pr_diff_ids:
         try:
             _pr_diff_ids[key] = _diff_id(worktree, f"{base}...{head}")
         except GitError:
-            return None  # not cached: the head may be fetched later
+            return None  # not kept: the head may be fetched later
     return _pr_diff_ids[key]
 
 
-def not_landed(worktree: Path, base: str, pr_heads: list[str]) -> int:
-    """Commits on HEAD that are in neither `base` nor any of the PRs whose heads are `pr_heads`: work no PR carries.
-    The usual squash-merge flow keeps this at 0 even after rebasing the branch onto base and pushing the next chunk
-    under a new name, because each PR's head is excluded. A commit that makes the same change as one of the PRs'
-    commits counts as carried too (same patch id): the same work pushed for a PR from another base. So do commits
-    that, together, make the same change as a whole PR (one squashed locally). Patches are compared byte for byte
-    (PATCH_FLAGS). Such a commit is in the PR's history on GitHub, even if a later commit of the PR undid it.
+_absorbed: dict[tuple[str, str, str], bool] = {}  # (start, end, target) -> _absorbs, all commit shas
 
-    Also 0 when the branch's commits outside base and those PRs, replayed onto base from the parent of the oldest,
+
+def _absorbs(worktree: Path, start: str, end: str, target: str) -> bool:
+    """`target` already has the change from commit `start` to commit `end`: replaying it onto `target` (a three-way
+    merge from `start`) changes nothing. Unlike a patch id this places each change in the file, so an edit to one of
+    two identical blocks isn't taken for the same edit to the other. False on a conflict, or if git can't tell (older
+    than 2.40, a commit not here)."""
+    key = (start, end, target)
+    if key not in _absorbed:
+        proc = subprocess.run(["git", "-C", str(worktree), "merge-tree", "--write-tree", f"--merge-base={start}",
+                               target, end], capture_output=True, text=True,
+                              env={**os.environ, "GIT_TERMINAL_PROMPT": "0"})
+        if proc.returncode not in (0, 1):
+            return False  # not kept: git may be able to tell later
+        tree = proc.stdout.partition("\n")[0]
+        _absorbed[key] = proc.returncode == 0 and tree == git(worktree, "rev-parse", f"{target}^{{tree}}", check=False)
+    return _absorbed[key]
+
+
+def not_landed(worktree: Path, base: str, open_heads: list[str], landed_heads: list[str]) -> int:
+    """Commits on HEAD that are in neither `base` nor any PR: work no PR carries. `open_heads`, `landed_heads`: head
+    commits of the open PRs and of those merged into base. The usual squash-merge flow keeps this at 0 even after
+    rebasing the branch onto base and pushing the next chunk under a new name, because each PR's head is excluded.
+
+    A commit that makes the same change as one of the PRs' commits counts as carried too: the same work pushed for a
+    PR from another base. So do commits that, together, make the same change as a whole PR (one squashed locally).
+    Same change: the same patch, byte for byte (PATCH_FLAGS), and the PR's commit already has it in the same place
+    (_absorbs). Such a commit is in the PR's history on GitHub, even if a later commit of the PR undid it.
+
+    Also 0 when the branch's commits outside base and the PRs, replayed onto base from the parent of the oldest,
     change nothing: their changes reached base another way (a cherry-pick, someone else's PR). Only those commits
     are replayed. Merging the whole branch from its fork point instead would count a commit that undoes part of
     already merged work (say, removing a file a PR added) as in base, since it only puts back the fork point's
-    state. If those commits aren't a simple line (a merge among them), they're counted as they are. Raises GitError
-    if git can't list them."""
+    state. For the same reason they are replayed only from a commit base has the changes of (one in base, or a
+    merged PR's head), and only if none is carried by an open PR alone. If they aren't a simple line (a merge
+    among them), they're counted as they are. Raises GitError if git can't list them."""
+    heads = [*open_heads, *landed_heads]
     rows = [line.split() for line in git(worktree, "rev-list", "--parents", "--ignore-missing", "HEAD", "--not", base,
-                                         *pr_heads).splitlines()]  # newest first: sha, parents
+                                         *heads).splitlines()]  # newest first: sha, parents
     if not rows:
         return 0
-    uncarried = len(rows)
-    if pr_heads and (carried := set(_patch_ids(worktree, "--ignore-missing", *pr_heads, "--not", base).values())):
-        own = _patch_ids(worktree, "--no-walk=unsorted", *(r[0] for r in rows))
-        uncarried = sum(1 for r in rows if own.get(r[0]) not in carried)
+    uncarried, carried_by_open = len(rows), False
+    if heads:
+        landed_commits = set(git(worktree, "rev-list", "--ignore-missing", *landed_heads, "--not", base).split()
+                             if landed_heads else [])
+        by_patch: dict[str, list[str]] = {}
+        pr_commits = git(worktree, "rev-list", "--ignore-missing", *heads, "--not", base).split()
+        for sha, pid in _patch_ids(worktree, pr_commits).items():
+            if pid:
+                by_patch.setdefault(pid, []).append(sha)
+        own = _patch_ids(worktree, [r[0] for r in rows])
+        uncarried = 0
+        for sha, *parents in rows:
+            matches = [x for x in by_patch.get(own[sha] or "", [])
+                       if len(parents) == 1 and _absorbs(worktree, parents[0], sha, x)]
+            uncarried += not matches
+            carried_by_open |= bool(matches) and not landed_commits.intersection(matches)
     if not uncarried:
         return 0
     linear = all(len(r) == 2 for r in rows) and all(rows[i][1] == rows[i + 1][0] for i in range(len(rows) - 1))
     if not linear:
         return uncarried
-    if pr_heads and (whole := _diff_id(worktree, rows[-1][1], "HEAD")):  # a PR squashed locally: its whole change
-        if any(_pr_diff_id(worktree, base, head) == whole for head in pr_heads):
+    start, end = rows[-1][1], rows[0][0]
+    if heads and (whole := _run_diff_id(worktree, start, end)):  # a PR squashed locally: its whole change
+        if any(_pr_diff_id(worktree, base, head) == whole and _absorbs(worktree, start, end, head) for head in heads):
             return 0
-    try:
-        tree = git(worktree, "merge-tree", "--write-tree", f"--merge-base={rows[-1][1]}", base,
-                   "HEAD").partition("\n")[0]
-    except GitError:  # conflicts: they change something base doesn't have (or git is older than 2.40)
+    base_sha = git(worktree, "rev-parse", "--verify", "--quiet", f"{base}^{{commit}}", check=False)
+    if not base_sha or carried_by_open or count_outside(worktree, base, *landed_heads, rev=start) != 0:
         return uncarried
-    return 0 if tree == git(worktree, "rev-parse", f"{base}^{{tree}}", check=False) else uncarried
+    return 0 if _absorbs(worktree, start, end, base_sha) else uncarried
 
 
 def left_right(worktree: Path, ref: str) -> tuple[int, int] | None:

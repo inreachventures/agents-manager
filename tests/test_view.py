@@ -374,9 +374,9 @@ def test_conflicting_branch_is_not_in_base(env):
     sh(other, "git", "commit", "-q", "-am", "theirs")
     sh(other, "git", "push", "-q", "origin", "HEAD:main")
     sh(wt, "git", "fetch", "-q", "origin")
-    assert gitops.not_landed(wt, "origin/main", []) == 1
+    assert gitops.not_landed(wt, "origin/main", [], []) == 1
     sh(wt, "git", "reset", "-q", "--hard", "origin/main")
-    assert gitops.not_landed(wt, "origin/main", []) == 0  # nothing of its own: trivially in base
+    assert gitops.not_landed(wt, "origin/main", [], []) == 0  # nothing of its own: trivially in base
 
 
 def test_old_database_gets_new_pr_columns(env):

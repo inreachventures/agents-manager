@@ -101,17 +101,17 @@ def test_not_landed_replays_only_the_commits_no_pr_carries(env):
     pr_head = sh(wt, "git", "rev-parse", "HEAD")
     sh(wt, "git", "push", "-q", "origin", "HEAD:main")  # landed (a fast-forward stands in for the squash)
     sh(wt, "git", "fetch", "-q", "origin")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0
+    assert gitops.not_landed(wt, "origin/main", [], [pr_head]) == 0
     sh(wt, "git", "rm", "-q", "debug.sh")
     sh(wt, "git", "commit", "-q", "-m", "drop debug")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 1  # main still has debug.sh
+    assert gitops.not_landed(wt, "origin/main", [], [pr_head]) == 1  # main still has debug.sh
 
     # a merge among them: counted as is, without replaying
     sh(wt, "git", "switch", "-q", "-c", "side", "HEAD~")
     sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "side")
     sh(wt, "git", "switch", "-q", "feat")
     sh(wt, "git", "merge", "-q", "--no-edit", "side")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3
+    assert gitops.not_landed(wt, "origin/main", [], [pr_head]) == 3
 
 
 def test_not_landed_matches_a_copy_of_a_pr_commit_on_another_base(env):
@@ -129,12 +129,12 @@ def test_not_landed_matches_a_copy_of_a_pr_commit_on_another_base(env):
     pr_2 = sh(wt, "git", "rev-parse", "HEAD")
     sh(wt, "git", "switch", "-q", "pr-1")
     sh(wt, "git", "cherry-pick", pr_2)  # b again, as a different commit on top of a
-    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2]) == 0
-    assert gitops.not_landed(wt, "origin/main", [pr_1]) == 1
+    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2], []) == 0
+    assert gitops.not_landed(wt, "origin/main", [pr_1], []) == 1
     (wt / "c.txt").write_text("c")
     sh(wt, "git", "add", ".")
     sh(wt, "git", "commit", "-q", "-m", "c")
-    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2]) == 1  # only c
+    assert gitops.not_landed(wt, "origin/main", [pr_1, pr_2], []) == 1  # only c
 
 
 def test_not_landed_matches_a_pr_squashed_locally(env):
@@ -149,14 +149,14 @@ def test_not_landed_matches_a_pr_squashed_locally(env):
     sh(wt, "git", "switch", "-q", "-c", "local", "origin/main")
     sh(wt, "git", "merge", "-q", "--squash", "pr")
     sh(wt, "git", "commit", "-q", "-m", "local mirror of the PR")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0
-    assert gitops.not_landed(wt, "origin/main", []) == 1
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 0
+    assert gitops.not_landed(wt, "origin/main", [], []) == 1
     sh(wt, "git", "commit", "-q", "--allow-empty", "-m", "nothing")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 0  # an empty commit changes nothing to lose
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 0  # an empty commit changes nothing to lose
     (wt / "c.txt").write_text("c")
     sh(wt, "git", "add", ".")
     sh(wt, "git", "commit", "-q", "-m", "more")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 3  # the whole run no longer matches
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 3  # the whole run no longer matches
 
 
 def _commit(wt, name, content: bytes, message):
@@ -175,7 +175,7 @@ def test_not_landed_tells_a_whitespace_fix_from_the_pr_commit(env):
     _commit(wt, "f.py", b"if x:\n    pass\nsave()\n", "save, always")
     sh(wt, "git", "switch", "-q", "-c", "local-2", "origin/main")
     _commit(wt, "f.py", b"if x:\nsave()\n", "save, dedented")
-    assert gitops.not_landed(wt, "origin/main", [pr_head]) == 1
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 1
 
 
 def test_not_landed_with_a_pr_head_never_fetched_and_non_utf8_files(env):
@@ -183,9 +183,77 @@ def test_not_landed_with_a_pr_head_never_fetched_and_non_utf8_files(env):
     sh(wt, "git", "switch", "-q", "-c", "local")
     _commit(wt, "menu.csv", b"caf\xe9\n", "latin-1 menu")
     missing = "f" * 40  # a commit made on GitHub that this clone never fetched
-    assert gitops.not_landed(wt, "origin/main", [missing]) == 1
-    assert gitops.not_landed(wt, "origin/main", []) == 1
+    assert gitops.not_landed(wt, "origin/main", [missing], []) == 1
+    assert gitops.not_landed(wt, "origin/main", [], []) == 1
     sh(wt, "git", "switch", "-q", "-c", "pr", "origin/main")
     pr_head = _commit(wt, "menu.csv", b"caf\xe9\n", "same menu, for a PR")
     sh(wt, "git", "switch", "-q", "local")
-    assert gitops.not_landed(wt, "origin/main", [missing, pr_head]) == 0
+    assert gitops.not_landed(wt, "origin/main", [missing, pr_head], []) == 0
+
+
+# two jobs whose checkout steps have the same three lines either side: git patch-id ignores line numbers, so bumping
+# one has the same id as bumping the other
+STEPS = (b"run: make deps", b"run: make env", b"uses: actions/cache@v4", b"uses: actions/checkout@v3",
+         b"uses: actions/setup-python@v5", b"run: make install", b"run: make build")
+WORKFLOW = b"".join(b"  %s:\n    steps:\n" % job
+                    + b"".join(b"      - %s\n" % step for step in (*STEPS, b"run: make " + job))
+                    for job in (b"lint", b"test"))
+
+
+def _bump(wt, which: int, message):
+    """Bump the checkout step of the job `which` (0 or 1) still on v3."""
+    text = (wt / "ci.yml").read_bytes()
+    at = [i for i in range(len(text)) if text.startswith(b"checkout@v3", i)][which]
+    return _commit(wt, "ci.yml", text[:at] + b"checkout@v4" + text[at + len(b"checkout@v3"):], message)
+
+
+def _main_with_workflow(wt):
+    sh(wt, "git", "switch", "-q", "-c", "ci")
+    _commit(wt, "ci.yml", WORKFLOW, "ci")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:main")
+    sh(wt, "git", "fetch", "-q", "origin")
+
+
+def test_not_landed_tells_the_same_edit_in_a_copied_block_from_the_pr_commit(env):
+    """The PR bumped the lint job, squash merged; after rebasing, the follow-up bumps the test job: new work."""
+    wt = env.code / "acme-web"
+    _main_with_workflow(wt)
+    sh(wt, "git", "switch", "-q", "-c", "pr", "origin/main")
+    pr_head = _bump(wt, 0, "bump checkout in lint")
+    sh(wt, "git", "switch", "-q", "-c", "landing", "origin/main")
+    sh(wt, "git", "merge", "-q", "--squash", "pr")
+    sh(wt, "git", "commit", "-q", "-m", "bump checkout in lint (#1)")
+    sh(wt, "git", "push", "-q", "origin", "HEAD:main")
+    sh(wt, "git", "fetch", "-q", "origin")
+    sh(wt, "git", "switch", "-q", "pr")
+    sh(wt, "git", "rebase", "-q", "origin/main")
+    _bump(wt, 0, "bump checkout in test too")  # the lint job is bumped already: the first v3 left is the test job's
+    assert gitops.not_landed(wt, "origin/main", [], [pr_head]) == 1
+
+
+def test_not_landed_tells_the_same_edits_in_a_copied_block_from_the_whole_pr(env):
+    """One local commit making the PR's two changes, except the bump lands in the other job: not the PR's work."""
+    wt = env.code / "acme-web"
+    _main_with_workflow(wt)
+    sh(wt, "git", "switch", "-q", "-c", "pr", "origin/main")
+    _commit(wt, "notes.txt", b"notes\n", "notes")
+    pr_head = _bump(wt, 0, "bump checkout in lint")
+    sh(wt, "git", "switch", "-q", "-c", "local", "origin/main")
+    (wt / "notes.txt").write_bytes(b"notes\n")
+    _bump(wt, 1, "notes, and bump checkout in test")
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 1
+
+
+def test_not_landed_on_top_of_an_open_pr_counts_undoing_part_of_it(env):
+    """Replaying onto base says nothing about a commit on top of an open PR's head: base doesn't have that head's
+    changes, so removing a file the PR added would replay to base's tree."""
+    wt = env.code / "acme-web"
+    sh(wt, "git", "switch", "-q", "-c", "pr")
+    for name in ("feat.txt", "debug.sh"):
+        (wt / name).write_text(name)
+    sh(wt, "git", "add", ".")
+    sh(wt, "git", "commit", "-q", "-m", "pr")
+    pr_head = sh(wt, "git", "rev-parse", "HEAD")
+    sh(wt, "git", "rm", "-q", "debug.sh")
+    sh(wt, "git", "commit", "-q", "-m", "drop debug")
+    assert gitops.not_landed(wt, "origin/main", [pr_head], []) == 1

@@ -635,7 +635,7 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
             skip = f"{st.dirty} uncommitted change(s)"
         elif not_pulled:
             skip = f"{not_pulled} commit(s) on {remote} that aren't local"
-        elif st.ahead_of_base and not gitops.not_landed(wt, link.base, gh.repo_prs(
+        elif st.ahead_of_base and not gitops.not_landed(wt, link.base, [], gh.repo_prs(
                 link, pr, branch_prs.get(link.repo, [])).landed_heads()):
             skip = f"its changes are already in {link.base}"
         else:
@@ -730,9 +730,9 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
             pass
         st = gitops.status(wt, link.base)
         pr_merged = pr is not None and pr.state == "merged"
-        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, rp.landed_heads())
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, [], rp.landed_heads())
         merged = rp.landed(st.ahead_of_base, in_base)
-        after_pr = gitops.not_landed(wt, link.base, rp.heads()) if pr_merged else 0
+        after_pr = gitops.not_landed(wt, link.base, rp.open_heads(), rp.landed_heads()) if pr_merged else 0
         blockers = []
         if st.dirty:
             blockers.append(f"{st.dirty} uncommitted change(s)")

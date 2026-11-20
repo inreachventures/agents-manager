@@ -181,14 +181,13 @@ class RepoPRs:
         """The PR to open from the dashboard: the open one, else the last merged, else the newest."""
         return self.open() or self.last_merged() or (self.all[-1] if self.all else None)
 
-    def heads(self) -> list[str]:
-        """Head commits of the open PRs and those merged into the base branch: local commits reachable from one are
-        carried by a PR. Not a PR merged into another branch (a stack's lower PR), which may never reach base."""
-        return [p.head_sha for p in self.all if p.head_sha and (
-            p.state == "open" or (p.state == "merged" and p.base in (None, self.base)))]
+    def open_heads(self) -> list[str]:
+        """Head commits of the open PRs: local commits reachable from one are carried by a PR."""
+        return [p.head_sha for p in self.all if p.head_sha and p.state == "open"]
 
     def landed_heads(self) -> list[str]:
-        """Head commits of the PRs merged into the base branch: local commits reachable from one reached base."""
+        """Head commits of the PRs merged into the base branch: local commits reachable from one reached base. Not a
+        PR merged into another branch (a stack's lower PR), which may never reach base."""
         return [p.head_sha for p in self.all if p.head_sha and p.state == "merged" and p.base in (None, self.base)]
 
     @property
