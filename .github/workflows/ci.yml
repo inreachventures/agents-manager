@@ -98,6 +98,10 @@ jobs:
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+        # A version with a letter in it (0.7.0b1, 0.7.0rc1) is a pre-release. GitHub leaves pre-releases out of
+        # releases/latest, so the apps' update feeds (SUFeedURL) never offer them; they are installed by hand.
         run: |
+          prerelease=
+          [[ "${GITHUB_REF_NAME#v}" =~ [a-z] ]] && prerelease=--prerelease
           gh release create "$GITHUB_REF_NAME" dist/*.dmg dist/appcast-apple-silicon.xml dist/appcast-intel.xml \
-            --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md
+            --title "$GITHUB_REF_NAME" --notes-file .github/release-notes.md $prerelease
