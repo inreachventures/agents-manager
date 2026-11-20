@@ -340,7 +340,8 @@ class Dashboard(App):
             ws, reports = result
             lines = [f"[b]Archive {ws.label}?[/b]", ""]
             for r in reports:
-                state, style = view.git_state(r.link, r.status, r.pr, r.after_pr, r.in_base, others=r.others)
+                state, style = view.git_state(r.link, r.status, r.pr, after_pr=r.after_pr, in_base=r.in_base,
+                                              others=r.others)
                 lines.append(f"{r.link.repo}  {escape(r.link.branch)}  [{style}]{escape(state)}[/]  "
                              f"{r.describe_prs()}")
                 lines += [f"   [red]✗ {b}[/]" for b in r.blockers]

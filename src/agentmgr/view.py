@@ -86,15 +86,16 @@ BLUE = "dodger_blue1"  # waiting on someone else (CI, reviewers)
 PURPLE = "bold medium_purple1"  # merged, as on GitHub; green is for an open PR that can be merged
 
 
-def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
+def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None, *,
               operation: str | None = None, after_pr: int = 0, in_base: bool = False,
               others: Sequence[db.PR] = ()) -> tuple[str, str]:
     """What this repo needs next, as (label, rich style). First match wins: broken, merged, already in base, closed,
     local work (which makes the PR's own checks stale), then the open PR. `pr`: the worktree branch's PR. `after_pr`:
-    local commits after a merged PR's head. `in_base`: the branch's changes reached base some other way (see
-    gitops.in_base). `others`: PRs from the workstream's other branches (gh.RepoPRs): an open one says what's next
-    once the branch's own PR is merged, closed or missing, and a merged one counts as the branch's when the branch
-    has no commits of its own."""
+    local commits no PR carries once `pr` merged (gitops.not_landed). `in_base`: the branch's changes reached base
+    some other way (gitops.not_landed against the merged PRs only). `others`: PRs from the workstream's other
+    branches (gh.RepoPRs): an open one says what's next once the branch's own PR is merged, closed or missing (local
+    work still first, but not called merged), and a merged one counts as the branch's when the branch has no commits
+    of its own."""
     base = link.base.removeprefix("origin/")
     if st is None:
         return "⚠ worktree missing", "bold red"
@@ -105,15 +106,15 @@ def git_state(link: db.RepoLink, st: gitops.Status | None, pr: db.PR | None,
     prs = gh.RepoPRs(base, pr, list(others))
     open_pr, last = prs.open(), prs.last_merged()
     state = pr.state if pr else None
-    if state == "merged":
+    if state == "merged":  # with a PR still open, local work first, as for any open PR, but not called merged
         if st.dirty:
-            return f"merged · {st.dirty} uncommitted", "yellow"
+            return f"{'✎ ' if open_pr else 'merged · '}{st.dirty} uncommitted", "yellow"
         if after_pr:
-            return f"merged · {after_pr} commit{'s' * (after_pr != 1)} not in PR", "yellow"
+            return f"{'' if open_pr else 'merged · '}{after_pr} commit{'s' * (after_pr != 1)} not in PR", "yellow"
         return _pr_state(open_pr, base) if open_pr else _merged(last.checks, base)
     if in_base:
         if st.dirty:
-            return f"already in {base} · {st.dirty} uncommitted", "yellow"
+            return f"✎ {st.dirty} uncommitted" if open_pr else f"already in {base} · {st.dirty} uncommitted", "yellow"
         return _pr_state(open_pr, base) if open_pr else (f"✓ already in {base}", PURPLE)
     if open_pr:
         pr, state = open_pr, "open"  # the branch's own PR is closed or missing: the open one is what's next
@@ -181,22 +182,24 @@ class _GitRead:
 _git_reads: dict[str, _GitRead] = {}  # worktree path -> its last read, for the dashboards' load() every few seconds
 
 
-def _read_git(ws: db.Workstream, link: db.RepoLink, pr: db.PR | None,
+def _read_git(ws: db.Workstream, link: db.RepoLink, rp: gh.RepoPRs,
               max_age: float) -> tuple[gitops.Status | None, str | None, int, bool]:
-    """(status, operation in progress, commits after the merged PR, in base) for one repo: a few git processes, so
-    the last read is reused for up to `max_age` seconds while the worktree's git files (gitops.fingerprint), its PR
-    and its workstream's status are the same. Commits, checkouts, staging, fetches and rebases change those files and
-    show at once; edits to files in the worktree show within `max_age`, or when Claude stops (status changes)."""
+    """(status, operation in progress, commits no PR carries once the branch's PR merged, in base) for one repo: a
+    few git processes, so the last read is reused for up to `max_age` seconds while the worktree's git files
+    (gitops.fingerprint), its PRs and its workstream's status are the same. Commits, checkouts, staging, fetches,
+    pushes and rebases change those files and show at once; edits to files in the worktree show within `max_age`, or
+    when Claude stops (status changes)."""
     wt = Path(link.worktree_path)
     if not wt.is_dir():
         return None, None, 0, False
-    pr_merged = bool(pr and pr.state == "merged")
+    pr_merged = bool(rp.own and rp.own.state == "merged")
+    open_heads, landed = rp.open_heads(), rp.landed_heads()
     refs = [f"refs/heads/{link.branch}", f"refs/remotes/origin/{link.branch}",
             f"refs/remotes/{link.base}", f"refs/heads/{link.base}"]
 
     def stamp() -> tuple | None:
         fp = gitops.fingerprint(wt, refs)
-        return fp and (fp, link.branch, link.base, pr_merged, pr.head_sha if pr else None, ws.status, ws.status_at)
+        return fp and (fp, link.branch, link.base, pr_merged, tuple(open_heads), tuple(landed), ws.status, ws.status_at)
 
     last = _git_reads.get(link.worktree_path)
     now = time.time()
@@ -205,8 +208,8 @@ def _read_git(ws: db.Workstream, link: db.RepoLink, pr: db.PR | None,
     try:
         st = gitops.status(wt, link.base)
         operation = gitops.operation_in_progress(wt)
-        after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
-        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+        after_pr = gitops.not_landed(wt, link.base, open_heads, landed) if pr_merged else 0
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, [], landed)
     except gitops.GitError:
         st, operation, after_pr, in_base = None, None, 0, False
     # stamped after reading: `git status` may rewrite the index itself (refreshing file times), which mustn't count
@@ -235,8 +238,9 @@ def load(include_archived: bool = False, git_status: bool = True, git_max_age: f
             pr = rp.own
             merged, state, style, behind, untouched = rp.landed(None, False), "", "", 0, False
             if git_status and ws.status != db.ARCHIVED:
-                st, operation, after_pr, in_base = _read_git(ws, link, pr, max_age)
-                state, style = git_state(link, st, pr, operation, after_pr, in_base, rp.others)
+                st, operation, after_pr, in_base = _read_git(ws, link, rp, max_age)
+                state, style = git_state(link, st, pr, operation=operation, after_pr=after_pr, in_base=in_base,
+                                         others=rp.others)
                 merged = rp.landed(st.ahead_of_base if st else None, in_base)
                 if st:
                     behind = 0 if merged else st.behind_base

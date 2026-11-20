@@ -181,14 +181,23 @@ class RepoPRs:
         """The PR to open from the dashboard: the open one, else the last merged, else the newest."""
         return self.open() or self.last_merged() or (self.all[-1] if self.all else None)
 
+    def open_heads(self) -> list[str]:
+        """Head commits of the open PRs: local commits reachable from one are carried by a PR."""
+        return [p.head_sha for p in self.all if p.head_sha and p.state == "open"]
+
+    def landed_heads(self) -> list[str]:
+        """Head commits of the PRs merged into the base branch: local commits reachable from one reached base. Not a
+        PR merged into another branch (a stack's lower PR), which may never reach base."""
+        return [p.head_sha for p in self.all if p.head_sha and p.state == "merged" and p.base in (None, self.base)]
+
     @property
     def active(self) -> bool:
         return any(p.state in ("open", "merged") for p in self.all)
 
     def landed(self, ahead_of_base: int | None, in_base: bool) -> bool:
         """The repo's work reached base: no PR still open, and the worktree branch's PR merged, or its changes are in
-        base anyway (gitops.in_base), or it has no commits of its own (`ahead_of_base`, None if unknown) and a PR from
-        another branch merged."""
+        base anyway (`in_base`: gitops.not_landed against landed_heads), or it has no commits of its own
+        (`ahead_of_base`, None if unknown) and a PR from another branch merged."""
         if any(p.state == "open" for p in self.all):
             return False
         if (self.own and self.own.state == "merged") or in_base:

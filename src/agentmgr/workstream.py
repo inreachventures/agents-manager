@@ -604,7 +604,9 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
     ws = require(conn, key)
     if ws.status in (db.WORKING, db.NEEDS_YOU) and session_alive(ws):
         raise WorkstreamError(f"Claude is in the middle of a task in {ws.key}; rebase when it's your turn")
-    prs = db.get_prs(conn, ws.key)
+    from . import gh
+
+    prs, branch_prs = db.get_prs(conn, ws.key), db.get_branch_prs(conn, ws.key)
     steps = []
     for link in db.list_repos(conn, ws.key):
         wt, remote = Path(link.worktree_path), f"origin/{link.branch}"
@@ -633,7 +635,8 @@ def rebase_plan(key: str, fetch: bool = True) -> tuple[db.Workstream, list[Rebas
             skip = f"{st.dirty} uncommitted change(s)"
         elif not_pulled:
             skip = f"{not_pulled} commit(s) on {remote} that aren't local"
-        elif st.ahead_of_base and gitops.in_base(wt, link.base):
+        elif st.ahead_of_base and not gitops.not_landed(wt, link.base, [], gh.repo_prs(
+                link, pr, branch_prs.get(link.repo, [])).landed_heads()):
             skip = f"its changes are already in {link.base}"
         else:
             skip = None
@@ -695,8 +698,8 @@ class RepoReport:
     merged: bool  # the work reached base (gh.RepoPRs.landed)
     pr: db.PR | None  # the worktree branch's PR
     blockers: list[str]
-    after_pr: int = 0  # local commits made after the merged PR's head
-    in_base: bool = False  # the branch's changes are in base, whatever its PR says (gitops.in_base)
+    after_pr: int = 0  # local commits no PR carries once the branch's PR merged (gitops.not_landed)
+    in_base: bool = False  # the branch's changes are in base, whatever its PR says (gitops.not_landed)
     others: list[db.PR] = field(default_factory=list)  # PRs from the workstream's other branches
 
     def describe_prs(self) -> str:
@@ -727,9 +730,9 @@ def cleanup_report(key: str, refresh_prs: bool = True) -> tuple[db.Workstream, l
             pass
         st = gitops.status(wt, link.base)
         pr_merged = pr is not None and pr.state == "merged"
-        in_base = not pr_merged and st.ahead_of_base > 0 and gitops.in_base(wt, link.base)
+        in_base = not pr_merged and st.ahead_of_base > 0 and not gitops.not_landed(wt, link.base, [], rp.landed_heads())
         merged = rp.landed(st.ahead_of_base, in_base)
-        after_pr = gitops.count_commits(wt, f"{pr.head_sha}..HEAD") if pr_merged and pr.head_sha else 0
+        after_pr = gitops.not_landed(wt, link.base, rp.open_heads(), rp.landed_heads()) if pr_merged else 0
         blockers = []
         if st.dirty:
             blockers.append(f"{st.dirty} uncommitted change(s)")
