@@ -81,6 +81,7 @@ version = "0.1.0"
 api = 1                   # the plugin API version it was written for
 command = "map"           # optional: `wm map ...` loads this plugin
 hooks = ["PostToolUse"]   # the hook events plugin.py handles; for others it is never imported
+protect = true            # Claude may not edit .wm/taskmap/ (checked on every tool call, so declared here)
 
 [[views]]
 id = "map"
@@ -130,7 +131,6 @@ def register(api: Api) -> None:
     api.claude_md(section)                   # (ws) -> markdown | None, appended to the workstream's CLAUDE.md
     api.replace_claude_md("intake_summary", text_fn)   # replace a named core section (see 2.4)
     api.allowed_tools(tools)                 # (ws) -> ["Bash(wm map save WS-7 *)", ...]
-    api.protect("")                          # guard: Claude may not edit .wm/<plugin>/ (sub-path optional)
     api.badge(badge)                         # (ws) -> Badge | None, on the sidebar row
     api.watch(paths)                         # (ws) -> [Path]; a change tells this plugin's web views
     api.on_archive(cancel)                   # (ws) before worktrees go
@@ -177,7 +177,7 @@ discussions (`claude -p --resume --fork-session`). Today each has its own enviro
 - In an auxiliary session, core hooks still run the guardrails (guard, drift), but never change the workstream's
   status, notify, or show the prompt.
 - Only the owning plugin's handlers are called, with `ctx.aux = True`. Other plugins don't see it.
-- The owning plugin's `.wm/<plugin>/` is writable by its own auxiliary sessions even when `protect`ed.
+- The owning plugin's `.wm/<plugin>/` is writable by its own auxiliary sessions even when protected.
 
 #### 2.3 CLI
 
@@ -311,7 +311,7 @@ Nothing task-map-specific lands in agents-manager.
 | side discussions with their own hook handling | `api.aux_env()` + `ctx.aux` |
 | `@.wm/brief` import, intake and TASK.md changes | `api.claude_md`, `api.replace_claude_md("task_format" / "intake_summary" / "progress_rule")` |
 | `Bash(wm ask WS-7 *)` etc. pre-approved | `api.allowed_tools` |
-| guard blocks edits to `.wm/` | `api.protect` |
+| guard blocks edits to `.wm/` | `protect = true` in the manifest |
 | `brief`, `brief_answer`, `brief_edit`, `side_*`, `transcript` requests | `api.request` |
 | Brief / Needs you / Now tabs | `place = "panel"` views |
 | Chat view in the main area | `place = "main"` view, `wm.send` to reply |
