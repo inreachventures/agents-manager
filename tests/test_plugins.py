@@ -1,14 +1,34 @@
 import os
+import re
 import shutil
+import sys
+import time
 from pathlib import Path
 
 import pytest
 from typer.testing import CliRunner
 
 from agentmgr import config, plugins
+from agentmgr import workstream as ws_mod
 from agentmgr.cli import app
+from agentmgr.plugin import Badge, HookContext, HookResult, PluginError, RepoInfo, WorkstreamInfo
 
 FIXTURE = Path(__file__).parent / "fixtures" / "plugins" / "demo"
+
+
+@pytest.fixture(autouse=True)
+def fresh_plugins():
+    plugins.reset()
+    yield
+    plugins.reset()
+    plugins.set_logger(plugins.stderr_logger)
+
+
+@pytest.fixture
+def logged():
+    lines: list[str] = []
+    plugins.set_logger(lines.append)
+    return lines
 
 
 @pytest.fixture
@@ -21,7 +41,6 @@ def pdir(env, monkeypatch):
 
 def install_demo(pdir):
     shutil.copytree(FIXTURE, pdir / "demo")
-    (pdir / "demo" / "plugin.py").write_text("def register(api): pass\n")
 
 
 def make(pdir, folder, toml):
@@ -121,3 +140,227 @@ def test_cli_plugins_lists_and_toggles(pdir):
     assert "demo  on" in runner.invoke(app, ["plugins"]).output
     out = runner.invoke(app, ["plugins", "off", "x"])
     assert out.exit_code == 1 and "error: no plugin named 'x'" in out.output
+
+
+def make_plugin(pdir, name, py, hooks=(), **files):
+    hooks_toml = ", ".join(f'"{h}"' for h in hooks)
+    make(pdir, name, f'name = "{name}"\ntitle = "{name.title()}"\nversion = "1"\napi = 1\nhooks = [{hooks_toml}]\n')
+    (pdir / name / "plugin.py").write_text(py)
+    for fname, text in files.items():
+        (pdir / name / f"{fname}.py").write_text(text)
+
+
+def only_demo():
+    (lp,) = plugins.loaded()
+    assert lp.manifest.name == "demo"
+    return lp
+
+
+def test_load_registers_everything(pdir):
+    install_demo(pdir)
+    lp = only_demo()
+    r = lp.api.registered
+    assert sorted(r.hooks) == ["PostToolUse", "Stop"]
+    assert r.cli is not None
+    assert sorted(r.requests) == ["add_note", "notes"]
+    for fn in (r.claude_md, r.allowed_tools, r.badge, r.watch, r.on_archive, r.doctor):
+        assert callable(fn)
+    assert [secs for secs, _ in r.every] == [1]
+    assert r.replace == {}
+    assert plugins.failures() == []
+    assert lp.api.name == "demo" and lp.api.aux_env() == {"AGENTMGR_AUX": "demo"}
+
+
+def test_replace_registered_when_asked(pdir, monkeypatch):
+    install_demo(pdir)
+    monkeypatch.setenv("DEMO_REPLACE", "1")
+    assert sorted(only_demo().api.registered.replace) == ["progress_rule"]
+
+
+def test_loaded_once_per_process(pdir):
+    install_demo(pdir)
+    first = only_demo()
+    assert plugins.loaded(command="demo") == [first]
+    assert plugins.loaded(event="Stop") == [first]
+    assert plugins.loaded(command="other") == []
+
+
+def test_import_error_is_skipped(pdir):
+    make_plugin(pdir, "broken", "import no_such_module_anywhere\n")
+    assert plugins.loaded() == []
+    (s,) = plugins.failures()
+    assert s.name == "broken"
+    assert s.reason == "ModuleNotFoundError: No module named 'no_such_module_anywhere'"
+
+
+def test_missing_register_is_skipped(pdir):
+    make_plugin(pdir, "empty", "X = 1\n")
+    assert plugins.loaded() == []
+    assert "register" in plugins.failures()[0].reason
+
+
+def test_register_raises_is_skipped(pdir):
+    install_demo(pdir)
+    make_plugin(pdir, "angry", "def register(api):\n    raise RuntimeError('nope')\n")
+    assert [lp.manifest.name for lp in plugins.loaded()] == ["demo"]
+    assert [(s.name, s.reason) for s in plugins.failures()] == [("angry", "RuntimeError: nope")]
+
+
+def test_hook_for_undeclared_event_is_skipped(pdir):
+    make_plugin(pdir, "sneaky", "def register(api):\n    api.hook('PreToolUse', lambda ctx: None)\n", hooks=["Stop"])
+    assert plugins.loaded() == []
+    (s,) = plugins.failures()
+    assert s.reason.startswith("ValueError: ") and "PreToolUse" in s.reason
+
+
+def test_unknown_section_is_skipped(pdir):
+    make_plugin(pdir, "replacer", "def register(api):\n    api.replace_claude_md('rules', lambda ws: 'x')\n")
+    assert plugins.loaded() == []
+    (s,) = plugins.failures()
+    assert s.reason.startswith("ValueError: ") and "'rules'" in s.reason
+
+
+def test_cli_without_command_is_skipped(pdir):
+    make_plugin(pdir, "nocmd", "import typer\ndef register(api):\n    api.cli(typer.Typer())\n")
+    assert plugins.loaded() == []
+    assert "command" in plugins.failures()[0].reason
+
+
+def test_bad_badge_tone():
+    with pytest.raises(ValueError):
+        Badge("3", tone="pink")
+    assert Badge("3", tone="red").help == ""
+
+
+def test_lazy_by_event(pdir):
+    install_demo(pdir)
+    sys.modules.pop("wm_plugin_demo", None)
+    sys.modules.pop("wm_plugin_demo.plugin", None)
+    assert plugins.loaded(event="PreToolUse") == []
+    assert "wm_plugin_demo" not in sys.modules
+    assert [lp.manifest.name for lp in plugins.loaded(event="PostToolUse")] == ["demo"]
+    assert "wm_plugin_demo.plugin" in sys.modules
+
+
+def fake_ws(tmp_path):
+    return WorkstreamInfo(key="WS-9", name="x", ticket=None, folder=tmp_path / "WS-9", status="working", repos=())
+
+
+def test_call_isolates_and_logs(pdir, monkeypatch, logged, tmp_path):
+    install_demo(pdir)
+    monkeypatch.setenv("DEMO_RAISE", "1")
+    lp = only_demo()
+    ctx = HookContext(ws=fake_ws(tmp_path), event="PostToolUse", payload={}, aux=False)
+    assert plugins.call(lp, "hook PostToolUse", lp.api.registered.hooks["PostToolUse"], ctx, budget=2.0) is None
+    assert logged == ["plugin demo: hook PostToolUse: RuntimeError: boom"]
+    assert [(s.name, s.reason) for s in plugins.failures()] == [("demo", "hook PostToolUse: RuntimeError: boom")]
+
+
+def test_call_logs_over_budget(pdir, logged):
+    install_demo(pdir)
+    lp = only_demo()
+    assert plugins.call(lp, "badge", lambda x: time.sleep(0.03) or x, 7, budget=0.01) == 7
+    (line,) = logged
+    assert re.fullmatch(r"plugin demo: badge took \d+\.\d\ds", line)
+    assert plugins.call(lp, "badge", lambda: 8, budget=1.0) == 8
+    assert len(logged) == 1
+
+
+def test_sys_exit_is_contained(pdir, logged):
+    make_plugin(pdir, "quitter", "import sys\ndef register(api):\n    sys.exit(2)\n")
+    assert plugins.loaded() == []
+    assert plugins.failures()[0].reason == "SystemExit: 2"
+
+
+def test_api_log(pdir, logged):
+    install_demo(pdir)
+    only_demo().api.log("hello")
+    assert logged == ["plugin demo: hello"]
+
+
+def test_two_plugins_sibling_modules(pdir):
+    py = "from . import util\ndef register(api):\n    api.request('who', lambda: util.WHO)\n"
+    make_plugin(pdir, "first-one", py, util="WHO = 'first'\n")
+    make_plugin(pdir, "second", py, util="WHO = 'second'\n")
+    a, b = plugins.loaded()
+    assert (a.api.registered.requests["who"](), b.api.registered.requests["who"]()) == ("first", "second")
+    assert "wm_plugin_first_one.util" in sys.modules and "wm_plugin_second.util" in sys.modules
+    assert "util" not in sys.modules
+
+
+def test_demo_fixture_behaviour(pdir, tmp_path, monkeypatch):
+    install_demo(pdir)
+    ws = ws_mod.new(launch=False, name="notes here", repo_queries=["web"])
+    lp = only_demo()
+    api, r = lp.api, lp.api.registered
+    info = api.workstream(ws.key.lower())
+    assert (info.key, info.name, info.folder) == (ws.key, "notes here", ws.path)
+    (repo,) = info.repos
+    assert isinstance(repo, RepoInfo) and repo.repo == "acme-web" and repo.worktree == ws.path / "acme-web"
+    assert [w.key for w in api.workstreams()] == [ws.key]
+    assert api.data_dir(info) == ws.path / ".wm" / "demo" and api.data_dir(info).is_dir()
+    assert api.git(repo.worktree, "rev-parse", "--abbrev-ref", "HEAD") == repo.branch
+    with pytest.raises(api.GitError):
+        api.git(repo.worktree, "no-such-command")
+    (repo.worktree / "new.txt").write_text("hi\n")
+    assert "new.txt" in str(api.repo_diff(repo))
+    assert isinstance(api.wm_executable(), str) and isinstance(api.claude_missing(), bool)
+    assert api.claude_command() == config.get_config().claude_cmd
+    with pytest.raises(PluginError):
+        api.workstream("WS-404")
+
+    assert r.requests["notes"](key=ws.key) == []
+    assert r.badge(info) is None
+    r.requests["add_note"](key=ws.key, text="first")
+    assert r.requests["notes"](key=ws.key) == ["first"]
+    assert r.badge(info) == Badge(text="1", tone="blue", help="1 demo note")
+    assert r.watch(info) == [api.data_dir(info) / "notes.json"]
+    assert "## Demo notes" in r.claude_md(info) and "first" in r.claude_md(info)
+    assert r.allowed_tools(info) == [f"Bash(wm demo add {ws.key} *)"]
+    assert r.doctor() == []
+    monkeypatch.setenv("DEMO_DOCTOR", "1")
+    assert r.doctor() == ["demo: example problem"]
+
+    ctx = HookContext(ws=info, event="PostToolUse", payload={}, aux=False)
+    assert r.hooks["PostToolUse"](ctx) is None
+    (api.data_dir(info) / "inbox.txt").write_text("look here")
+    assert r.hooks["PostToolUse"](ctx) == HookResult(context="look here")
+    assert not (api.data_dir(info) / "inbox.txt").exists()
+    stop = HookContext(ws=info, event="Stop", payload={}, aux=False)
+    assert r.hooks["Stop"](stop) is None
+    (api.data_dir(info) / "job.txt").write_text("waiting on the build")
+    assert r.hooks["Stop"](stop) == HookResult(waiting_on="waiting on the build")
+    (api.data_dir(info) / "job.txt").unlink()
+    (api.data_dir(info) / "block.txt").write_text("keep going")
+    assert r.hooks["Stop"](stop) == HookResult(block="keep going")
+
+    marker = tmp_path / "marker"
+    marker.mkdir()
+    monkeypatch.setenv("DEMO_MARKER", str(marker))
+    r.on_archive(info)
+    assert (marker / "archived.txt").read_text() == ws.key
+    (_, tick), = r.every
+    tick()
+    tick()
+    assert (marker / "ticks.txt").read_text() == "2"
+
+
+def test_demo_cli_adds_note(pdir):
+    install_demo(pdir)
+    ws = ws_mod.new(launch=False, name="cli notes")
+    lp = only_demo()
+    out = CliRunner().invoke(lp.api.registered.cli, ["add", ws.key, "from the cli"])
+    assert out.exit_code == 0, out.output
+    assert lp.api.registered.requests["notes"](key=ws.key) == ["from the cli"]
+    out = CliRunner().invoke(lp.api.registered.cli, ["add", "WS-404", "x"])
+    assert out.exit_code != 0 and isinstance(out.exception, PluginError)
+
+
+def test_archived_workstream_is_refused(pdir):
+    install_demo(pdir)
+    ws = ws_mod.new(launch=False, name="old one")
+    ws_mod.archive(ws.key)
+    api = only_demo().api
+    assert api.workstreams() == []
+    with pytest.raises(PluginError, match="archived"):
+        api.workstream(ws.key)

@@ -1,18 +1,28 @@
-"""Finding plugins: read manifests, never import plugin code."""
+"""Finding plugins (manifests, read without importing plugin code), loading them, and calling them in isolation."""
 
 from __future__ import annotations
 
 import hashlib
+import importlib
+import importlib.machinery
+import importlib.util
 import json
 import re
+import sys
+import threading
+import time
 import tomllib
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Literal
+from typing import TYPE_CHECKING, Any, Literal
 
 from .config import Config, get_config
-from .plugin import API_VERSION
+from .plugin import API_VERSION, Api, RepoInfo, WorkstreamInfo
 from .templates import HOOK_EVENTS
+
+if TYPE_CHECKING:
+    from . import db
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9-]*$")
 
@@ -176,3 +186,129 @@ def fingerprint(cfg: Config | None = None) -> str:
                 h.update(f"|{fname}:-".encode())
     h.update(json.dumps(sorted(_off(cfg))).encode())
     return h.hexdigest()
+
+
+# Logging. Hooks point this at the hook log; the app-server leaves it on stderr.
+
+def stderr_logger(msg: str) -> None:
+    print(msg, file=sys.stderr, flush=True)
+
+
+_logger: Callable[[str], None] = stderr_logger
+
+
+def set_logger(fn: Callable[[str], None]) -> None:
+    global _logger
+    _logger = fn
+
+
+def log(msg: str) -> None:
+    _logger(msg)
+
+
+# Loading
+
+@dataclass
+class Loaded:
+    manifest: Manifest
+    api: Api  # holds what the plugin registered, in `api.registered`
+
+
+MODULE_PREFIX = "wm_plugin_"
+
+_cache: dict[Path, Loaded | Skipped] = {}  # by plugin folder: loaded once per process
+_failures: dict[tuple[str, str], Skipped] = {}  # by (plugin, what failed): the latest of each
+_lock = threading.RLock()  # the app-server loads and calls plugins from several threads
+
+
+def module_name(name: str) -> str:
+    return MODULE_PREFIX + name.replace("-", "_")
+
+
+def _forget_modules(package: str) -> None:
+    for mod in [m for m in sys.modules if m == package or m.startswith(package + ".")]:
+        del sys.modules[mod]
+
+
+def load(m: Manifest) -> Loaded | Skipped:
+    """Import the plugin and call its `register(api)`. The folder becomes package `wm_plugin_<name>` with plugin.py
+    as its `plugin` submodule, so a plugin's own modules import as `from . import util` and never clash with
+    another plugin's. Any exception skips the plugin with the reason."""
+    package = module_name(m.name)
+    _forget_modules(package)
+    try:
+        spec = importlib.machinery.ModuleSpec(package, None, is_package=True)
+        spec.submodule_search_locations = [str(m.path)]
+        sys.modules[package] = importlib.util.module_from_spec(spec)
+        module = importlib.import_module(f"{package}.plugin")
+        register = getattr(module, "register", None)
+        if not callable(register):
+            raise TypeError("plugin.py has no register(api) function")
+        api = Api(m)
+        register(api)
+    except (Exception, SystemExit) as e:  # a plugin calling sys.exit() must not end wm
+        _forget_modules(package)
+        return Skipped(m.name, m.path, f"{type(e).__name__}: {e}")
+    return Loaded(m, api)
+
+
+def loaded(*, event: str | None = None, command: str | None = None) -> list[Loaded]:
+    """The plugins that load, in name order, imported only if they declare `event` / `command` when given. Each is
+    loaded once per process; those that fail are in `failures()`."""
+    manifests, _ = discover()
+    out: list[Loaded] = []
+    for m in manifests:
+        if event is not None and event not in m.hooks:
+            continue
+        if command is not None and m.command != command:
+            continue
+        with _lock:
+            if m.path not in _cache:
+                _cache[m.path] = load(m)
+            result = _cache[m.path]
+            if isinstance(result, Skipped):
+                _failures[(m.name, "load")] = result
+        if isinstance(result, Loaded):
+            out.append(result)
+    return out
+
+
+def failures() -> list[Skipped]:
+    """Plugins that failed to load, and handlers that raised (the latest failure of each), in the order seen."""
+    with _lock:
+        return list(_failures.values())
+
+
+def reset() -> None:
+    """Forget loaded plugins and failures, so the next `loaded()` imports them afresh."""
+    with _lock:
+        for result in _cache.values():
+            _forget_modules(module_name(result.manifest.name if isinstance(result, Loaded) else result.name))
+        _cache.clear()
+        _failures.clear()
+
+
+def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None) -> Any:
+    """`fn(*args)`, isolated: an exception is logged and recorded and gives None. A call over `budget` seconds is
+    logged, never stopped."""
+    name = lp.manifest.name
+    start = time.monotonic()
+    try:
+        return fn(*args)
+    except (Exception, SystemExit) as e:
+        reason = f"{what}: {type(e).__name__}: {e}"
+        log(f"plugin {name}: {reason}")
+        with _lock:
+            _failures[(name, what)] = Skipped(name, lp.manifest.path, reason)
+        return None
+    finally:
+        secs = time.monotonic() - start
+        if budget is not None and secs > budget:
+            log(f"plugin {name}: {what} took {secs:.2f}s")
+
+
+def workstream_info(ws: db.Workstream, links: list[db.RepoLink]) -> WorkstreamInfo:
+    """The read-only view of a workstream that plugin handlers get."""
+    return WorkstreamInfo(key=ws.key, name=ws.name, ticket=ws.ticket, folder=ws.path, status=ws.status,
+                          repos=tuple(RepoInfo(repo=link.repo, branch=link.branch, base=link.base,
+                                               worktree=Path(link.worktree_path)) for link in links))

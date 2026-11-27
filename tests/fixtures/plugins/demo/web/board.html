@@ -1,0 +1,18 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>Board</title></head>
+<body>
+<h1 id="title"></h1>
+<p id="count"></p>
+<script>
+async function show() {
+  document.getElementById("title").textContent = wm.context.key;
+  const notes = await wm.request("notes", {key: wm.context.key});
+  document.getElementById("count").textContent = `${notes.length} notes`;
+}
+wm.on("workstream", show);
+wm.on("changed", show);
+show();
+</script>
+</body>
+</html>
