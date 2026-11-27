@@ -409,6 +409,48 @@ def next_(
     tmux.switch_client(candidates[0].key, client)
 
 
+plugins_app = typer.Typer(
+    help="List plugins, turn them on or off.", invoke_without_command=True, no_args_is_help=False,
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+app.add_typer(plugins_app, name="plugins")
+
+
+@plugins_app.callback()
+def plugins_list(ctx: typer.Context) -> None:
+    """With no command: list plugins."""
+    if ctx.invoked_subcommand is not None:
+        return
+    from . import plugins
+
+    manifests, skipped = plugins.discover()
+    rows = [(m.name, "on", m.version, "") for m in manifests]
+    rows += [(s.name, "off" if s.reason == "turned off" else "skipped", "", s.reason) for s in skipped]
+    for name, status, version, reason in sorted(rows):
+        typer.echo("  ".join(part for part in (name, status, version, reason if status == "skipped" else "") if part))
+
+
+def _set_plugin(name: str, on: bool) -> None:
+    from . import plugins
+
+    manifests, skipped = plugins.discover()
+    if name not in {m.name for m in manifests} | {s.name for s in skipped}:
+        _fail(f"no plugin named '{name}'")
+    plugins.set_enabled(name, on)
+
+
+@plugins_app.command("on")
+def plugins_on(name: str) -> None:
+    """Turn a plugin on."""
+    _set_plugin(name, True)
+
+
+@plugins_app.command("off")
+def plugins_off(name: str) -> None:
+    """Turn a plugin off."""
+    _set_plugin(name, False)
+
+
 @app.command(hidden=True)
 def dashboard() -> None:
     from .tui import run

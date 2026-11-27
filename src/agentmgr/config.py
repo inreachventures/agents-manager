@@ -44,6 +44,10 @@ class Config:
         return self.home / "memory"
 
     @property
+    def plugins_dir(self) -> Path:
+        return _expand(os.environ.get("AGENTMGR_PLUGINS_DIR", self.home / "plugins"))
+
+    @property
     def tmux_conf(self) -> Path:
         return self.home / "tmux.conf"
 
