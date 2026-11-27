@@ -58,6 +58,7 @@ struct Workstream: Decodable, Identifiable, Equatable {
     var baseCi: String?
     var readyToArchive: Bool?  // everything merged, CI passed or none on base (or the example)
     var repos: [RepoState]
+    @EmptyIfAbsent var badges: [WorkstreamBadge]  // from plugins, after the status marks; none from an older wm
 
     var id: String { key }
     var ident: String { ticket ?? key }
@@ -230,6 +231,59 @@ struct ArchiveReport: Decodable, Identifiable {
         var pr: String
         var blockers: [String]
         var id: String { repo }
+    }
+}
+
+// MARK: - Plugins
+
+/// A plugin in the plugins folder, as `plugins` lists it. Only one that is on has views.
+struct PluginInfo: Decodable, Identifiable, Equatable {
+    var name: String
+    var title: String
+    var version: String
+    var status: String  // "on", "off" or "skipped"
+    var reason: String?  // why it was skipped
+    var path: String  // its folder
+    var views: [PluginViewSpec]
+
+    var id: String { name }
+}
+
+struct PluginsResult: Decodable { var plugins: [PluginInfo] }
+
+/// A page a plugin shows in the app: in the main area beside Terminal (`place` "main") or in the side panel beside
+/// Changes ("panel").
+struct PluginViewSpec: Decodable, Identifiable, Equatable {
+    var id: String
+    var title: String
+    var place: String
+    var page: String  // absolute path, inside the plugin's folder
+    var shortcut: String?
+}
+
+/// A mark a plugin puts on a workstream's sidebar row.
+struct WorkstreamBadge: Decodable, Equatable {
+    var plugin: String
+    var text: String
+    var tone: String
+    var help: String
+}
+
+/// An array that decodes as empty when its key is missing, for fields an older wm doesn't send.
+@propertyWrapper
+struct EmptyIfAbsent<Element: Decodable & Equatable>: Decodable, Equatable {
+    var wrappedValue: [Element] = []
+
+    init() {}
+
+    init(from decoder: Decoder) throws {
+        wrappedValue = try decoder.singleValueContainer().decode([Element].self)
+    }
+}
+
+extension KeyedDecodingContainer {
+    func decode<Element>(_ type: EmptyIfAbsent<Element>.Type, forKey key: Key) throws -> EmptyIfAbsent<Element> {
+        try decodeIfPresent(type, forKey: key) ?? EmptyIfAbsent()
     }
 }
 

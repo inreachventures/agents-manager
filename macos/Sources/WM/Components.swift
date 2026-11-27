@@ -1,6 +1,16 @@
 import AppKit
 import SwiftUI
 
+extension NSColor {
+    /// wm's yellow: system yellow is too pale on white.
+    static var amber: NSColor {
+        NSColor(name: nil) { appearance in
+            appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
+                ? NSColor.systemYellow : NSColor(srgbRed: 0.70, green: 0.47, blue: 0.0, alpha: 1)
+        }
+    }
+}
+
 extension Color {
     /// wm's state colours (view.git_state), readable in light and dark mode.
     static func tone(_ name: String) -> Color {
@@ -17,10 +27,7 @@ extension Color {
         }
     }
 
-    static let amber = Color(nsColor: NSColor(name: nil) { appearance in
-        appearance.bestMatch(from: [.darkAqua, .aqua]) == .darkAqua
-            ? NSColor.systemYellow : NSColor(srgbRed: 0.70, green: 0.47, blue: 0.0, alpha: 1)
-    })
+    static let amber = Color(nsColor: .amber)
 
     /// The colours Claude Code's /color offers, in its order, as wm sends them.
     static let sessionColors = ["red", "blue", "green", "yellow", "purple", "orange", "pink", "cyan"]

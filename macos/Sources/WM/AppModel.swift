@@ -43,7 +43,8 @@ final class AppModel {
             if showChanges { Task { await loadDiff() } }
         }
     }
-    var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
+    // per workstream: the one repo the changes panel shows (none: all)
+    var soloRepos: [String: String] = [:] { didSet { if oldValue != soloRepos { syncPluginViews() } } }
     var diff: DiffResult?
     var busy: String?
     var refreshing = false
@@ -52,6 +53,13 @@ final class AppModel {
     var terminalFailed: String?  // key whose tmux client exited right after attaching
     var tourStop: TourStop?  // the tour box on screen, if any
     var setup: SetupInfo?  // where repos come from, and the tools wm needs
+
+    // Plugins (Plugins.swift)
+    var plugins: [PluginInfo] = []
+    var centerChoice = UserDefaults.standard.string(forKey: "center") ?? "terminal"  // `center` when it still exists
+    var panelTabChoice = UserDefaults.standard.string(forKey: "panelTab") ?? "changes"  // `panelTab`, the same way
+    var jump: DiffJump?  // a file for the changes panel to scroll to (wm.openDiff); the panel clears it once there
+    @ObservationIgnored let pluginHosts = NSHashTable<PluginWebView.Coordinator>.weakObjects()  // the live plugin pages
 
     @ObservationIgnored let backend = Backend()
     @ObservationIgnored let terminal = TerminalController()
@@ -102,7 +110,8 @@ final class AppModel {
     // MARK: - Lifecycle
 
     func start() async {
-        phase = .starting
+        // a restart (plugins changed, say) keeps the window as it is until the new server's first state
+        if phase != .ready { phase = .starting }
         if env.isEmpty { env = await ShellEnvironment.load() }
         guard let wm = ShellEnvironment.findWM(in: env) else {
             phase = .failed("Can't find `wm` on your PATH. Install it (see the README), or set its path in Settings.")
@@ -117,8 +126,12 @@ final class AppModel {
         terminal.environment = termEnv.map { "\($0.key)=\($0.value)" }
         terminal.onDetached = { [weak self] key in self?.terminalDetached(key) }
 
-        backend.onState = { [weak self] in self?.apply($0) }
+        backend.onState = { [weak self] in
+            self?.apply($0)
+            self?.pluginStatePushed()
+        }
         backend.onNotice = { [weak self] in self?.toast($0.message, $0.level == "warning" ? .warning : .info) }
+        backend.onEvent = { [weak self] in self?.pluginEvent($0, $1) }
         backend.onExit = { [weak self] in self?.backendExited($0) }
         do {
             try backend.start(wm: wm, environment: env)
@@ -127,6 +140,7 @@ final class AppModel {
             return
         }
         observeFocus()
+        Task { await loadPlugins() }
         diffLoop?.cancel()
         diffLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -218,9 +232,11 @@ final class AppModel {
     private func selectionChanged() {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
+        jump = nil
         terminalFailed = nil
         Task { await loadDiff() }
         syncTerminal()
+        syncPluginViews()
     }
 
     /// Keep the terminal on the selected workstream while its session runs; let go of it otherwise.
