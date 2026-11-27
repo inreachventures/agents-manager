@@ -368,6 +368,27 @@ def record_error(name: str, what: str, reason: str) -> None:
         _errors[(name, what)] = HandlerError(name, what, reason)
 
 
+def call_text(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any) -> str | None:
+    """`call()` for a handler that returns text or None: anything else is recorded in `errors()` and dropped, as is
+    an empty string."""
+    result = call(lp, what, fn, *args)
+    if result is not None and not isinstance(result, str):
+        record_error(lp.manifest.name, what, f"returned {type(result).__name__}, not text")
+        return None
+    return result or None
+
+
+def call_text_list(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any) -> list[str]:
+    """`call()` for a handler that returns a list of text: anything else is recorded in `errors()` and dropped."""
+    result = call(lp, what, fn, *args)
+    if result is None:
+        return []
+    if not isinstance(result, list) or not all(isinstance(x, str) for x in result):
+        record_error(lp.manifest.name, what, f"returned {type(result).__name__}, not a list of text")
+        return []
+    return result
+
+
 def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[str], dict[str, str]]:
     """The plugin sections to append to CLAUDE.md, in plugin name order, and the named core sections plugins replace.
     Two plugins replacing the same section: the first by name wins, the other is recorded in `errors()`."""
@@ -378,12 +399,12 @@ def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[s
     for lp in loaded():
         name = lp.manifest.name
         reg = lp.api.registered
-        if reg.claude_md and (text := call(lp, "claude_md", reg.claude_md, info)):
+        if reg.claude_md and (text := call_text(lp, "claude_md", reg.claude_md, info)):
             sections.append(text)
         for section, fn in reg.replace.items():
             if section in owner:
                 record_error(name, f"replaces {section}", f"already replaced by {owner[section]}")
-            elif text := call(lp, f"replace {section}", fn, info):
+            elif text := call_text(lp, f"replace {section}", fn, info):
                 replacements[section] = text
                 owner[section] = name
     return sections, replacements
@@ -394,9 +415,8 @@ def allowed_tools(ws: db.Workstream, links: list[db.RepoLink]) -> list[str]:
     info = workstream_info(ws, links)
     out: list[str] = []
     for lp in loaded():
-        if lp.api.registered.allowed_tools and (tools := call(lp, "allowed_tools", lp.api.registered.allowed_tools,
-                                                               info)):
-            out += tools
+        if lp.api.registered.allowed_tools:
+            out += call_text_list(lp, "allowed_tools", lp.api.registered.allowed_tools, info)
     return out
 
 
@@ -413,7 +433,7 @@ def doctor_problems() -> list[str]:
     out: list[str] = []
     for lp in loaded():  # first, so that skipped() includes plugins that fail to load
         if lp.api.registered.doctor:
-            out += [str(p) for p in call(lp, "doctor", lp.api.registered.doctor) or []]
+            out += call_text_list(lp, "doctor", lp.api.registered.doctor)
     out = [f"{s.name}: skipped: {s.reason}" for s in skipped()] + out
     out += [f"{e.name}: {e.what}: {e.reason}" for e in errors()]
     return out

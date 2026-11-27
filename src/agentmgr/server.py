@@ -264,7 +264,7 @@ class Server:
             traceback.print_exc()
         try:
             workstream.repoint_hooks()
-        except (workstream.WorkstreamError, OSError):
+        except Exception:  # noqa: BLE001 (regenerating runs plugin code: the server starts whatever it raises)
             traceback.print_exc()
         for fn, seconds in ((self.push_state, None), (self.refresh_prs, PR_REFRESH_SECONDS),
                             (self.fetch_bases, FETCH_SECONDS)):

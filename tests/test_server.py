@@ -84,6 +84,17 @@ def test_serve_answers_each_line_and_pushes_state(env):
     assert [w["key"] for w in replies[1]["result"]["workstreams"]] == ["WS-1"]
 
 
+def test_serve_starts_when_repointing_hooks_raises(env, monkeypatch, capsys):
+    def boom():
+        raise AttributeError("a plugin returned the wrong thing")
+
+    monkeypatch.setattr(ws_mod, "repoint_hooks", boom)
+    out = io.StringIO()
+    server.Server(out).serve(io.StringIO('{"id": 1, "method": "repos"}\n'))
+    assert [json.loads(line)["id"] for line in out.getvalue().splitlines() if '"id"' in line] == [1]
+    assert "AttributeError: a plugin returned the wrong thing" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(not tmux.available(), reason="needs tmux")
 def test_app_views_share_the_session_and_go_with_it(env):
     try:

@@ -141,3 +141,30 @@ def test_doctor_without_plugins_has_no_plugins_heading(env, tmp_path, monkeypatc
     monkeypatch.setenv("AGENTMGR_PLUGINS_DIR", str(tmp_path / "none"))
     config.get_config.cache_clear()
     assert "Plugins" not in CliRunner().invoke(cli.app, ["doctor"]).output
+
+
+@pytest.mark.parametrize("register, what, reason", [
+    ("api.claude_md(lambda ws: 42)", "claude_md", "returned int, not text"),
+    ("api.claude_md(lambda ws: ['a'])", "claude_md", "returned list, not text"),
+    ("api.replace_claude_md('intake_summary', lambda ws: 3)", "replace intake_summary", "returned int, not text"),
+    ("api.allowed_tools(lambda ws: 7)", "allowed_tools", "returned int, not a list of text"),
+    ("api.allowed_tools(lambda ws: 'Bash(x)')", "allowed_tools", "returned str, not a list of text"),
+    ("api.allowed_tools(lambda ws: ['Bash(x)', 3])", "allowed_tools", "returned list, not a list of text"),
+    ("api.doctor(lambda: 5)", "doctor", "returned int, not a list of text"),
+])
+def test_wrong_return_type_is_an_error_not_a_crash(env, monkeypatch, register, what, reason):
+    d = env.root / "plugins"
+    (d / "bad").mkdir(parents=True)
+    (d / "bad" / "plugin.toml").write_text('name = "bad"\ntitle = "Bad"\nversion = "1"\napi = 1\n')
+    (d / "bad" / "plugin.py").write_text(f"def register(api):\n    {register}\n")
+    monkeypatch.setenv("AGENTMGR_PLUGINS_DIR", str(d))
+    config.get_config.cache_clear()
+
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    cmd = ws_mod.claude_command(db.get_workstream(db.connect(), ws.key), resume=False)
+    tools = cmd[cmd.index("--allowedTools") + 1].split(",")
+    assert f"Bash(wm set {ws.key} *)" in tools and "B" not in tools and "Bash(x)" not in tools
+    assert "4. Summarise back" in claude_md_of(ws)
+    result = CliRunner().invoke(cli.app, ["doctor"])
+    assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
+    assert f"bad: {what}: {reason}" in result.output

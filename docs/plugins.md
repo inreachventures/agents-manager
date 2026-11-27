@@ -507,13 +507,13 @@ def register(a: Api) -> None:
 
 The page asks for the notes on load, when another workstream is selected, and when `notes.json` changes, which `api.watch` reports whether the change came from the page, from `wm scratch add` or from anywhere else. It does not use `wm.on("state")`, so it does no polling. A page that wants status information would use that event, with the comparison shown above.
 
-A repository's `tests/fixtures/plugins/demo` folder is a larger working example that uses every registration method and every `wm` call.
+The `tests/fixtures/plugins/demo` folder in wm's own repository is a larger working example that uses every registration method and every `wm` call.
 
 ## When something goes wrong
 
 A plugin's failure never reaches Claude or the dashboard: it is contained to that plugin and its handler.
 
 - **Log.** Hooks log to `hooks.log` in the wm home (`~/.agents-manager/hooks.log`, or under `AGENTMGR_HOME`). It records handler exceptions (`plugin <name>: hook PostToolUse: RuntimeError: boom`), handlers that ran over budget (`plugin <name>: hook Stop took 2.31s`), invalid return values, and skipped plugins. `api.log` writes there too. The app-server logs the same lines to its own standard error instead.
-- **`wm doctor`.** Has a Plugins section that lists, per plugin: why it was skipped; the latest error of each handler that raised, until that handler next succeeds; a command that clashes with a core command or a CLI that cannot be built; and whatever the plugin's own `api.doctor` function returns. A plugin that is loaded but has a broken handler stays loaded: only that handler is affected.
+- **`wm doctor`.** Has a Plugins section that lists, per plugin: why it was skipped; the latest error of each handler that raised or returned the wrong type (`returned int, not text`, `returned str, not a list of text`), until that handler next succeeds; a command that clashes with a core command or a CLI that cannot be built; and whatever the plugin's own `api.doctor` function returns. A plugin that is loaded but has a broken handler stays loaded: only that handler is affected.
 - **The app.** Settings → Plugins shows each plugin's state and the reason it was skipped, and a notice appears once when a plugin is skipped. A page that cannot load shows a placeholder with a Reload button; a page whose web process dies is reloaded once, and a second death within a minute shows the placeholder.
 - **A page misbehaves.** Attach Safari's Web Inspector (Develop menu, then the app's name) to read its console.
