@@ -214,10 +214,19 @@ class Loaded:
     api: Api  # holds what the plugin registered, in `api.registered`
 
 
+@dataclass(frozen=True)
+class HandlerError:
+    """A loaded plugin's handler raised. The plugin stays loaded; this is not a skip."""
+
+    name: str
+    what: str  # e.g. "hook PostToolUse", "badge"
+    reason: str  # "<Type>: <message>"
+
+
 MODULE_PREFIX = "wm_plugin_"
 
 _cache: dict[Path, Loaded | Skipped] = {}  # by plugin folder: loaded once per process
-_failures: dict[tuple[str, str], Skipped] = {}  # by (plugin, what failed): the latest of each
+_errors: dict[tuple[str, str], HandlerError] = {}  # by (plugin, what): the latest, until it next succeeds
 _lock = threading.RLock()  # the app-server loads and calls plugins from several threads
 
 
@@ -254,7 +263,7 @@ def load(m: Manifest) -> Loaded | Skipped:
 
 def loaded(*, event: str | None = None, command: str | None = None) -> list[Loaded]:
     """The plugins that load, in name order, imported only if they declare `event` / `command` when given. Each is
-    loaded once per process; those that fail are in `failures()`."""
+    loaded once per process; those that fail to load are in `skipped()`."""
     manifests, _ = discover()
     out: list[Loaded] = []
     for m in manifests:
@@ -266,41 +275,55 @@ def loaded(*, event: str | None = None, command: str | None = None) -> list[Load
             if m.path not in _cache:
                 _cache[m.path] = load(m)
             result = _cache[m.path]
-            if isinstance(result, Skipped):
-                _failures[(m.name, "load")] = result
         if isinstance(result, Loaded):
             out.append(result)
     return out
 
 
-def failures() -> list[Skipped]:
-    """Plugins that failed to load, and handlers that raised (the latest failure of each), in the order seen."""
+def skipped() -> list[Skipped]:
+    """Plugins that are skipped, in name order: a manifest wm can't use (bad TOML, wrong api, ...) and, among those
+    `loaded()` has tried, the ones whose import or `register(api)` failed. Not plugins that are turned off, and not
+    handlers that raised in a loaded plugin (those are in `errors()`)."""
+    manifests, skips = discover()
+    out = [s for s in skips if s.reason != "turned off"]
     with _lock:
-        return list(_failures.values())
+        out += [r for m in manifests if isinstance(r := _cache.get(m.path), Skipped)]
+    return sorted(out, key=lambda s: s.name)
+
+
+def errors() -> list[HandlerError]:
+    """Handlers of loaded plugins that raised: the latest error per (plugin, what), dropped once that same call next
+    succeeds. In the order first seen."""
+    with _lock:
+        return list(_errors.values())
 
 
 def reset() -> None:
-    """Forget loaded plugins and failures, so the next `loaded()` imports them afresh."""
+    """Forget loaded plugins, load skips and handler errors, so the next `loaded()` imports them afresh."""
     with _lock:
         for result in _cache.values():
             _forget_modules(module_name(result.manifest.name if isinstance(result, Loaded) else result.name))
         _cache.clear()
-        _failures.clear()
+        _errors.clear()
 
 
 def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None) -> Any:
-    """`fn(*args)`, isolated: an exception is logged and recorded and gives None. A call over `budget` seconds is
-    logged, never stopped."""
+    """`fn(*args)`, isolated: an exception is logged, recorded in `errors()` and gives None; a success clears the
+    error recorded for the same (plugin, what). A call over `budget` seconds is logged, never stopped."""
     name = lp.manifest.name
     start = time.monotonic()
     try:
-        return fn(*args)
+        result = fn(*args)
     except (Exception, SystemExit) as e:
-        reason = f"{what}: {type(e).__name__}: {e}"
-        log(f"plugin {name}: {reason}")
+        reason = f"{type(e).__name__}: {e}"
+        log(f"plugin {name}: {what}: {reason}")
         with _lock:
-            _failures[(name, what)] = Skipped(name, lp.manifest.path, reason)
+            _errors[(name, what)] = HandlerError(name, what, reason)
         return None
+    else:
+        with _lock:
+            _errors.pop((name, what), None)
+        return result
     finally:
         secs = time.monotonic() - start
         if budget is not None and secs > budget:

@@ -167,7 +167,7 @@ def test_load_registers_everything(pdir):
         assert callable(fn)
     assert [secs for secs, _ in r.every] == [1]
     assert r.replace == {}
-    assert plugins.failures() == []
+    assert plugins.skipped() == [] and plugins.errors() == []
     assert lp.api.name == "demo" and lp.api.aux_env() == {"AGENTMGR_AUX": "demo"}
 
 
@@ -188,7 +188,7 @@ def test_loaded_once_per_process(pdir):
 def test_import_error_is_skipped(pdir):
     make_plugin(pdir, "broken", "import no_such_module_anywhere\n")
     assert plugins.loaded() == []
-    (s,) = plugins.failures()
+    (s,) = plugins.skipped()
     assert s.name == "broken"
     assert s.reason == "ModuleNotFoundError: No module named 'no_such_module_anywhere'"
 
@@ -196,34 +196,34 @@ def test_import_error_is_skipped(pdir):
 def test_missing_register_is_skipped(pdir):
     make_plugin(pdir, "empty", "X = 1\n")
     assert plugins.loaded() == []
-    assert "register" in plugins.failures()[0].reason
+    assert "register" in plugins.skipped()[0].reason
 
 
 def test_register_raises_is_skipped(pdir):
     install_demo(pdir)
     make_plugin(pdir, "angry", "def register(api):\n    raise RuntimeError('nope')\n")
     assert [lp.manifest.name for lp in plugins.loaded()] == ["demo"]
-    assert [(s.name, s.reason) for s in plugins.failures()] == [("angry", "RuntimeError: nope")]
+    assert [(s.name, s.reason) for s in plugins.skipped()] == [("angry", "RuntimeError: nope")]
 
 
 def test_hook_for_undeclared_event_is_skipped(pdir):
     make_plugin(pdir, "sneaky", "def register(api):\n    api.hook('PreToolUse', lambda ctx: None)\n", hooks=["Stop"])
     assert plugins.loaded() == []
-    (s,) = plugins.failures()
+    (s,) = plugins.skipped()
     assert s.reason.startswith("ValueError: ") and "PreToolUse" in s.reason
 
 
 def test_unknown_section_is_skipped(pdir):
     make_plugin(pdir, "replacer", "def register(api):\n    api.replace_claude_md('rules', lambda ws: 'x')\n")
     assert plugins.loaded() == []
-    (s,) = plugins.failures()
+    (s,) = plugins.skipped()
     assert s.reason.startswith("ValueError: ") and "'rules'" in s.reason
 
 
 def test_cli_without_command_is_skipped(pdir):
     make_plugin(pdir, "nocmd", "import typer\ndef register(api):\n    api.cli(typer.Typer())\n")
     assert plugins.loaded() == []
-    assert "command" in plugins.failures()[0].reason
+    assert "command" in plugins.skipped()[0].reason
 
 
 def test_bad_badge_tone():
@@ -253,7 +253,41 @@ def test_call_isolates_and_logs(pdir, monkeypatch, logged, tmp_path):
     ctx = HookContext(ws=fake_ws(tmp_path), event="PostToolUse", payload={}, aux=False)
     assert plugins.call(lp, "hook PostToolUse", lp.api.registered.hooks["PostToolUse"], ctx, budget=2.0) is None
     assert logged == ["plugin demo: hook PostToolUse: RuntimeError: boom"]
-    assert [(s.name, s.reason) for s in plugins.failures()] == [("demo", "hook PostToolUse: RuntimeError: boom")]
+    assert plugins.errors() == [plugins.HandlerError("demo", "hook PostToolUse", "RuntimeError: boom")]
+    assert plugins.skipped() == []
+    assert plugins.loaded() == [lp]
+
+
+def test_handler_error_cleared_by_success(pdir, logged):
+    install_demo(pdir)
+    lp = only_demo()
+
+    def flaky(fail):
+        if fail:
+            raise ValueError("bad")
+        return "ok"
+
+    assert plugins.call(lp, "badge", flaky, True) is None
+    assert plugins.call(lp, "doctor", flaky, True) is None
+    assert [(e.what, e.reason) for e in plugins.errors()] == [("badge", "ValueError: bad"),
+                                                              ("doctor", "ValueError: bad")]
+    assert plugins.call(lp, "badge", flaky, False) == "ok"
+    assert [e.what for e in plugins.errors()] == ["doctor"]
+    assert plugins.call(lp, "doctor", flaky, False) == "ok"
+    assert plugins.errors() == [] and plugins.skipped() == []
+
+
+def test_skipped_includes_bad_manifests_not_turned_off(pdir):
+    install_demo(pdir)
+    make(pdir, "oldapi", 'name = "oldapi"\ntitle = "x"\nversion = "1"\napi = 2\n')
+    make_plugin(pdir, "angry", "def register(api):\n    raise RuntimeError('nope')\n")
+    make_plugin(pdir, "later", "def register(api): pass\n")
+    plugins.set_enabled("later", False)
+    assert [lp.manifest.name for lp in plugins.loaded()] == ["demo"]
+    assert [(s.name, s.reason) for s in plugins.skipped()] == [
+        ("angry", "RuntimeError: nope"), ("oldapi", "written for plugin API 2, wm has 1")]
+    plugins.reset()
+    assert [s.name for s in plugins.skipped()] == ["oldapi"]
 
 
 def test_call_logs_over_budget(pdir, logged):
@@ -269,7 +303,7 @@ def test_call_logs_over_budget(pdir, logged):
 def test_sys_exit_is_contained(pdir, logged):
     make_plugin(pdir, "quitter", "import sys\ndef register(api):\n    sys.exit(2)\n")
     assert plugins.loaded() == []
-    assert plugins.failures()[0].reason == "SystemExit: 2"
+    assert plugins.skipped()[0].reason == "SystemExit: 2"
 
 
 def test_api_log(pdir, logged):
