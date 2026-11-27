@@ -189,6 +189,8 @@ class Api:
 
     def workstream(self, key: str) -> WorkstreamInfo:
         """The active workstream `key`. Raises PluginError if there is none or it is archived."""
+        if not isinstance(key, str):
+            raise PluginError(f"a workstream key is text, not {type(key).__name__}")
         from . import db
         from . import workstream as ws_mod
         from .plugins import workstream_info

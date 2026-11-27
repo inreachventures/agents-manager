@@ -408,6 +408,8 @@ def test_demo_fixture_behaviour(pdir, tmp_path, monkeypatch):
     assert api.claude_command() == config.get_config().claude_cmd
     with pytest.raises(PluginError):
         api.workstream("WS-404")
+    with pytest.raises(PluginError, match="a workstream key is text, not int"):
+        api.workstream(7)  # as a page's request might send it
 
     assert r.requests["notes"](key=ws.key) == []
     assert r.badge(info) is None
@@ -525,6 +527,29 @@ def test_core_commands_do_not_import_plugins(wm, pdir):
     for args in (["ls"], ["hook", "Stop"]):
         wm(*args)
         assert not wm.mark.exists(), args
+
+
+def test_hook_imports_only_plugins_that_declare_the_event(wm, env, pdir):
+    import json
+    import subprocess
+
+    install_demo(pdir)  # declares PostToolUse and Stop
+    ws = ws_mod.new(launch=False, name="lazy hooks", repo_queries=["web"])
+    payload = {"session_id": ws.session_id, "cwd": ws.folder, "tool_name": "Read",
+               "tool_input": {"file_path": str(ws.path / "TASK.md")}}
+
+    def hook(event):
+        exe = Path(sys.executable).parent / "wm"
+        r = subprocess.run([str(exe), "hook", event], input=json.dumps(payload), capture_output=True, text=True,
+                           env=os.environ.copy())
+        assert r.returncode == 0, r.stderr
+
+    assert wm.mark.exists()  # creating the workstream imported it, in this process
+    wm.mark.unlink()
+    hook("PreToolUse")
+    assert not wm.mark.exists()
+    hook("PostToolUse")  # the same plugin, for an event it declares: imported
+    assert wm.mark.exists()
 
 
 def test_plugin_command_collision_with_core_is_skipped(wm, pdir):

@@ -240,7 +240,8 @@ class Server:
         self.watched: dict[tuple[str, str], tuple] = {}  # (plugin, workstream key) -> _stamp of its watched paths
 
     def send(self, msg: dict) -> None:
-        line = json.dumps(msg, separators=(",", ":")) + "\n"
+        # allow_nan=False: NaN or Infinity isn't JSON and the app could not read the line; a request gets an error
+        line = json.dumps(msg, separators=(",", ":"), allow_nan=False) + "\n"
         with self.lock:
             try:
                 self.out.write(line)
@@ -590,6 +591,8 @@ class Server:
 
     def rpc_send(self, key: str, text: str) -> dict:
         """Type `text` into the workstream's Claude session and press Enter, as a plugin's view asks."""
+        if not isinstance(text, str) or not text:
+            raise PluginError("text must be non-empty text")
         ws = workstream.require(db.connect(), key)
         if not workstream.session_alive(ws):
             raise workstream.WorkstreamError(f"{ws.key} is stopped; resume it first")
@@ -602,6 +605,8 @@ class Server:
 
     def rpc_set_plugin(self, name: str, on: bool) -> dict:
         """Turn a plugin on or off. The next state push sees the plugins folder changed (check_plugins)."""
+        if not isinstance(on, bool):
+            raise PluginError("on must be true or false")
         manifests, skips = plugins.discover()
         if name not in {m.name for m in manifests} | {s.name for s in skips}:
             raise PluginError(f"no plugin named '{name}'")

@@ -41,6 +41,8 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setenv("GIT_AUTHOR_EMAIL", "t@example.com")
     monkeypatch.setenv("GIT_COMMITTER_NAME", "t")
     monkeypatch.setenv("GIT_COMMITTER_EMAIL", "t@example.com")
+    monkeypatch.delenv("AGENTMGR_AUX", raising=False)  # a test run from an auxiliary session is not one itself
+    monkeypatch.delenv("AGENTMGR_PLUGINS_DIR", raising=False)  # plugins under the test's own home, none by default
     config.get_config.cache_clear()
     for name in ("acme-web", "acme-ml-pipeline", "release-tools"):
         make_repo(code, origins, name)

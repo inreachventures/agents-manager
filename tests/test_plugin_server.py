@@ -106,6 +106,8 @@ def test_set_plugin(pdir):
     assert demo["status"] == "off"
     assert ask(srv, "set_plugin", name="demo", on=True)["result"] == {}
     assert ask(srv, "set_plugin", name="nope", on=False)["error"] == "no plugin named 'nope'"
+    assert ask(srv, "set_plugin", name="demo", on="false")["error"] == "on must be true or false"
+    assert [p["status"] for p in ask(srv, "plugins")["result"]["plugins"]] == ["on"]
 
 
 def test_plugin_request_roundtrip(pdir):
@@ -142,6 +144,15 @@ def test_plugin_request_errors(pdir, capsys):
     assert error("odd", "quit", {}) == "SystemExit: 3"  # answered, and the server lives on
     assert error("odd", "thing", {}).startswith("TypeError: Object of type object is not JSON serializable")
     assert error("demo", "notes", ["WS-1"]) == "params must be an object"
+
+
+def test_a_result_that_is_not_json_is_an_error(pdir, capsys):
+    make_plugin(pdir, "odd", "def register(api):\n    api.request('nan', lambda: {'x': float('nan')})\n"
+                "    api.request('inf', lambda: [float('inf')])\n")
+    srv = server.Server(io.StringIO())
+    for method in ("nan", "inf"):
+        reply = ask(srv, "plugin_request", plugin="odd", method=method, params={})
+        assert reply["error"].startswith("ValueError: Out of range float values are not JSON compliant"), reply
 
 
 def test_badges_in_state(pdir):
@@ -258,6 +269,8 @@ def test_send_refuses_stopped(pdir, monkeypatch):
     ws = ws_mod.new(launch=False, name="x y")
     srv = server.Server(io.StringIO())
     assert ask(srv, "send", key=ws.key, text="hi")["error"] == f"{ws.key} is stopped; resume it first"
+    for text in ("", 5, None):
+        assert ask(srv, "send", key=ws.key, text=text)["error"] == "text must be non-empty text"
 
     sent = []
     monkeypatch.setattr(ws_mod, "session_alive", lambda w: True)
