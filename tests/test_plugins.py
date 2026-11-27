@@ -88,6 +88,63 @@ def test_unknown_hook_event_is_skipped(pdir):
     assert "Bogus" in skipped[0].reason
 
 
+def view_toml(name, *views):
+    head = f'name = "{name}"\ntitle = "x"\nversion = "1"\napi = 1\n'
+    return head + "".join(f'[[views]]\nid = "{vid}"\ntitle = "V"\nplace = "main"\npage = "{page}"\n'
+                          for vid, page in views)
+
+
+def test_view_pages_must_stay_in_the_plugin_folder(pdir, tmp_path):
+    make(pdir, "escape", view_toml("escape", ("v", "../../x.html")))
+    make(pdir, "absolute", view_toml("absolute", ("v", str(tmp_path / "x.html"))))
+    make(pdir, "linked", view_toml("linked", ("v", "web/x.html")))
+    (pdir / "linked" / "web").symlink_to(tmp_path)  # a link out of the folder counts as outside
+    make(pdir, "inside", view_toml("inside", ("v", "web/../index.html")))
+    manifests, skipped = plugins.discover()
+    assert [m.name for m in manifests] == ["inside"]
+    assert {s.name: s.reason for s in skipped} == {
+        "absolute": f"view page {str(tmp_path / 'x.html')!r} is outside the plugin folder",
+        "escape": "view page '../../x.html' is outside the plugin folder",
+        "linked": "view page 'web/x.html' is outside the plugin folder",
+    }
+
+
+def test_duplicate_view_ids_are_skipped(pdir):
+    make(pdir, "twice", view_toml("twice", ("v", "a.html"), ("v", "b.html")))
+    assert plugins.discover() == ([], [plugins.Skipped("twice", pdir / "twice", "view id 'v' is used twice")])
+
+
+def test_forget_modules_while_other_threads_import():
+    """The app-server loads plugins while other threads import: forgetting a plugin's modules must not trip over
+    sys.modules changing size."""
+    import threading
+    import types
+
+    stop = threading.Event()
+
+    def churn():
+        i = 0
+        while not stop.is_set():
+            name = f"_wm_test_churn_{i % 50}"
+            sys.modules[name] = types.ModuleType(name)
+            sys.modules.pop(f"_wm_test_churn_{(i + 25) % 50}", None)
+            i += 1
+
+    interval = sys.getswitchinterval()
+    sys.setswitchinterval(1e-6)
+    t = threading.Thread(target=churn)
+    t.start()
+    try:
+        for _ in range(3000):
+            plugins._forget_modules("wm_plugin_nothing")
+    finally:
+        stop.set()
+        t.join()
+        sys.setswitchinterval(interval)
+        for name in [m for m in list(sys.modules) if m.startswith("_wm_test_churn_")]:
+            del sys.modules[name]
+
+
 def test_off_and_on(pdir, env):
     install_demo(pdir)
     cfg = config.get_config()

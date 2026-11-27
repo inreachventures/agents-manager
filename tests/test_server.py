@@ -209,7 +209,7 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
     def ready(base_ci, merged=True):
         row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
                                                                           merged, base_ci)])
-        return server._row(row, False, None)["ready_to_archive"]
+        return server._row(row, False, None, [])["ready_to_archive"]
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)

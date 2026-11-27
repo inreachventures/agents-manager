@@ -63,7 +63,7 @@ def _str(data: dict, key: str, what: str) -> str:
     return value
 
 
-def _view(raw: object) -> ViewSpec:
+def _view(raw: object, folder: Path) -> ViewSpec:
     if not isinstance(raw, dict):
         raise ValueError("each [[views]] entry must be a table")
     place = raw.get("place")
@@ -72,8 +72,21 @@ def _view(raw: object) -> ViewSpec:
     shortcut = raw.get("shortcut")
     if shortcut is not None and not isinstance(shortcut, str):
         raise ValueError("view shortcut must be text")
-    return ViewSpec(id=_str(raw, "id", "view"), title=_str(raw, "title", "view"), place=place,
-                    page=_str(raw, "page", "view"), shortcut=shortcut)
+    page = _str(raw, "page", "view")
+    if not (folder / page).resolve().is_relative_to(folder.resolve()):  # the app shows only the plugin's own files
+        raise ValueError(f"view page {page!r} is outside the plugin folder")
+    return ViewSpec(id=_str(raw, "id", "view"), title=_str(raw, "title", "view"), place=place, page=page,
+                    shortcut=shortcut)
+
+
+def _views(raw: object, folder: Path) -> tuple[ViewSpec, ...]:
+    if not isinstance(raw, list):
+        raise ValueError("views must be [[views]] tables")
+    views = tuple(_view(v, folder) for v in raw)
+    ids = [v.id for v in views]
+    if twice := next((i for i in ids if ids.count(i) > 1), None):
+        raise ValueError(f"view id {twice!r} is used twice")
+    return views
 
 
 def _parse(folder: Path) -> Manifest:
@@ -102,15 +115,22 @@ def _parse(folder: Path) -> Manifest:
         raise ValueError("hooks must be a list of event names")
     if unknown := [h for h in hooks if h not in HOOK_EVENTS]:
         raise ValueError(f"unknown hook event {', '.join(unknown)}")
-    views = data.get("views", [])
-    if not isinstance(views, list):
-        raise ValueError("views must be [[views]] tables")
+    views = _views(data.get("views", []), folder)
     protect = data.get("protect", False)
     if not isinstance(protect, bool):
         raise ValueError("protect must be true or false")
     return Manifest(name=name, title=_str(data, "title", "plugin.toml"), version=_str(data, "version", "plugin.toml"),
                     api=api, path=folder, command=command, hooks=tuple(hooks),
-                    views=tuple(_view(v) for v in views), protect=protect)
+                    views=views, protect=protect)
+
+
+def read_manifest(folder: Path) -> Manifest | None:
+    """The manifest in `folder`, or None if wm can't use it. For a plugin that is turned off, which `discover` doesn't
+    read."""
+    try:
+        return _parse(folder)
+    except ValueError:
+        return None
 
 
 def _off(cfg: Config) -> list[str]:
@@ -236,8 +256,9 @@ def module_name(name: str) -> str:
 
 
 def _forget_modules(package: str) -> None:
-    for mod in [m for m in sys.modules if m == package or m.startswith(package + ".")]:
-        del sys.modules[mod]
+    # list(): a copy taken in one step, as other threads of the app-server may import while we look
+    for mod in [m for m in list(sys.modules) if m == package or m.startswith(package + ".")]:
+        sys.modules.pop(mod, None)
 
 
 def load(m: Manifest) -> Loaded | Skipped:
