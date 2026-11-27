@@ -7,13 +7,15 @@ DEMO_MARKER=dir  on_archive writes dir/archived.txt; the every() job counts in d
 DEMO_IMPORT_MARK=file   importing this module touches the file
 
 In the workstream's data dir (.wm/demo/): inbox.txt is handed to Claude after a tool call and removed; job.txt makes
-Stop wait on it quietly; block.txt makes Stop keep Claude going.
+Stop wait on it quietly; block.txt makes Stop keep Claude going; slow.txt (a number of seconds) makes the "notes"
+request take that long.
 """
 
 from __future__ import annotations
 
 import json
 import os
+import time
 from pathlib import Path
 
 import typer
@@ -53,7 +55,10 @@ def add(key: str, text: str) -> None:
 
 
 def notes(key: str) -> list[str]:
-    return _notes(api.workstream(key))
+    ws = api.workstream(key)
+    if (slow := api.data_dir(ws) / "slow.txt").exists():
+        time.sleep(float(slow.read_text()))
+    return _notes(ws)
 
 
 def add_note(key: str, text: str) -> dict:

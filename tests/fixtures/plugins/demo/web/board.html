@@ -1,17 +1,116 @@
 <!doctype html>
 <html>
-<head><meta charset="utf-8"><title>Board</title></head>
+<head>
+<meta charset="utf-8">
+<title>Board</title>
+<style>
+  body { margin: 0; padding: 16px 20px; background: var(--wm-bg); color: var(--wm-fg); font: 13px var(--wm-font); }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .meta { color: var(--wm-secondary); margin-bottom: 12px; }
+  .meta b { color: var(--wm-accent); font-weight: 600; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  button { font: inherit; }
+  .swatches { display: flex; gap: 4px; margin: 8px 0 12px; }
+  .swatches span { width: 18px; height: 18px; border-radius: 4px; border: 1px solid var(--wm-border); }
+  #log { font: 12px var(--wm-mono); border-top: 1px solid var(--wm-border); padding-top: 8px; margin: 0;
+         list-style: none; padding-left: 0; }
+  #log li.error { color: var(--wm-red); }
+  #log li.event { color: var(--wm-secondary); }
+</style>
+</head>
 <body>
 <h1 id="title"></h1>
-<p id="count"></p>
+<div class="meta">
+  <span id="count"></span> · repo <b id="repo"></b> · theme <b id="theme"></b> · status <b id="status"></b>
+</div>
+<div class="swatches">
+  <span style="background: var(--wm-red)"></span><span style="background: var(--wm-yellow)"></span>
+  <span style="background: var(--wm-green)"></span><span style="background: var(--wm-blue)"></span>
+  <span style="background: var(--wm-cyan)"></span><span style="background: var(--wm-orange)"></span>
+  <span style="background: var(--wm-purple)"></span><span style="background: var(--wm-accent)"></span>
+</div>
+<div class="row">
+  <button id="add">Add a note</button>
+  <button id="unknown">Unknown request</button>
+  <button id="diff">Open first repo's diff</button>
+  <button id="toast">Toast</button>
+  <button id="panel-on">Panel on</button>
+  <button id="panel-off">Panel off</button>
+  <button id="reveal">Reveal CLAUDE.md</button>
+  <button id="notes">Show Notes</button>
+  <button id="terminal">Show Terminal</button>
+  <button id="send">Send "hello"</button>
+</div>
+<ul id="log"></ul>
 <script>
-async function show() {
-  document.getElementById("title").textContent = wm.context.key;
-  const notes = await wm.request("notes", {key: wm.context.key});
-  document.getElementById("count").textContent = `${notes.length} notes`;
+// Exercises every window.wm call; the log survives the page loading again (sessionStorage), so a call rejected
+// while wm restarts is still listed afterwards.
+const log = document.getElementById("log");
+
+function note(text, kind) {
+  const entries = JSON.parse(sessionStorage.getItem("log") || "[]");
+  entries.unshift({text, kind});
+  sessionStorage.setItem("log", JSON.stringify(entries.slice(0, 30)));
+  render();
 }
-wm.on("workstream", show);
-wm.on("changed", show);
+
+function render() {
+  const entries = JSON.parse(sessionStorage.getItem("log") || "[]");
+  log.replaceChildren(...entries.map(e => {
+    const li = document.createElement("li");
+    li.textContent = e.text;
+    li.className = e.kind || "";
+    return li;
+  }));
+}
+
+async function attempt(label, promise) {
+  try {
+    const value = await promise;
+    note(`${label}: ok ${JSON.stringify(value)}`);
+    return value;
+  } catch (e) {
+    note(`${label}: ${e.message}`, "error");
+  }
+}
+
+async function show() {
+  const ctx = wm.context;
+  document.getElementById("title").textContent = ctx.key || "(none)";
+  document.getElementById("repo").textContent = ctx.repo || "all";
+  document.getElementById("theme").textContent = ctx.theme;
+  const notes = await attempt("request notes", wm.request("notes", {key: ctx.key}));
+  if (notes) document.getElementById("count").textContent = `${notes.length} notes`;
+}
+
+const firstRepo = () => (wm.context.repos[0] || {}).repo;
+const calls = {
+  add: () => attempt("request add_note", wm.request("add_note", {key: wm.context.key, text: `note ${Date.now() % 1000}`})),
+  unknown: () => attempt("request nope", wm.request("nope", {})),
+  diff: () => attempt("openDiff", wm.openDiff(firstRepo(), "main.txt", 40)),
+  toast: () => attempt("toast", wm.toast("Hello from the demo board", "info")),
+  "panel-on": () => attempt("panel true", wm.panel(true)),
+  "panel-off": () => attempt("panel false", wm.panel(false)),
+  reveal: () => attempt("reveal", wm.reveal("CLAUDE.md")),
+  notes: () => attempt("show notes", wm.show("notes")),
+  terminal: () => attempt("show terminal", wm.show("terminal")),
+  send: () => attempt("send", wm.send("hello")),
+};
+for (const [id, fn] of Object.entries(calls)) document.getElementById(id).addEventListener("click", fn);
+window.demo = calls;  // for scripted checks
+
+wm.on("workstream", ctx => { note(`event workstream ${ctx.key}`, "event"); show(); });
+wm.on("changed", data => { note(`event changed ${JSON.stringify(data)}`, "event"); show(); });
+wm.on("theme", data => {
+  note(`event theme ${data.theme}`, "event");
+  document.getElementById("theme").textContent = data.theme;
+});
+wm.on("repo", data => {
+  note(`event repo ${data.repo}`, "event");
+  document.getElementById("repo").textContent = data.repo || "all";
+});
+wm.on("state", row => { document.getElementById("status").textContent = row.status || "?"; });
+render();
 show();
 </script>
 </body>
