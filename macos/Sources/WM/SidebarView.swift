@@ -107,6 +107,11 @@ struct WorkstreamRow: View {
                             .help(repo.details)
                     }
                 }
+                if !ws.badges.isEmpty {
+                    HStack(spacing: 4) {
+                        ForEach(Array(ws.badges.enumerated()), id: \.offset) { _, badge in BadgeView(badge: badge) }
+                    }
+                }
             }
             TimelineView(.periodic(from: .now, by: 15)) { context in
                 Text(ago(ws.since, now: context.date))
@@ -131,6 +136,26 @@ struct WorkstreamRow: View {
         } else {
             Text(ws.statusText).foregroundStyle(ws.status == .stopped ? Color.secondary : Color.status(ws.status))
         }
+    }
+}
+
+/// A plugin's mark on a row: its text in a capsule tinted by its tone.
+private struct BadgeView: View {
+    let badge: WorkstreamBadge
+    @Environment(\.backgroundProminence) private var prominence  // .increased: on the selected row's accent color
+
+    var body: some View {
+        let tint = Color.tone(badge.tone)
+        let selected = prominence == .increased
+        Text(badge.text)
+            .font(.caption2.weight(.semibold).monospacedDigit())
+            .lineLimit(1)
+            .padding(.horizontal, 5)
+            .padding(.vertical, 1)
+            .foregroundStyle(selected ? Color.white : tint)
+            .background((selected ? Color.white : tint).opacity(selected ? 0.22 : 0.15), in: Capsule())
+            .fixedSize()
+            .help(badge.help)
     }
 }
 

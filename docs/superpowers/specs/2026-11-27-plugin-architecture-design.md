@@ -199,7 +199,8 @@ author's call on naming when porting; the CLAUDE.md section tells Claude the com
 
 #### 2.5 App-server
 
-- `plugins` request: each plugin's name, title, version, status, views, and the skip reason if any.
+- `plugins` request: each plugin's name, title, version, status, views, and the skip reason if any; and the plugins
+  folder (`dir`), for Settings to reveal.
 - `plugin_request {plugin, method, params}` calls the handler registered with `api.request`. Errors come back as
   normal request errors (the app shows them in the view, not as a crash).
 - `state` gains `badges: [{plugin, text, tone, help}]` per workstream, from `api.badge`. Badge functions run on every

@@ -1,11 +1,18 @@
 import AppKit
 import SwiftUI
 
-/// Where `wm.openDiff` sends the changes panel: a file of `repo` (`path` relative to it), at `line` if set.
+/// Where `wm.openDiff` sends the changes panel: a file of `repo` (`path` relative to it), at `startLine` if set.
 struct DiffJump: Equatable {
     var repo: String
     var path: String
-    var line: Int?
+    var startLine: Int?
+}
+
+/// A plugin's view where the app shows it; `id` is "<plugin>/<view>".
+struct PlacedView: Identifiable {
+    var plugin: PluginInfo
+    var view: PluginViewSpec
+    var id: String { AppModel.viewID(plugin, view) }
 }
 
 /// Plugins: their views in the main area and the side panel, the events the server sends about them, and what their
@@ -14,29 +21,36 @@ extension AppModel {
     // MARK: - Views
 
     /// Every main view of every plugin that is on, in plugin order (only those have views).
-    var mainViews: [(PluginInfo, PluginViewSpec)] { views(place: "main") }
+    var mainViews: [PlacedView] { views(place: "main") }
 
     /// Every side-panel view of every plugin that is on.
-    var panelViews: [(PluginInfo, PluginViewSpec)] { views(place: "panel") }
+    var panelViews: [PlacedView] { views(place: "panel") }
 
-    private func views(place: String) -> [(PluginInfo, PluginViewSpec)] {
-        plugins.flatMap { plugin in plugin.views.filter { $0.place == place }.map { (plugin, $0) } }
+    private func views(place: String) -> [PlacedView] {
+        plugins.flatMap { plugin in
+            plugin.views.filter { $0.place == place }.map { PlacedView(plugin: plugin, view: $0) }
+        }
     }
 
     /// A view by its "<plugin>/<view>" id, if a plugin that is on has it there.
-    func pluginView(_ id: String, place: String) -> (PluginInfo, PluginViewSpec)? {
-        views(place: place).first { Self.viewID($0.0, $0.1) == id }
+    func pluginView(_ id: String, place: String) -> PlacedView? {
+        views(place: place).first { $0.id == id }
     }
 
-    static func viewID(_ plugin: PluginInfo, _ view: PluginViewSpec) -> String { "\(plugin.name)/\(view.id)" }
+    nonisolated static func viewID(_ plugin: PluginInfo, _ view: PluginViewSpec) -> String {
+        "\(plugin.name)/\(view.id)"
+    }
 
     /// The main area: "terminal" or a main view's "<plugin>/<view>". The choice is kept for the app; Terminal shows
     /// while the plugin it names is gone (or not listed yet).
     var center: String {
         get { pluginView(centerChoice, place: "main") == nil ? "terminal" : centerChoice }
         set {
+            keep(center)
+            keep(newValue)
             centerChoice = newValue
             UserDefaults.standard.set(newValue, forKey: "center")
+            if newValue == "terminal" { terminal.focus() }  // not left typing into a page that is hidden
         }
     }
 
@@ -44,22 +58,85 @@ extension AppModel {
     var panelTab: String {
         get { pluginView(panelTabChoice, place: "panel") == nil ? "changes" : panelTabChoice }
         set {
+            keep(panelTab)
+            keep(newValue)
             panelTabChoice = newValue
             UserDefaults.standard.set(newValue, forKey: "panelTab")
         }
     }
 
+    /// A page that has been shown stays loaded (hidden) while its workstream is selected, so switching back to it
+    /// doesn't reload it.
+    private func keep(_ id: String) {
+        if id != "terminal" && id != "changes" && !keptViews.contains(id) { keptViews.insert(id) }
+    }
+
+    /// Whether a plugin's main view fills the main area of the selected (active) workstream: the top bar's repo chips
+    /// are then about that view, not the changes panel.
+    var pluginCentred: Bool {
+        guard let ws = selected, ws.status != .archived else { return false }
+        return center != "terminal"
+    }
+
+    /// The repo picked with the top bar's chips while a plugin's main view is centred (`wm.context.repo`), nil for all.
+    var contextRepo: String? {
+        guard let key = selection, let repo = pluginRepo[key],
+              selected?.repos.contains(where: { $0.repo == repo }) == true else { return nil }
+        return repo
+    }
+
+    /// Show a view by its "<plugin>/<view>" id: centre a main view, or open the side panel on a panel view. The View
+    /// menu's shortcuts and `wm.show`.
+    @discardableResult
+    func showView(_ id: String) -> Bool {
+        if pluginView(id, place: "main") != nil {
+            center = id
+        } else if pluginView(id, place: "panel") != nil {
+            panelTab = id
+            if !showChanges { showChanges = true }
+        } else {
+            return false
+        }
+        return true
+    }
+
+    /// The View menu's items: each view with a `shortcut`, and the shortcut when it is one the app can use.
+    var shortcutViews: [(view: PlacedView, shortcut: KeyboardShortcut?)] {
+        var taken = Set(PluginShortcut.reserved)
+        return (mainViews + panelViews).compactMap { placed in
+            guard let text = placed.view.shortcut else { return nil }
+            switch PluginShortcut.parse(text) {
+            case .success(let parsed) where taken.insert(parsed.canonical).inserted:
+                return (placed, parsed.keyboardShortcut)
+            case .success:
+                PluginShortcut.warn(placed.id, text, "it is taken by the app or another view")
+            case .failure(let error):
+                PluginShortcut.warn(placed.id, text, error.message)
+            }
+            return (placed, nil)
+        }
+    }
+
     // MARK: - From the server
 
-    /// The plugins and their views. An older wm has no `plugins` request: then there are none.
+    /// The plugins and their views. An older wm has no `plugins` request: then there are none. After
+    /// `plugins_changed` the pages load again, since their files may have changed with the plugin's code.
     func loadPlugins() async {
         do {
             let result: PluginsResult = try await backend.call("plugins")
             if result.plugins != plugins { plugins = result.plugins }
+            if pluginsDir != result.dir { pluginsDir = result.dir }
+            if reloadPages {
+                reloadPages = false
+                for host in pluginHosts.allObjects { host.reload() }
+            }
         } catch let error as BackendError where error.stopped {
             // restarting: the next start lists them
+        } catch let error as BackendError where error.message.contains("unknown method 'plugins'") {
+            if !plugins.isEmpty { plugins = [] }  // a wm from before plugins
+            pluginsDir = nil
         } catch {
-            if !plugins.isEmpty { plugins = [] }
+            NSLog("wm: couldn't list the plugins: %@", error.localizedDescription)
         }
     }
 
@@ -67,7 +144,9 @@ extension AppModel {
         switch name {
         case "plugins_changed":
             // The server can't unload a plugin's old code: start a new one, which lists the plugins as they are now.
-            // Requests the pages are waiting on fail with "wm restarted; try again".
+            // Requests the pages are waiting on fail with "wm restarted; try again"; the pages load again once the new
+            // server has listed the plugins.
+            reloadPages = true
             restart()
         case "plugin_changed":
             guard let info = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -100,7 +179,7 @@ extension AppModel {
         soloRepos[key] = repo
         panelTab = "changes"
         if !showChanges { showChanges = true }
-        jump = DiffJump(repo: repo, path: path, line: line)
+        jump = DiffJump(repo: repo, path: path, startLine: line)
     }
 
     /// Show or hide the side panel.
@@ -117,13 +196,7 @@ extension AppModel {
             panelTab = "changes"
             if !showChanges { showChanges = true }
         default:
-            let id = "\(plugin)/\(viewID)"
-            if pluginView(id, place: "main") != nil {
-                center = id
-            } else if pluginView(id, place: "panel") != nil {
-                panelTab = id
-                if !showChanges { showChanges = true }
-            } else {
+            guard showView("\(plugin)/\(viewID)") else {
                 throw BackendError(message: "plugin \(plugin) has no view '\(viewID)'")
             }
         }
@@ -157,6 +230,18 @@ extension AppModel {
         _ = try await backend.requestData("send", ["key": key, "text": text])
     }
 
+    /// Settings › Plugins: the plugins folder in Finder, made first if there is none yet.
+    func revealPluginsFolder() {
+        guard let dir = pluginsDir else { return }
+        do {
+            try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        } catch {
+            toast("Couldn't make \(dir): \(error.localizedDescription)", .error)
+            return
+        }
+        reveal(dir)
+    }
+
     /// Turn a plugin on or off. The server sees the plugins folder change, and the app restarts it.
     func setPlugin(_ name: String, on: Bool) async {
         do {
@@ -164,5 +249,74 @@ extension AppModel {
         } catch {
             toast(error.localizedDescription, .error)
         }
+    }
+}
+
+/// A view's `shortcut` from its manifest, such as "opt+cmd+m": modifiers and one key, joined by "+".
+struct PluginShortcut: Equatable {
+    struct Problem: Error { var message: String }
+
+    var key: String  // a single lowercase character, or a named key ("return", "up", …)
+    var modifiers: Set<String>  // "cmd", "opt", "ctrl", "shift"
+
+    /// "ctrl+opt+shift+cmd+<key>", whatever order and spelling the manifest used: two views can't share one.
+    var canonical: String {
+        (["ctrl", "opt", "shift", "cmd"].filter(modifiers.contains) + [key]).joined(separator: "+")
+    }
+
+    private static let modifierNames = ["cmd": "cmd", "command": "cmd", "⌘": "cmd", "opt": "opt", "option": "opt",
+                                        "alt": "opt", "⌥": "opt", "ctrl": "ctrl", "control": "ctrl", "⌃": "ctrl",
+                                        "shift": "shift", "⇧": "shift"]
+    private static let namedKeys: [String: KeyEquivalent] = [
+        "return": .return, "escape": .escape, "space": .space, "tab": .tab, "delete": .delete, "up": .upArrow,
+        "down": .downArrow, "left": .leftArrow, "right": .rightArrow, "home": .home, "end": .end, "pageup": .pageUp,
+        "pagedown": .pageDown,
+    ]
+    private static let keyAliases = ["enter": "return", "esc": "escape", "backspace": "delete"]
+
+    /// The app's own shortcuts and the standard ones, which a plugin can't take.
+    static let reserved: [String] = {
+        var keys = ["cmd+n", "cmd+j", "opt+cmd+up", "opt+cmd+down", "shift+cmd+return", "shift+cmd+a", "shift+cmd+b",
+                    "cmd+delete", "cmd+r", "opt+cmd+0", "opt+cmd+a", "cmd+q", "cmd+w", "cmd+h", "opt+cmd+h", "cmd+m",
+                    "cmd+,", "cmd+c", "cmd+v", "cmd+x", "cmd+a", "cmd+z", "shift+cmd+z", "ctrl+cmd+f", "ctrl+cmd+s",
+                    "cmd+f", "cmd+g", "shift+cmd+g", "cmd+e"]
+        keys += (0...9).map { "cmd+\($0)" }
+        return keys
+    }()
+
+    static func parse(_ text: String) -> Result<PluginShortcut, Problem> {
+        let parts = text.lowercased().split(separator: "+", omittingEmptySubsequences: false)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+        guard let last = parts.last, !last.isEmpty, !parts.dropLast().contains(where: \.isEmpty) else {
+            return .failure(Problem(message: "write it as modifiers and a key joined by +, such as opt+cmd+m"))
+        }
+        var modifiers = Set<String>()
+        for part in parts.dropLast() {
+            guard let name = modifierNames[part] else { return .failure(Problem(message: "no modifier '\(part)'")) }
+            modifiers.insert(name)
+        }
+        guard modifiers.contains("cmd") || modifiers.contains("ctrl") else {
+            return .failure(Problem(message: "it needs cmd or ctrl, or it would take keys typed into the session"))
+        }
+        let key = keyAliases[last] ?? last
+        guard key.count == 1 || namedKeys[key] != nil else { return .failure(Problem(message: "no key '\(key)'")) }
+        return .success(PluginShortcut(key: key, modifiers: modifiers))
+    }
+
+    var keyboardShortcut: KeyboardShortcut {
+        var flags: EventModifiers = []
+        if modifiers.contains("cmd") { flags.insert(.command) }
+        if modifiers.contains("opt") { flags.insert(.option) }
+        if modifiers.contains("ctrl") { flags.insert(.control) }
+        if modifiers.contains("shift") { flags.insert(.shift) }
+        return KeyboardShortcut(Self.namedKeys[key] ?? KeyEquivalent(Character(key)), modifiers: flags)
+    }
+
+    @MainActor private static var warned: Set<String> = []
+
+    /// Logged once per view and shortcut: the View menu shows the item without it.
+    @MainActor static func warn(_ id: String, _ text: String, _ why: String) {
+        guard warned.insert("\(id) \(text)").inserted else { return }
+        NSLog("wm: plugin view %@: shortcut \"%@\" not used: %@", id, text, why)
     }
 }

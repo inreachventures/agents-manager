@@ -249,7 +249,10 @@ struct PluginInfo: Decodable, Identifiable, Equatable {
     var id: String { name }
 }
 
-struct PluginsResult: Decodable { var plugins: [PluginInfo] }
+struct PluginsResult: Decodable {
+    var plugins: [PluginInfo]
+    var dir: String?  // the plugins folder
+}
 
 /// A page a plugin shows in the app: in the main area beside Terminal (`place` "main") or in the side panel beside
 /// Changes ("panel").

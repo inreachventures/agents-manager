@@ -65,6 +65,13 @@ enum DebugControl {
             model.pickRepo(rest.first == "all" ? nil : rest.first)
         case "changes":
             model.showChanges = rest.first == "on"
+        case "center":  // terminal | <plugin>/<view>
+            model.center = rest.first ?? "terminal"
+        case "panel-tab":  // changes | <plugin>/<view>
+            model.panelTab = rest.first ?? "changes"
+        case "open-diff":  // REPO PATH [LINE]: as a page's wm.openDiff
+            guard let key = model.selection, rest.count >= 2 else { return }
+            try? model.openDiff(key: key, repo: rest[0], path: rest[1], line: rest.count > 2 ? Int(rest[2]) : nil)
         case "archived":
             model.showArchived = rest.first == "on"
         case "sheet":
@@ -98,7 +105,12 @@ enum DebugControl {
                        "attached=\(model.terminal.isAttached) busy=\(model.busy ?? "-")",
                        "tour=\(model.tourStop.map { "\($0)" } ?? "nil") setup=\(model.setup != nil)",
                        "windows=\(NSApp.windows.filter(\.isVisible).map { String(describing: type(of: $0)) })",
-                       "rows=\(model.state.workstreams.map(\.key))"].joined(separator: "\n")
+                       "rows=\(model.state.workstreams.map(\.key))",
+                       "center=\(model.center) panelTab=\(model.panelTab) kept=\(model.keptViews.sorted())",
+                       "plugins=\(model.plugins.map { "\($0.name):\($0.status)" })",
+                       "contextRepo=\(model.contextRepo ?? "all")",
+                       "shortcuts=\(model.shortcutViews.map { "\($0.view.id):\($0.shortcut != nil)" })"]
+                .joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
         case "settings":  // renders Settings in a scratch window and snapshots it as NAME-settings.png
             let host = NSWindow(contentViewController: NSHostingController(rootView: SettingsView().environment(model)))

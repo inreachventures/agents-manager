@@ -598,7 +598,7 @@ class Server:
         return {}
 
     def rpc_plugins(self) -> dict:
-        return {"plugins": plugin_list()}
+        return {"plugins": plugin_list(), "dir": str(get_config().plugins_dir)}
 
     def rpc_set_plugin(self, name: str, on: bool) -> dict:
         """Turn a plugin on or off. The next state push sees the plugins folder changed (check_plugins)."""

@@ -103,6 +103,14 @@ struct WMCommands: Commands {
                 .disabled(model.selected?.repos.indices.contains(index) != true)
             }
             Divider()
+            // plugins' views that have a shortcut
+            let active = model.selected.map { $0.status != .archived } ?? false
+            ForEach(model.shortcutViews, id: \.view.id) { item in
+                Button("Show \(item.view.view.title)") { model.showView(item.view.id) }
+                    .keyboardShortcut(item.shortcut)
+                    .disabled(!active)
+            }
+            if !model.shortcutViews.isEmpty { Divider() }
         }
     }
 
@@ -178,9 +186,68 @@ struct SettingsView: View {
                 }
             }
             .tabItem { Label("wm", systemImage: "gearshape") }
+
+            PluginsSettings()
+                .tabItem { Label("Plugins", systemImage: "puzzlepiece.extension") }
         }
         .padding(20)
         .frame(width: 520)
+    }
+}
+
+/// Settings › Plugins: each plugin in the plugins folder, on or off, and why one was skipped.
+private struct PluginsSettings: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        Form {
+            if model.plugins.isEmpty {
+                Text("No plugins installed").foregroundStyle(.secondary)
+            }
+            ForEach(model.plugins) { plugin in
+                HStack(alignment: .firstTextBaseline) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            Text(plugin.title)
+                            if !plugin.version.isEmpty {
+                                Text(plugin.version).font(.caption).foregroundStyle(.secondary)
+                            }
+                        }
+                        Text(status(plugin))
+                            .font(.caption)
+                            .foregroundStyle(plugin.status == "skipped" ? Color.orange : Color.secondary)
+                            .textSelection(.enabled)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                    Spacer()
+                    let on = Binding(get: { plugin.status != "off" },
+                                     set: { on in Task { await model.setPlugin(plugin.name, on: on) } })
+                    Toggle(plugin.title, isOn: on)
+                        .labelsHidden()
+                        .toggleStyle(.switch)
+                        .help(plugin.status == "off" ? "Turn \(plugin.title) on" : "Turn \(plugin.title) off")
+                }
+            }
+            Text("A plugin is a folder in the plugins folder. wm restarts its server when one is added, changed or "
+                 + "turned on or off.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Spacer()
+                Button("Reveal Plugins Folder in Finder") { model.revealPluginsFolder() }
+                    .disabled(model.pluginsDir == nil)
+            }
+        }
+    }
+
+    private func status(_ plugin: PluginInfo) -> String {
+        switch plugin.status {
+        case "on":
+            let views = plugin.views.map(\.title)
+            return views.isEmpty ? "\(plugin.name): on" : "\(plugin.name): on, showing \(views.joined(separator: ", "))"
+        case "off": return "\(plugin.name): off"
+        default: return "\(plugin.name): skipped, \(plugin.reason ?? "for an unknown reason")"
+        }
     }
 }
 

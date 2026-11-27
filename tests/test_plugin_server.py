@@ -92,7 +92,7 @@ def test_plugins_lists_views(pdir):
 
 def test_plugins_empty_without_a_plugins_folder(env):
     srv = server.Server(io.StringIO())
-    assert ask(srv, "plugins")["result"] == {"plugins": []}
+    assert ask(srv, "plugins")["result"] == {"plugins": [], "dir": str(config.get_config().plugins_dir)}
     ws_mod.new(launch=False, name="one")
     assert [w["badges"] for w in server.state({})["workstreams"]] == [[]]
     assert not [m for m in __import__("sys").modules if m.startswith(plugins.MODULE_PREFIX)]

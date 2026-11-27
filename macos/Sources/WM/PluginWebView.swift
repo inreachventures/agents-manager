@@ -3,7 +3,8 @@ import SwiftUI
 import WebKit
 
 /// A plugin's page (`file://<plugin folder>/<page>`) with `window.wm` (PluginSDK.swift) for talking to the app. Keep
-/// one alive per (plugin, view, workstream) while it is selected, so switching tabs doesn't reload it.
+/// one alive per (plugin, view, workstream) while it is selected, so switching tabs doesn't reload it: give each an
+/// `.id` of all three, so a coordinator is never handed another plugin's view. `visible` false hides it, loaded.
 ///
 /// The page can read files in its plugin's folder and navigate within it; links to the web open in the default
 /// browser. If WebKit's page process dies the page loads again once; a second death within a minute shows a
@@ -11,6 +12,8 @@ import WebKit
 struct PluginWebView: NSViewRepresentable {
     var plugin: PluginInfo
     var view: PluginViewSpec
+    var visible: Bool
+    var takesFocus: Bool  // a main view: typing goes to the page when it is shown, not to the terminal under it
     @Environment(AppModel.self) private var model
 
     func makeCoordinator() -> Coordinator { Coordinator(plugin: plugin, view: view) }
@@ -28,6 +31,15 @@ struct PluginWebView: NSViewRepresentable {
 
     func updateNSView(_ container: PluginContainerView, context: Context) {
         context.coordinator.update(plugin: plugin, view: view)
+        let shown = visible && container.isHidden
+        container.isHidden = !visible
+        if takesFocus && (shown || (visible && context.coordinator.firstShow)) {
+            context.coordinator.firstShow = false
+            DispatchQueue.main.async { [weak container] in  // once it is in the window
+                guard let container, !container.isHidden else { return }
+                container.window?.makeFirstResponder(container.web)
+            }
+        }
     }
 
     static func dismantleNSView(_ container: PluginContainerView, coordinator: Coordinator) {
@@ -75,6 +87,7 @@ struct PluginWebView: NSViewRepresentable {
         private var context: PageContext?
         private var generation = 0  // bumped as each page commits, so an answer never reaches a later page
         private var crashReload: Date?  // when the page last loaded again after its process died
+        var firstShow = true  // not yet given the focus
 
         init(plugin: PluginInfo, view: PluginViewSpec) {
             self.plugin = plugin
@@ -119,6 +132,14 @@ struct PluginWebView: NSViewRepresentable {
 
         // MARK: - Loading
 
+        /// The plugin's files may have changed (`plugins_changed`): load the page afresh.
+        func reload() {
+            crashReload = nil
+            context = makeContext()
+            installScript()
+            load()
+        }
+
         private func load() {
             guard let web else { return }
             container?.hideFailure()
@@ -157,7 +178,7 @@ struct PluginWebView: NSViewRepresentable {
             return PageContext(plugin: plugin.name, view: view.id, key: ws?.key, folder: ws?.folder,
                                repos: ws?.repos.map { .init(repo: $0.repo, branch: $0.branch, base: $0.base,
                                                             worktree: $0.worktree) } ?? [],
-                               repo: model?.soloRepo, theme: context?.theme ?? theme)
+                               repo: model?.contextRepo, theme: context?.theme ?? theme)
         }
 
         /// A new `wm.context` when it changed: "workstream" for another workstream, "repo" for another repo picked in
@@ -228,7 +249,8 @@ struct PluginWebView: NSViewRepresentable {
                 ("--wm-bg", .textBackgroundColor), ("--wm-fg", .labelColor), ("--wm-secondary", .secondaryLabelColor),
                 ("--wm-accent", .controlAccentColor), ("--wm-border", .separatorColor),
                 ("--wm-red", .systemRed), ("--wm-yellow", .amber), ("--wm-green", .systemGreen),
-                ("--wm-blue", .systemBlue), ("--wm-grey", .secondaryLabelColor), ("--wm-orange", .systemOrange),
+                ("--wm-blue", .systemBlue), ("--wm-cyan", .systemTeal), ("--wm-grey", .secondaryLabelColor),
+                ("--wm-orange", .systemOrange),
                 ("--wm-purple", .systemPurple), ("--wm-amber", .amber),
             ]
             (web?.effectiveAppearance ?? NSApp.effectiveAppearance).performAsCurrentDrawingAppearance {
@@ -254,11 +276,12 @@ struct PluginWebView: NSViewRepresentable {
                   let id = (body["id"] as? NSNumber)?.intValue, let call = body["call"] as? String else { return }
             let args = (body["args"] as? String)
                 .flatMap { try? JSONSerialization.jsonObject(with: Data($0.utf8)) } as? [String: Any] ?? [:]
-            let page = generation, key = context?.key
+            // what the page was when it asked: a call from a page that has since been replaced is dropped
+            let page = generation, key = context?.key, name = plugin.name
             Task { [weak self] in
-                guard let self else { return }
+                guard let self, page == self.generation, name == self.plugin.name else { return }
                 do {
-                    let result = try await self.perform(call, args, key: key)
+                    let result = try await self.perform(call, args, plugin: name, key: key)
                     self.answer(page, "window.__wm.resolve(id, JSON.parse(value));",
                                 ["id": id, "value": String(decoding: result, as: UTF8.self)])
                 } catch {
@@ -274,8 +297,9 @@ struct PluginWebView: NSViewRepresentable {
             run(script, arguments)
         }
 
-        /// One `wm` call, for the workstream that was selected when the page made it. The result as JSON.
-        private func perform(_ call: String, _ args: [String: Any], key: String?) async throws -> Data {
+        /// One `wm` call from a page of `plugin`, for the workstream that was selected when the page made it. The
+        /// result as JSON.
+        private func perform(_ call: String, _ args: [String: Any], plugin: String, key: String?) async throws -> Data {
             guard let model else { throw BackendError(message: "the app is closing") }
             func text(_ name: String) throws -> String {
                 guard let value = args[name] as? String else { throw BackendError(message: "wm.\(call): no \(name)") }
@@ -292,7 +316,7 @@ struct PluginWebView: NSViewRepresentable {
                     throw BackendError(message: "wm.request: params must be an object")
                 }
                 return try await model.backend.requestData("plugin_request",
-                                                           ["plugin": plugin.name, "method": method, "params": params])
+                                                           ["plugin": plugin, "method": method, "params": params])
             case "send":
                 try await model.send(try text("text"), to: try workstream())
             case "openDiff":
@@ -303,7 +327,7 @@ struct PluginWebView: NSViewRepresentable {
             case "reveal":
                 try model.reveal(try text("path"), in: try workstream())
             case "show":
-                try model.show(try text("view"), of: plugin.name)
+                try model.show(try text("view"), of: plugin)
             case "toast":
                 let level: Toast.Level = switch args["level"] as? String {
                 case "warning": .warning
