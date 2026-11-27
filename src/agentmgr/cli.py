@@ -333,6 +333,13 @@ def doctor() -> None:
                     "starts a session.", fg="yellow")
     if not shutil.which("wm"):
         typer.secho("! `wm` is not on PATH; Claude sessions call it during intake", fg="yellow")
+    from . import plugins
+
+    problems = plugins.doctor_problems()
+    if problems:
+        typer.echo("Plugins")
+        for problem in problems:
+            typer.secho(f"! {problem}", fg="yellow")
     if not ok:
         raise typer.Exit(1)
 

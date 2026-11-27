@@ -336,3 +336,63 @@ def workstream_info(ws: db.Workstream, links: list[db.RepoLink]) -> WorkstreamIn
     return WorkstreamInfo(key=ws.key, name=ws.name, ticket=ws.ticket, folder=ws.path, status=ws.status,
                           repos=tuple(RepoInfo(repo=link.repo, branch=link.branch, base=link.base,
                                                worktree=Path(link.worktree_path)) for link in links))
+
+
+# What plugins add to a workstream's generated files and lifecycle
+
+def record_error(name: str, what: str, reason: str) -> None:
+    """Note a plugin problem that is not an exception, so `errors()` (and `wm doctor`) show it."""
+    log(f"plugin {name}: {what}: {reason}")
+    with _lock:
+        _errors[(name, what)] = HandlerError(name, what, reason)
+
+
+def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[str], dict[str, str]]:
+    """The plugin sections to append to CLAUDE.md, in plugin name order, and the named core sections plugins replace.
+    Two plugins replacing the same section: the first by name wins, the other is recorded in `errors()`."""
+    info = workstream_info(ws, links)
+    sections: list[str] = []
+    replacements: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    for lp in loaded():
+        name = lp.manifest.name
+        reg = lp.api.registered
+        if reg.claude_md and (text := call(lp, "claude_md", reg.claude_md, info)):
+            sections.append(text)
+        for section, fn in reg.replace.items():
+            if section in owner:
+                record_error(name, f"replaces {section}", f"already replaced by {owner[section]}")
+            elif text := call(lp, f"replace {section}", fn, info):
+                replacements[section] = text
+                owner[section] = name
+    return sections, replacements
+
+
+def allowed_tools(ws: db.Workstream, links: list[db.RepoLink]) -> list[str]:
+    """The tools plugins pre-approve for this workstream's session."""
+    info = workstream_info(ws, links)
+    out: list[str] = []
+    for lp in loaded():
+        if lp.api.registered.allowed_tools and (tools := call(lp, "allowed_tools", lp.api.registered.allowed_tools,
+                                                               info)):
+            out += tools
+    return out
+
+
+def on_archive(ws: db.Workstream, links: list[db.RepoLink]) -> None:
+    """Tell each plugin the workstream is being archived, before its worktrees go."""
+    info = workstream_info(ws, links)
+    for lp in loaded():
+        if lp.api.registered.on_archive:
+            call(lp, "on_archive", lp.api.registered.on_archive, info)
+
+
+def doctor_problems() -> list[str]:
+    """Problems plugins report for `wm doctor`: failed loads, handler errors and each plugin's own checks."""
+    out: list[str] = []
+    for lp in loaded():  # first, so that skipped() includes plugins that fail to load
+        if lp.api.registered.doctor:
+            out += [str(p) for p in call(lp, "doctor", lp.api.registered.doctor) or []]
+    out = [f"{s.name}: skipped: {s.reason}" for s in skipped()] + out
+    out += [f"{e.name}: {e.what}: {e.reason}" for e in errors()]
+    return out

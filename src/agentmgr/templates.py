@@ -22,14 +22,22 @@ name: {name}
 (what the user said, cleaned up — keep their wording where it matters)
 ## Done when
 - [ ] checkable acceptance criteria
-## Out of scope
+## Out of scope"""
+
+# Replaceable by a plugin as "task_format": the end of the TASK.md template.
+TASK_FORMAT_TAIL = """\
 ## Open questions
 ## Decisions & progress
 (append at meaningful milestones: what changed, where, why)"""
 
+# Replaceable by a plugin as "intake_summary": intake step 4.
+INTAKE_SUMMARY = "4. Summarise back: name, ticket, goal, repos + branches, done-when, open questions."
+
 
 def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str], memory_dir: Path,
-              pending_repos: list[str] | None = None) -> str:
+              pending_repos: list[str] | None, plugin_sections: list[str], replacements: dict[str, str]) -> str:
+    """`replacements` maps a plugin-replaceable section (`plugin.REPLACEABLE`) to its text; `plugin_sections` go after
+    "Done means"."""
     key = ws.key
     title = " · ".join(p for p in (key, ws.ticket if ws.ticket != key else None, ws.name) if p)
     has_task = (ws.path / TASK_FILE).exists()
@@ -46,6 +54,7 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         if pending_repos:
             pending = f" The user already selected these repos: {', '.join(pending_repos)}."
         fmt = TASK_FORMAT.format(key=key, ticket=ws.ticket or "", name=ws.name or "<3 words>")
+        fmt += "\n" + replacements.get("task_format", TASK_FORMAT_TAIL)
         out += [
             f"## Intake — do this first ({TASK_FILE} does not exist yet)",
             "",
@@ -64,7 +73,7 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
             f"   and/or uncommitted changes in ~/code/<repo>), use `wm add-repo {key} <repo> --adopt` instead: it",
             "   prints a plan (stash, free the branch, move it into the worktree); show it to the user and, once",
             "   they agree, rerun it with `--yes`.",
-            "4. Summarise back: name, ticket, goal, repos + branches, done-when, open questions.",
+            replacements.get("intake_summary", INTAKE_SUMMARY),
             "5. **Wait for the user to confirm before changing any code.**",
             "",
             f"Available repos: {', '.join(available_repos) or '(none found)'}",
@@ -124,14 +133,16 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         f"- Open PRs with `gh pr create` from inside the worktree when asked; include {ident} in the title.",
         "  If a PR has to come from another branch (a stack, a re-cut branch), start that branch's name with",
         f"  `{ident.lower()}-` (e.g. `{ident.lower()}-part-2`) so wm shows its PR with this workstream.",
-        f"- Append to \"Decisions & progress\" in {TASK_FILE} at meaningful milestones.",
+        *([replacements["progress_rule"]] if "progress_rule" in replacements else
+          [f"- Append to \"Decisions & progress\" in {TASK_FILE} at meaningful milestones."]),
         "",
         "## Memory",
         "",
         f"Your memory folder, {memory_dir}, is shared by every workstream:",
         "what you save there shows up in all of them. Save there only what applies to any task: how the user",
         "likes to work, feedback on your behaviour, useful references.",
-        f"- Facts about this task (decisions, findings, state) go in {TASK_FILE} under \"Decisions & progress\".",
+        *([] if "progress_rule" in replacements else
+          [f"- Facts about this task (decisions, findings, state) go in {TASK_FILE} under \"Decisions & progress\"."]),
         "- Facts about one repo (commands, conventions, gotchas) belong in that repo's CLAUDE.md in its worktree;",
         "  it gets committed, so propose the change to the user first.",
         "- Don't save \"project\"-type memories about this workstream: every other workstream would load them.",
@@ -143,6 +154,8 @@ def claude_md(ws: Workstream, repos: list[RepoLink], available_repos: list[str],
         "- Don't clean up worktrees or branches — the user archives the workstream with `wm`.",
         "",
     ]
+    for section in plugin_sections:
+        out += [section.strip("\n"), ""]
     return "\n".join(out)
 
 
@@ -170,11 +183,11 @@ def repo_instruction_imports(repos: list[RepoLink]) -> list[str]:
     return found
 
 
-def allowed_tools(ws: Workstream, memory_dir: Path) -> list[str]:
+def allowed_tools(ws: Workstream, memory_dir: Path, extra: list[str]) -> list[str]:
     """Pre-approved tools, passed with --allowedTools rather than written to settings.json: project-level
     allow rules make Claude Code re-ask for folder trust on every new workstream folder."""
     return [f"Bash(wm set {ws.key} *)", f"Bash(wm add-repo {ws.key} *)", f"Edit(./{TASK_FILE})",
-            f"Edit(//{str(memory_dir).strip('/')}/**)"]
+            f"Edit(//{str(memory_dir).strip('/')}/**)", *extra]
 
 
 def settings_json(ws: Workstream, wm: str, checkouts: list[str]) -> str:
@@ -198,8 +211,10 @@ def settings_json(ws: Workstream, wm: str, checkouts: list[str]) -> str:
 
 
 def write(ws: Workstream, repos: list[RepoLink], available_repos: list[str], wm: str,
-          checkouts: list[str], memory_dir: Path, pending_repos: list[str] | None = None) -> None:
-    _replace(ws.path / "CLAUDE.md", claude_md(ws, repos, available_repos, memory_dir, pending_repos))
+          checkouts: list[str], memory_dir: Path, pending_repos: list[str] | None, plugin_sections: list[str],
+          replacements: dict[str, str]) -> None:
+    _replace(ws.path / "CLAUDE.md",
+             claude_md(ws, repos, available_repos, memory_dir, pending_repos, plugin_sections, replacements))
     (ws.path / ".claude").mkdir(exist_ok=True)
     _replace(ws.path / ".claude" / "settings.json", settings_json(ws, wm, checkouts))
 

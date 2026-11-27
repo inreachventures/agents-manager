@@ -132,6 +132,7 @@ def test_raising_handler_keeps_core(ws, env, monkeypatch, capsys):
 
 def test_load_failure_is_logged_on_each_hook_call(ws, env, pdir, monkeypatch, capsys):
     (pdir / "demo" / "plugin.py").write_text("raise ImportError('no such thing')\n")
+    plugins.reset()  # creating ws loaded the plugin; a hook process starts fresh
     run_hook(monkeypatch, capsys, "PostToolUse", {**base(ws), "tool_name": "Read"})
     run_hook(monkeypatch, capsys, "PostToolUse", {**base(ws), "tool_name": "Read"})
     run_hook(monkeypatch, capsys, "UserPromptSubmit", base(ws))  # demo doesn't declare it: nothing to log

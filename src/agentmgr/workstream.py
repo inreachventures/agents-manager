@@ -11,7 +11,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import claudetrust, db, gitops, naming, repos, templates, tmux
+from . import claudetrust, db, gitops, naming, plugins, repos, templates, tmux
 from .config import Config, get_config
 
 
@@ -59,14 +59,18 @@ def resolve(conn, ref: str, archived: bool = False) -> db.Workstream:
 def regenerate(conn, ws: db.Workstream, cfg: Config | None = None, pending_repos: list[str] | None = None):
     cfg = cfg or get_config()
     ws = db.get_workstream(conn, ws.key) or ws
+    links = db.list_repos(conn, ws.key)
+    sections, replacements = plugins.claude_md_parts(ws, links)
     templates.write(
         ws,
-        db.list_repos(conn, ws.key),
+        links,
         [r.name for r in repos.discover(cfg)],
         tmux.wm_executable(),
         [str(r) for r in cfg.checkouts],
         cfg.memory_dir,
         pending_repos,
+        sections,
+        replacements,
     )
     _update_symlink(ws, cfg)
 
@@ -506,7 +510,8 @@ def claude_command(ws: db.Workstream, *, resume: bool, initial_prompt: str | Non
     cmd = [cfg.claude_cmd]
     cmd += ["--resume", ws.session_id] if resume else ["--session-id", ws.session_id]
     cmd += ["--name", ws.label]
-    cmd += ["--allowedTools", ",".join(templates.allowed_tools(ws, cfg.memory_dir))]
+    extra = plugins.allowed_tools(ws, db.list_repos(_conn(), ws.key))
+    cmd += ["--allowedTools", ",".join(templates.allowed_tools(ws, cfg.memory_dir, extra))]
     # one memory for all workstreams (the default is per folder, so per workstream)
     cmd += ["--settings", json.dumps({"autoMemoryDirectory": str(cfg.memory_dir)})]
     if initial_prompt:
@@ -755,6 +760,7 @@ def archive(key: str, force: bool = False, delete_branches: bool = True) -> list
 
     log = []
     tmux.kill_session(ws.key)
+    plugins.on_archive(ws, [r.link for r in reports])
     for r in reports:
         no_own_commits = r.status is not None and r.status.ahead_of_base == 0
         delete = delete_branches and (r.merged or (r.link.created_branch and no_own_commits))
