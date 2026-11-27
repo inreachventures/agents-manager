@@ -213,6 +213,8 @@ All are plain frozen or simple dataclasses.
 
 A handler has a budget of 2 seconds. One that takes longer is logged, never killed, but every hook call blocks Claude until it returns, so stay well under it.
 
+A hook's standard output is what Claude Code reads, so in a hook process wm sends whatever plugin code prints (while importing, in `register`, in a handler or in a `CLAUDE.md` function) to standard error instead. Use `api.log` for anything you want to read later.
+
 The fields that each event can carry:
 
 | Event | `context` | `deny` | `block` | `waiting_on` |

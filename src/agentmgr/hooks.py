@@ -9,6 +9,7 @@ In an auxiliary session (`AGENTMGR_AUX=<plugin>`) core runs only its checks and 
 
 from __future__ import annotations
 
+import contextlib
 import json
 import os
 import sys
@@ -158,7 +159,8 @@ def _regenerate(conn, ws: db.Workstream) -> None:
     try:
         from . import workstream  # here, not at the top: it pulls in rapidfuzz, and every tool call runs a hook
 
-        workstream.regenerate(conn, ws)
+        with _plugin_output():  # regenerating calls plugins' CLAUDE.md handlers
+            workstream.regenerate(conn, ws)
     except Exception as e:  # noqa: BLE001
         _log(f"SessionStart: regenerate: {type(e).__name__}: {e}")
 
@@ -259,6 +261,12 @@ def _valid(result: object) -> bool:
         v is None or isinstance(v, str) for v in (result.context, result.deny, result.block, result.waiting_on))
 
 
+def _plugin_output() -> contextlib.AbstractContextManager:
+    """While plugin code runs: what it prints goes to stderr, as the hook's stdout is read by Claude Code (JSON, or
+    context Claude sees)."""
+    return contextlib.redirect_stdout(sys.stderr)
+
+
 def run_plugins(conn, ws: db.Workstream, event: str, payload: dict, aux: str | None) -> list[HookResult]:
     """Call the handlers of the plugins that list `event` (only the `aux` plugin in its auxiliary session), each
     isolated: a plugin that raises, is slow or returns nonsense is logged and left out."""
@@ -266,7 +274,8 @@ def run_plugins(conn, ws: db.Workstream, event: str, payload: dict, aux: str | N
     declared = {m.name for m in manifests if event in m.hooks and aux in (None, m.name)}
     if not declared:
         return []  # nothing imported
-    lps = [lp for lp in plugins.loaded(event=event) if lp.manifest.name in declared]
+    with _plugin_output():  # importing a plugin runs its code
+        lps = [lp for lp in plugins.loaded(event=event) if lp.manifest.name in declared]
     if missing := declared - {lp.manifest.name for lp in lps}:
         for s in plugins.skipped():
             if s.name in missing:
@@ -278,8 +287,9 @@ def run_plugins(conn, ws: db.Workstream, event: str, payload: dict, aux: str | N
         if fn is None:
             continue
         what = f"hook {event}"
-        result = plugins.call(lp, what, fn, HookContext(ws=info, event=event, payload=payload, aux=aux is not None),
-                              budget=PLUGIN_BUDGET)
+        with _plugin_output():
+            result = plugins.call(lp, what, fn, HookContext(ws=info, event=event, payload=payload,
+                                                            aux=aux is not None), budget=PLUGIN_BUDGET)
         if result is None:
             continue
         if not _valid(result):

@@ -1,3 +1,4 @@
+import io
 import json
 import shutil
 from pathlib import Path
@@ -274,3 +275,26 @@ def test_plugin_failure_outside_handlers_keeps_core(ws, env, monkeypatch, capsys
     log = hook_log(env)
     assert "PreToolUse: plugins: OSError: plugins dir unreadable" in log
     assert "Stop: plugins: OSError: plugins dir unreadable" in log
+
+
+def test_plugin_prints_never_reach_the_hook_output(ws, pdir, monkeypatch, capsys):
+    (pdir / "loud").mkdir()
+    (pdir / "loud" / "plugin.toml").write_text(
+        'name = "loud"\ntitle = "Loud"\nversion = "1"\napi = 1\nhooks = ["PreToolUse", "SessionStart"]\n')
+    (pdir / "loud" / "plugin.py").write_text(
+        "from agentmgr.plugin import HookResult\nprint('loud: imported')\n\n\n"
+        "def deny(ctx):\n    print('loud: denying')\n    return HookResult(deny='loud says no')\n\n\n"
+        "def section(ws):\n    print('loud: section')\n    return '## Loud'\n\n\n"
+        "def register(api):\n    api.hook('PreToolUse', deny)\n    api.hook('SessionStart', lambda ctx: None)\n"
+        "    api.claude_md(section)\n")
+    plugins.reset()  # a hook process starts fresh
+    out = run_hook(monkeypatch, capsys, "PreToolUse",
+                   {**base(ws), "tool_name": "Read", "tool_input": {"file_path": str(ws.path / "TASK.md")}})
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"] == "loud says no"
+
+    plugins.reset()
+    monkeypatch.setattr("sys.stdin", io.StringIO(json.dumps({**base(ws), "source": "clear"})))  # regenerates
+    hooks.main("SessionStart")
+    captured = capsys.readouterr()
+    assert "loud:" not in captured.out and "acme-web/: on ws-1-x-y" in captured.out
+    assert "loud: imported" in captured.err and "loud: section" in captured.err
