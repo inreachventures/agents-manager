@@ -51,6 +51,7 @@ extension AppModel {
             centerChoice = newValue
             UserDefaults.standard.set(newValue, forKey: "center")
             if newValue == "terminal" { terminal.focus() }  // not left typing into a page that is hidden
+            syncPluginViews()  // the chips' repo is now the other view's
         }
     }
 
@@ -78,8 +79,10 @@ extension AppModel {
         return center != "terminal"
     }
 
-    /// The repo picked with the top bar's chips while a plugin's main view is centred (`wm.context.repo`), nil for all.
+    /// The repo the top bar's chips narrow to (`wm.context.repo`), nil for all: the centred main view's own pick, or
+    /// else the changes panel's.
     var contextRepo: String? {
+        guard pluginCentred else { return soloRepo }
         guard let key = selection, let repo = pluginRepo[key],
               selected?.repos.contains(where: { $0.repo == repo }) == true else { return nil }
         return repo
@@ -124,7 +127,10 @@ extension AppModel {
     func loadPlugins() async {
         do {
             let result: PluginsResult = try await backend.call("plugins")
-            if result.plugins != plugins { plugins = result.plugins }
+            if result.plugins != plugins {
+                plugins = result.plugins
+                syncPluginViews()  // the centred view may be gone, and the chips' repo with it
+            }
             if pluginsDir != result.dir { pluginsDir = result.dir }
             if reloadPages {
                 reloadPages = false

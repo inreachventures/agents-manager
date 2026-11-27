@@ -44,7 +44,7 @@ final class AppModel {
         }
     }
     // per workstream: the one repo the changes panel shows (none: all)
-    var soloRepos: [String: String] = [:]
+    var soloRepos: [String: String] = [:] { didSet { if oldValue != soloRepos { syncPluginViews() } } }
     var diff: DiffResult?
     var busy: String?
     var refreshing = false
