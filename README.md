@@ -157,6 +157,8 @@ right-click a workstream:
 Quitting the app leaves the sessions running. [`macos/README.md`](macos/README.md) covers the rest of the window;
 [wm in the terminal](docs/cli.md) has the dashboard's keys and the commands.
 
+To extend wm with your own hooks, commands, badges and pages, see the [plugin author's reference](docs/plugins.md).
+
 **From the chat:** ask Claude, and it runs `wm` for you.
 
 - *"We also need acme-mobile."* Claude attaches the repo.
