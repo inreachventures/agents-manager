@@ -339,6 +339,9 @@ def doctor() -> None:
     core = _core_commands()
     manifests, _ = plugins.discover()
     problems += [f"{m.name}: skipped: command '{m.command}' is a core command" for m in manifests if m.command in core]
+    for lp in plugins.loaded():
+        if lp.api.registered.cli is not None and (why := _cli_problem(lp.api.registered.cli)):
+            problems.append(f"{lp.manifest.name}: skipped: {why}")
     if problems:
         typer.echo("Plugins")
         for problem in problems:
@@ -482,9 +485,25 @@ def _core_commands() -> set[str]:
     return set(typer.main.get_command(app).commands)  # type: ignore[attr-defined]
 
 
+def _cli_problem(cli: object) -> str | None:
+    """Why a plugin's registered app can't be mounted, or None. Typer builds the click tree lazily, so build it here
+    rather than inside `app()`, where a broken plugin would take every `wm` command down with it."""
+    import typer.main
+
+    if not isinstance(cli, typer.Typer):
+        return f"api.cli was given {type(cli).__name__}, not a typer.Typer"
+    try:
+        typer.main.get_command(cli)
+    except Exception as e:
+        return f"its command line is broken: {type(e).__name__}: {e}"
+    return None
+
+
 def _mount_plugins(args: list[str]) -> None:
     """Mount plugin commands as `wm <command>`. Only what the invocation needs is imported: a core command (`ls`,
     `hook`, ...) loads nothing; `wm <command>` loads that plugin; no command or --help loads all, to list them."""
+    from .plugin import PluginError
+
     core = _core_commands()
     if args and args[0] in core:
         return
@@ -498,14 +517,19 @@ def _mount_plugins(args: list[str]) -> None:
         if command in core:
             plugins.log(f"{lp.manifest.name}: skipped: command '{command}' is a core command")
             continue
+        if problem := _cli_problem(cli):
+            if listing:
+                plugins.log(f"{lp.manifest.name}: skipped: {problem}")
+                continue
+            raise PluginError(f"plugin {lp.manifest.name}: {problem}")
         app.add_typer(cli, name=command, rich_help_panel="Plugins")
 
 
 def main() -> None:
     from .plugin import PluginError
 
-    _mount_plugins(sys.argv[1:])
     try:
+        _mount_plugins(sys.argv[1:])
         app(prog_name="wm")  # also when run as `python -m agentmgr`, as the Mac app's wm is
     except PluginError as e:
         typer.secho(f"error: {e}", fg="red", err=True)

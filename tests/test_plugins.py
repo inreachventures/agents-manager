@@ -471,3 +471,21 @@ def test_plugin_error_prints_and_exits_1(wm, pdir):
         "def go() -> None:\n    raise PluginError('nope')\n\n\ndef register(api):\n    api.cli(t)\n")
     r = wm("bad", "go")
     assert (r.returncode, r.stderr.strip()) == (1, "error: nope")
+
+
+def test_broken_plugin_command_never_breaks_help(wm, pdir):
+    install_demo(pdir)
+    make(pdir, "broken", 'name = "broken"\ntitle = "B"\nversion = "1"\napi = 1\ncommand = "broken"\n')
+    (pdir / "broken" / "plugin.py").write_text(
+        "import typer\nfrom typer.models import CommandInfo\nt = typer.Typer()\n"
+        "t.registered_commands.append(CommandInfo(name='x', callback=None))\n\n\n"
+        "def register(api):\n    api.cli(t)\n")
+    make(pdir, "notyper", 'name = "notyper"\ntitle = "N"\nversion = "1"\napi = 1\ncommand = "notyper"\n')
+    (pdir / "notyper" / "plugin.py").write_text("def register(api):\n    api.cli(object())\n")
+    r = wm("--help")
+    assert r.returncode == 0, r.stderr
+    assert "demo" in r.stdout and "broken: skipped" in r.stderr and "notyper: skipped" in r.stderr
+    assert "broken: skipped" in wm("doctor").stdout
+    r = wm("broken", "x")
+    assert (r.returncode, r.stderr.startswith("error: plugin broken")) == (1, True)
+    assert "Traceback" not in r.stderr
