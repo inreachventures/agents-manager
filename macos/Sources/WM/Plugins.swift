@@ -128,7 +128,12 @@ extension AppModel {
         do {
             let result: PluginsResult = try await backend.call("plugins")
             if result.plugins != plugins {
+                let pageFocused = (terminal.view.window?.firstResponder as? NSView).map { view in
+                    sequence(first: view, next: \.superview).contains { $0 is PluginContainerView }
+                } ?? false
                 plugins = result.plugins
+                // the centred page that had the focus is gone: typing goes to the terminal again, not nowhere
+                if pageFocused && center == "terminal" { terminal.focus() }
                 syncPluginViews()  // the centred view may be gone, and the chips' repo with it
             }
             if pluginsDir != result.dir { pluginsDir = result.dir }
