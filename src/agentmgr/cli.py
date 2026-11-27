@@ -336,6 +336,9 @@ def doctor() -> None:
     from . import plugins
 
     problems = plugins.doctor_problems()
+    core = _core_commands()
+    manifests, _ = plugins.discover()
+    problems += [f"{m.name}: skipped: command '{m.command}' is a core command" for m in manifests if m.command in core]
     if problems:
         typer.echo("Plugins")
         for problem in problems:
@@ -473,8 +476,40 @@ def app_server() -> None:
     serve()
 
 
+def _core_commands() -> set[str]:
+    import typer.main
+
+    return set(typer.main.get_command(app).commands)  # type: ignore[attr-defined]
+
+
+def _mount_plugins(args: list[str]) -> None:
+    """Mount plugin commands as `wm <command>`. Only what the invocation needs is imported: a core command (`ls`,
+    `hook`, ...) loads nothing; `wm <command>` loads that plugin; no command or --help loads all, to list them."""
+    core = _core_commands()
+    if args and args[0] in core:
+        return
+    from . import plugins
+
+    listing = not args or args[0] in ("-h", "--help")
+    for lp in plugins.loaded() if listing else plugins.loaded(command=args[0]):
+        command, cli = lp.manifest.command, lp.api.registered.cli
+        if cli is None or not command:
+            continue
+        if command in core:
+            plugins.log(f"{lp.manifest.name}: skipped: command '{command}' is a core command")
+            continue
+        app.add_typer(cli, name=command, rich_help_panel="Plugins")
+
+
 def main() -> None:
-    app(prog_name="wm")  # also when run as `python -m agentmgr`, as the Mac app's wm is
+    from .plugin import PluginError
+
+    _mount_plugins(sys.argv[1:])
+    try:
+        app(prog_name="wm")  # also when run as `python -m agentmgr`, as the Mac app's wm is
+    except PluginError as e:
+        typer.secho(f"error: {e}", fg="red", err=True)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

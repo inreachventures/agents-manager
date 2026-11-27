@@ -410,3 +410,64 @@ def test_malformed_off_is_read_leniently(pdir, text):
     turned_off = "demo" in text and "3" in text
     assert [m.name for m in manifests] == ([] if turned_off else ["demo"])
     assert [s.reason for s in skipped] == (["turned off"] if turned_off else [])
+
+
+# Mounting plugin commands (cli.main runs in a subprocess: mounting happens there)
+
+
+@pytest.fixture
+def wm(env, pdir, monkeypatch):
+    import subprocess
+
+    mark = env.root / "import-mark"
+    monkeypatch.setenv("DEMO_IMPORT_MARK", str(mark))
+
+    def run(*args):
+        exe = Path(sys.executable).parent / "wm"
+        return subprocess.run([str(exe), *args], capture_output=True, text=True, env=os.environ.copy())
+
+    run.mark = mark
+    return run
+
+
+def test_plugin_command_is_mounted(wm, env, pdir):
+    install_demo(pdir)
+    ws = ws_mod.new(launch=False, name="cli notes")
+    r = wm("demo", "add", ws.key, "hello")
+    assert (r.returncode, r.stdout.strip()) == (0, "noted"), r.stderr
+    assert "hello" in (env.workstreams / ws.key / ".wm" / "demo" / "notes.json").read_text()
+
+
+def test_help_lists_plugin_commands_under_plugins(wm, pdir):
+    install_demo(pdir)
+    r = wm("--help")
+    assert r.returncode == 0, r.stderr
+    assert re.search(r"Plugins.*demo", r.stdout, re.S)
+    assert wm.mark.exists()
+
+
+def test_core_commands_do_not_import_plugins(wm, pdir):
+    install_demo(pdir)
+    for args in (["ls"], ["plugins"], ["hook", "Stop"]):
+        wm(*args)
+        assert not wm.mark.exists(), args
+
+
+def test_plugin_command_collision_with_core_is_skipped(wm, pdir):
+    make(pdir, "bad", 'name = "bad"\ntitle = "Bad"\nversion = "1"\napi = 1\ncommand = "ls"\n')
+    (pdir / "bad" / "plugin.py").write_text("def register(api):\n    api.cli(__import__('typer').Typer())\n")
+    r = wm("ls")
+    assert r.returncode == 0, r.stderr
+    r = wm("--help")
+    assert r.returncode == 0
+    assert "command 'ls' is a core command" in r.stderr
+    assert "command 'ls' is a core command" in wm("doctor").stdout
+
+
+def test_plugin_error_prints_and_exits_1(wm, pdir):
+    make(pdir, "bad", 'name = "bad"\ntitle = "Bad"\nversion = "1"\napi = 1\ncommand = "bad"\n')
+    (pdir / "bad" / "plugin.py").write_text(
+        "import typer\nfrom agentmgr.plugin import PluginError\nt = typer.Typer()\n\n\n@t.command()\n"
+        "def go() -> None:\n    raise PluginError('nope')\n\n\ndef register(api):\n    api.cli(t)\n")
+    r = wm("bad", "go")
+    assert (r.returncode, r.stderr.strip()) == (1, "error: nope")
