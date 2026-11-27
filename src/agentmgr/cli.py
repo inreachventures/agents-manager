@@ -436,8 +436,11 @@ def plugins_list(ctx: typer.Context) -> None:
         return
     from . import plugins
 
+    on = {lp.manifest.name for lp in plugins.loaded()}  # first, so that skipped() has the plugins that fail to load
+    failed = {s.name: s.reason for s in plugins.skipped()}
     manifests, skipped = plugins.discover()
-    rows = [(m.name, "on", m.version, "") for m in manifests]
+    rows = [(m.name, "on", m.version, "") if m.name in on else (m.name, "skipped", m.version, failed.get(m.name, ""))
+            for m in manifests]
     rows += [(s.name, "off" if s.reason == "turned off" else "skipped", "", s.reason) for s in skipped]
     for name, status, version, reason in sorted(rows):
         typer.echo("  ".join(part for part in (name, status, version, reason if status == "skipped" else "") if part))
@@ -513,7 +516,13 @@ def _mount_plugins(args: list[str]) -> None:
     from .plugin import PluginError
 
     listing = not args or args[0] in ("-h", "--help")
-    for lp in plugins.loaded() if listing else plugins.loaded(command=args[0]):
+    found = plugins.loaded() if listing else plugins.loaded(command=args[0])
+    if not listing and not found:
+        manifests, _ = plugins.discover()
+        if m := next((m for m in manifests if m.command == args[0]), None):
+            reason = next((s.reason for s in plugins.skipped() if s.name == m.name), "it did not load")
+            raise PluginError(f"plugin {m.name} is skipped: {reason}")
+    for lp in found:
         command, cli = lp.manifest.command, lp.api.registered.cli
         if cli is None or not command:
             continue

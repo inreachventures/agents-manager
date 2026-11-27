@@ -199,6 +199,15 @@ def test_cli_plugins_lists_and_toggles(pdir):
     assert out.exit_code == 1 and "error: no plugin named 'x'" in out.output
 
 
+def test_cli_plugins_shows_a_plugin_that_fails_to_import_as_skipped(pdir):
+    install_demo(pdir)
+    make(pdir, "broken", 'name = "broken"\ntitle = "B"\nversion = "1"\napi = 1\ncommand = "broken"\n')
+    (pdir / "broken" / "plugin.py").write_text("import no_such_module_anywhere\n")
+    out = CliRunner().invoke(app, ["plugins"]).output
+    assert "broken  skipped  1  ModuleNotFoundError: No module named 'no_such_module_anywhere'" in out
+    assert "demo  on  0.1.0" in out
+
+
 def make_plugin(pdir, name, py, hooks=(), **files):
     hooks_toml = ", ".join(f'"{h}"' for h in hooks)
     make(pdir, name, f'name = "{name}"\ntitle = "{name.title()}"\nversion = "1"\napi = 1\nhooks = [{hooks_toml}]\n')
@@ -513,7 +522,7 @@ def test_help_lists_plugin_commands_under_plugins(wm, pdir):
 
 def test_core_commands_do_not_import_plugins(wm, pdir):
     install_demo(pdir)
-    for args in (["ls"], ["plugins"], ["hook", "Stop"]):
+    for args in (["ls"], ["hook", "Stop"]):
         wm(*args)
         assert not wm.mark.exists(), args
 
@@ -536,6 +545,15 @@ def test_plugin_error_prints_and_exits_1(wm, pdir):
         "def go() -> None:\n    raise PluginError('nope')\n\n\ndef register(api):\n    api.cli(t)\n")
     r = wm("bad", "go")
     assert (r.returncode, r.stderr.strip()) == (1, "error: nope")
+
+
+def test_command_of_a_plugin_that_fails_to_import_says_why(wm, pdir):
+    make(pdir, "broken", 'name = "broken"\ntitle = "B"\nversion = "1"\napi = 1\ncommand = "broken"\n')
+    (pdir / "broken" / "plugin.py").write_text("raise RuntimeError('nope')\n")
+    r = wm("broken", "x")
+    assert (r.returncode, r.stderr.strip()) == (1, "error: plugin broken is skipped: RuntimeError: nope")
+    r = wm("nothing-declares-this")
+    assert r.returncode == 2 and "No such command" in r.stderr
 
 
 def test_broken_plugin_command_never_breaks_help(wm, pdir):

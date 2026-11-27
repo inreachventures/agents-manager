@@ -128,11 +128,11 @@ A plugin whose manifest is wrong is skipped, and the reason is shown by `wm plug
 
 A shortcut that is text but not usable (no `cmd` or `ctrl`, an unknown key, or one the app or another view already uses) does not skip the plugin. The view works and simply has no menu shortcut; the reason is logged by the app.
 
-Plugins that load are also skipped, after the manifest passes, when `plugin.py` fails to import, has no callable `register`, or `register(api)` raises. The reason is then `<ExceptionType>: <message>`.
+Plugins that load are also skipped, after the manifest passes, when `plugin.py` fails to import, has no callable `register`, or `register(api)` raises. The reason is then `<ExceptionType>: <message>`. `wm <command>` for such a plugin's command fails with `error: plugin <name> is skipped: <reason>`.
 
 ## The Python API
 
-`plugin.py` defines `register(api)`. It runs once per process, in every process that needs the plugin: each hook call, each `wm <command>`, the app-server. Keep import time and `register` cheap, and do not do work there beyond registering.
+`plugin.py` defines `register(api)`. It runs once per process, in every process that needs the plugin: each hook call for an event it declares, each `wm <command>`, `wm plugins`, `wm doctor`, `wm --help` and the app-server. Keep import time and `register` cheap, and do not do work there beyond registering.
 
 ```python
 from agentmgr.plugin import Api, Badge, HookContext, HookResult, PluginError, WorkstreamInfo
