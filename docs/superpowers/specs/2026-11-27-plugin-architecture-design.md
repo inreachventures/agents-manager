@@ -48,14 +48,14 @@ writes extensions in their own repo, installs them on their own machine, and cor
 - Hooks are short-lived `wm hook <Event>` processes; the app talks to a long-running `wm app-server` over JSON lines;
   the CLI is Typer. Plugins plug into all three.
 - Workstream folders already use `.wm/` for wm-owned files; each plugin gets `.wm/<plugin>/`.
-- agents-manager is a public repo and plugin repos need not be. Core's PR carries nothing task-map or PR Lens
-  specific (the fixture plugin and docs examples are generic).
+- agents-manager is a public repo and plugin repos need not be. Core's PR carries nothing specific to any one plugin
+  (the fixture plugin and docs examples are generic).
 
 ## Approaches considered
 
 | Decision | Options | Picked | Why |
 |---|---|---|---|
-| Plugin UI | Web views with a JS SDK; native Swift compiled into the app behind a flag | **Web views** | Only option that keeps plugin code out of the app's source. PR Lens is already JS. Cost: the brief's ~1,400 lines of SwiftUI (`BriefPanel`, `ChatView`) get rewritten as HTML when it is ported. |
+| Plugin UI | Web views with a JS SDK; native Swift compiled into the app behind a flag | **Web views** | Only option that keeps plugin code out of the app's source. Cost: the brief's ~1,400 lines of SwiftUI (`BriefPanel`, `ChatView`) get rewritten as HTML when it is ported. |
 | Plugin backend | Python imported into `wm`; separate executables over JSON | **Python in-process** | Hooks run per tool call; an extra process per plugin per call costs 50-100ms each. Both features are already Python built on wm's modules. Cost: plugins depend on a stable `agentmgr.plugin` API. |
 | Where plugins live | Each in its own repo cloned into a folder; one shared plugins repo; a `plugins/` folder inside agents-manager | **Own repo each, in `~/.agents-manager/plugins/`**  | Only this keeps each person entirely out of the other's code and PRs. |
 
@@ -65,30 +65,30 @@ writes extensions in their own repo, installs them on their own machine, and cor
 
 ```
 ~/.agents-manager/plugins/            (AGENTMGR_PLUGINS_DIR overrides it, for tests)
-  taskmap/                            a git clone of the task map's repo
+  notes/                              a git clone of the plugin's repo
     plugin.toml
     plugin.py                         register(api)
-    web/map.html, web/...             pages the app shows
+    web/notes.html, web/...           pages the app shows
     ...                               anything else the plugin needs
 ```
 
 `plugin.toml`:
 
 ```toml
-name = "taskmap"          # must equal the folder name; [a-z][a-z0-9-]*
-title = "Task map"
+name = "notes"            # must equal the folder name; [a-z][a-z0-9-]*
+title = "Notes"
 version = "0.1.0"
 api = 1                   # the plugin API version it was written for
-command = "map"           # optional: `wm map ...` loads this plugin
+command = "notes"         # optional: `wm notes ...` loads this plugin
 hooks = ["PostToolUse"]   # the hook events plugin.py handles; for others it is never imported
-protect = true            # Claude may not edit .wm/taskmap/ (checked on every tool call, so declared here)
+protect = true            # Claude may not edit .wm/notes/ (checked on every tool call, so declared here)
 
 [[views]]
-id = "map"
-title = "Map"
-place = "main"            # "main": an option beside Terminal; "panel": a tab beside Changes
-page = "web/map.html"
-shortcut = "opt+cmd+m"    # optional: a View menu item with this shortcut
+id = "notes"
+title = "Notes"
+place = "panel"           # "panel": a tab beside Changes; "main": an option beside Terminal
+page = "web/notes.html"
+shortcut = "opt+cmd+n"    # optional: a View menu item with this shortcut
 ```
 
 The manifest is read without importing `plugin.py`, so `wm hook`, `wm <cmd>` and the app can decide cheaply which
@@ -111,7 +111,7 @@ toggled plugin is live within a few seconds without restarting the app. Running 
 
 **Failure isolation.** Every call into a plugin (import, `register`, each handler) is wrapped. On error the plugin is
 marked failed for that process, the traceback goes to wm's hook log (hooks) or stderr (app-server), and the app shows
-one notice per plugin per app-server run: "Task map plugin skipped: <one line>". Core's own behaviour continues as if
+one notice per plugin per app-server run: "Notes plugin skipped: <one line>". Core's own behaviour continues as if
 the plugin were absent.
 
 ### 2. Python API: `agentmgr.plugin`
@@ -126,15 +126,15 @@ from agentmgr.plugin import Api, HookContext, HookResult, Badge
 def register(api: Api) -> None:
     api.hook("PostToolUse", on_post_tool_use)
     api.cli(typer_app)                       # mounted as `wm <command> ...`
-    api.request("map", rpc_map)              # callable from this plugin's web views
-    api.request("redraw", rpc_redraw)
+    api.request("list", rpc_list)            # callable from this plugin's web views
+    api.request("add", rpc_add)
     api.claude_md(section)                   # (ws) -> markdown | None, appended to the workstream's CLAUDE.md
     api.replace_claude_md("intake_summary", text_fn)   # replace a named core section (see 2.4)
-    api.allowed_tools(tools)                 # (ws) -> ["Bash(wm map save WS-7 *)", ...]
+    api.allowed_tools(tools)                 # (ws) -> ["Bash(wm notes add WS-7 *)", ...]
     api.badge(badge)                         # (ws) -> Badge | None, on the sidebar row
     api.watch(paths)                         # (ws) -> [Path]; a change tells this plugin's web views
     api.on_archive(cancel)                   # (ws) before worktrees go
-    api.every(30, reap)                      # periodic work in the app-server (the task map's drawing reaper)
+    api.every(30, tidy)                      # periodic work in the app-server
     api.doctor(check)                        # () -> [problem str] for `wm doctor`
 ```
 
@@ -239,8 +239,8 @@ author's call on naming when porting; the CLAUDE.md section tells Claude the com
 
 #### 3.2 Web view host
 
-One `PluginWebView` (`NSViewRepresentable` over `WKWebView`), generalised from `MapView.swift` on the task-map
-branch, which already loads PR Lens this way with a `wm` script message handler.
+One `PluginWebView` (`NSViewRepresentable` over `WKWebView`). The closed task-map branch already used a `WKWebView`
+with a `wm` script message handler; this generalises it.
 
 - Loads `file://<plugin dir>/<page>` with read access to the plugin's folder only.
 - Navigation outside that folder is cancelled; `http(s)` links open in the default browser.
@@ -282,24 +282,8 @@ the app's light/dark appearance. Exact names are the builder's call; they are do
 
 ### 5. The task map as a plugin
 
-A new repo of its own ("the plugin repo" below), built from the closed branch:
-
-| From the closed branch | Goes to |
-|---|---|
-| `taskmap.py`, the drawing process | `taskmap.py` in the plugin repo, using `api.aux_env()` instead of `AGENTMGR_MAP_DRAWING` |
-| the app-server's 30s drawing reaper | `api.every(30, ...)` |
-| `data/prlens/` (validator, manual, references) | `prlens/` in the plugin repo |
-| `bundle-prlens.sh`, the PR Lens web bundle | `scripts/` in the plugin repo, output in `web/` in the plugin repo |
-| `MapView.swift` page logic | `web/map.html` in the plugin repo + JS, a **main** view as on the branch (full width, diff beside it), using `wm.openDiff` for card clicks, `wm.panel(false)` for a click off the cards and Esc, `wm.on("repo")` for the repo chips, `wm.reveal` for Open log |
-| toolbar toggle, View > Show Task Map (⌥⌘M) | the main-view picker, `shortcut = "opt+cmd+m"` |
-| `_maybe_draw` in hooks | `PostToolUse` handler |
-| `map`, `redraw_map` requests | `api.request("map")`, `api.request("redraw")` |
-| `wm map save` | `api.cli`, `command = "map"` |
-| "Task map" CLAUDE.md section | `api.claude_md` |
-| cancel on archive, doctor checks | `api.on_archive`, `api.doctor` |
-| tests | `tests/` in the plugin repo, run against an installed wm |
-
-Nothing task-map-specific lands in agents-manager.
+The task map moves to a separate plugin repo of its own, as API v1's first consumer. How its code maps onto the plugin
+API is documented in that repo, and nothing specific to it lands in agents-manager.
 
 ### 6. How the brief fits (for its port)
 
@@ -333,14 +317,12 @@ plugin code.
   `sys.modules`).
 - App: builds in CI; the fixture plugin's views are checked with the existing debug control (load, SDK round trip,
   theme vars, `openDiff`).
-- Task map: its own tests in the plugin repo, plus a run against a real workstream where a commit redraws the map and a
-  card click opens the diff.
+- The first plugin: its own tests in its repo, plus a run against a real workstream with the app.
 
 ## Sequencing
 
-One plan, core and task map together. The core PR is opened early but stays a draft until the task-map plugin works
-end to end against it (a commit redraws the map, a card click opens the diff beside it): the task map is API v1's
-first real consumer and should shape it before it ships.
+One plan, core and the first plugin together. The core PR is opened early but stays a draft until the first plugin
+works end to end against it: it is API v1's first real consumer and should shape it before it ships.
 
 ## Left to the builder
 
