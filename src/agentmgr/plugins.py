@@ -116,8 +116,9 @@ def _parse(folder: Path) -> Manifest:
 def _off(cfg: Config) -> list[str]:
     if not cfg.config_file.exists():
         return []
-    off = tomllib.loads(cfg.config_file.read_text()).get("plugins", {}).get("off", [])
-    return [n for n in off if isinstance(n, str)]
+    section = tomllib.loads(cfg.config_file.read_text()).get("plugins")
+    off = section.get("off") if isinstance(section, dict) else None
+    return [n for n in off if isinstance(n, str)] if isinstance(off, list) else []
 
 
 def _folders(cfg: Config) -> list[Path]:

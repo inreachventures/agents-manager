@@ -45,12 +45,13 @@ def _find(conn, payload: dict) -> db.Workstream | None:
 
 
 def _transition(conn, ws: db.Workstream, status: str, reason: str | None = None, quiet: bool = False) -> None:
-    """Set the status; notify when the session starts waiting on you and you aren't looking, unless `quiet`."""
+    """Set the status; notify when the session starts waiting on you and you aren't looking. `quiet` (a wait on
+    something Claude started) never notifies and counts as seen, so it is not on the dock badge."""
     if ws.status == status and ws.status_reason == reason:
         return
     db.set_status(conn, ws.key, status, reason)
     checked_at = time.time()
-    if status in (db.NEEDS_YOU, db.YOUR_TURN) and tmux.watched(ws.key):
+    if status in (db.NEEDS_YOU, db.YOUR_TURN) and (quiet or tmux.watched(ws.key)):
         db.mark_seen(conn, ws.key, checked_at)  # you're looking as it starts waiting: not on the dock badge
     elif not quiet and (status == db.NEEDS_YOU or (status == db.YOUR_TURN and ws.status == db.WORKING)):
         msg = reason or ("needs your input" if status == db.NEEDS_YOU else "finished, your turn")
@@ -167,7 +168,11 @@ def check_tool(conn, ws: db.Workstream, payload: dict, aux: str | None) -> str |
     manifests (never by importing them); an auxiliary session may write its own plugin's."""
     tool = payload.get("tool_name", "")
     tool_input = payload.get("tool_input") or {}
-    manifests, _ = plugins.discover()
+    try:
+        manifests, _ = plugins.discover()
+    except Exception as e:  # noqa: BLE001 - a broken plugin setup must not switch the guard off
+        _log(f"PreToolUse: plugins: {type(e).__name__}: {e}")
+        manifests = []
     protected = [(m.name, Path(".wm") / m.name) for m in manifests if m.protect and m.name != aux]
     ctx = _context(conn, ws, payload, protected)
     if tool in guard.FILE_TOOLS:
@@ -344,7 +349,12 @@ def dispatch(event: str, payload: dict) -> None:
             _working(conn, ws)
         _emit({"decision": "block", "reason": reason})
         return
-    result = merge(run_plugins(conn, ws, event, payload, aux))
+    try:
+        results = run_plugins(conn, ws, event, payload, aux)
+    except Exception as e:  # noqa: BLE001 - core's status change and output still happen
+        _log(f"{event}: plugins: {type(e).__name__}: {e}")
+        results = []
+    result = merge(results)
     text = None if aux else _status(conn, ws, event, payload, result)
     _output(event, result, text)
 

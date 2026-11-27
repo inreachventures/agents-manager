@@ -228,3 +228,48 @@ def test_session_start_context_is_appended(ws, pdir, monkeypatch, capsys):
     out = run_hook(monkeypatch, capsys, "SessionStart", base(ws))
     assert "acme-web/: on ws-1-x-y" in out
     assert out.rstrip().endswith("\n\ndemo: 2 notes")
+
+
+def test_quiet_wait_is_seen(ws, monkeypatch, capsys):
+    monkeypatch.setattr("agentmgr.tmux.watched_sessions", lambda shown: set())  # nobody is looking
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base(ws))
+    (data(ws) / "job.txt").write_text("waiting on the eval run")
+    run_hook(monkeypatch, capsys, "Stop", base(ws))
+    conn = db.connect()
+    got = db.get_workstream(conn, ws.key)
+    assert got.status == db.YOUR_TURN and not db.unseen(conn, got)
+
+    (data(ws) / "job.txt").unlink()  # a plain Stop nobody watches still counts as unseen
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base(ws))
+    run_hook(monkeypatch, capsys, "Stop", base(ws))
+    assert db.unseen(conn, db.get_workstream(conn, ws.key))
+
+
+def test_malformed_plugins_config_keeps_core(ws, env, monkeypatch, capsys, sent):
+    cfg = config.get_config()
+    cfg.config_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg.config_file.write_text('plugins = ["x"]\n')
+    config.get_config.cache_clear()
+    assert [m.name for m in plugins.discover()[0]] == ["demo"]
+
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base(ws))
+    out = run_hook(monkeypatch, capsys, "PreToolUse", {**base(ws), "tool_name": "Edit",
+                   "tool_input": {"file_path": str(env.code / "acme-web" / "README.md")}})
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    run_hook(monkeypatch, capsys, "Stop", base(ws))
+    assert status(ws).status == db.YOUR_TURN
+
+
+def test_plugin_failure_outside_handlers_keeps_core(ws, env, monkeypatch, capsys):
+    def broken(*a, **kw):
+        raise OSError("plugins dir unreadable")
+    monkeypatch.setattr(plugins, "discover", broken)
+    run_hook(monkeypatch, capsys, "UserPromptSubmit", base(ws))
+    out = run_hook(monkeypatch, capsys, "PreToolUse", {**base(ws), "tool_name": "Edit",
+                   "tool_input": {"file_path": str(env.code / "acme-web" / "README.md")}})
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    run_hook(monkeypatch, capsys, "Stop", base(ws))
+    assert status(ws).status == db.YOUR_TURN
+    log = hook_log(env)
+    assert "PreToolUse: plugins: OSError: plugins dir unreadable" in log
+    assert "Stop: plugins: OSError: plugins dir unreadable" in log

@@ -398,3 +398,15 @@ def test_archived_workstream_is_refused(pdir):
     assert api.workstreams() == []
     with pytest.raises(PluginError, match="archived"):
         api.workstream(ws.key)
+
+
+@pytest.mark.parametrize("text", ['plugins = ["x"]\n', '[plugins]\noff = "demo"\n', '[plugins]\noff = ["demo", 3]\n'])
+def test_malformed_off_is_read_leniently(pdir, text):
+    install_demo(pdir)
+    cfg = config.get_config()
+    cfg.config_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg.config_file.write_text(text)
+    manifests, skipped = plugins.discover()
+    turned_off = "demo" in text and "3" in text
+    assert [m.name for m in manifests] == ([] if turned_off else ["demo"])
+    assert [s.reason for s in skipped] == (["turned off"] if turned_off else [])
