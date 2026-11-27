@@ -487,6 +487,14 @@ def wm(env, pdir, monkeypatch):
     return run
 
 
+def test_core_command_names_match_the_built_tree():
+    import typer.main
+
+    from agentmgr import cli
+
+    assert cli._core_commands() == set(typer.main.get_command(cli.app).commands)
+
+
 def test_plugin_command_is_mounted(wm, env, pdir):
     install_demo(pdir)
     ws = ws_mod.new(launch=False, name="cli notes")

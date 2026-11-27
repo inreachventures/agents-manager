@@ -480,9 +480,11 @@ def app_server() -> None:
 
 
 def _core_commands() -> set[str]:
-    import typer.main
-
-    return set(typer.main.get_command(app).commands)  # type: ignore[attr-defined]
+    """Core command names, read from what is registered on `app` without building the click tree (that costs every
+    `wm` invocation, `wm hook` included, several milliseconds)."""
+    commands = {c.name or c.callback.__name__.lower().replace("_", "-") for c in app.registered_commands}
+    groups = {g.name or g.typer_instance.info.name for g in app.registered_groups}
+    return (commands | groups) - {None}
 
 
 def _cli_problem(cli: object) -> str | None:
@@ -502,12 +504,13 @@ def _cli_problem(cli: object) -> str | None:
 def _mount_plugins(args: list[str]) -> None:
     """Mount plugin commands as `wm <command>`. Only what the invocation needs is imported: a core command (`ls`,
     `hook`, ...) loads nothing; `wm <command>` loads that plugin; no command or --help loads all, to list them."""
-    from .plugin import PluginError
-
+    if args and args[0] == "hook":  # on every tool call: as fast as it was before plugins
+        return
     core = _core_commands()
     if args and args[0] in core:
         return
     from . import plugins
+    from .plugin import PluginError
 
     listing = not args or args[0] in ("-h", "--help")
     for lp in plugins.loaded() if listing else plugins.loaded(command=args[0]):

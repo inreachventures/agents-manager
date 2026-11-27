@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import hashlib
 import importlib
 import importlib.machinery
 import importlib.util
@@ -195,6 +194,8 @@ def set_enabled(name: str, on: bool, cfg: Config | None = None) -> None:
 
 def fingerprint(cfg: Config | None = None) -> str:
     """Changes when a plugin is added, removed, edited or toggled."""
+    import hashlib
+
     cfg = cfg or get_config()
     h = hashlib.sha256()
     for folder in _folders(cfg):
