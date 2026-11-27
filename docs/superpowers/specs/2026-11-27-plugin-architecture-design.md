@@ -282,22 +282,22 @@ the app's light/dark appearance. Exact names are the builder's call; they are do
 
 ### 5. The task map as a plugin
 
-A new repo of its own (`wm-taskmap` below), built from the closed branch:
+A new repo of its own ("the plugin repo" below), built from the closed branch:
 
 | From the closed branch | Goes to |
 |---|---|
-| `taskmap.py`, the drawing process | `wm-taskmap/taskmap.py`, using `api.aux_env()` instead of `AGENTMGR_MAP_DRAWING` |
+| `taskmap.py`, the drawing process | `taskmap.py` in the plugin repo, using `api.aux_env()` instead of `AGENTMGR_MAP_DRAWING` |
 | the app-server's 30s drawing reaper | `api.every(30, ...)` |
-| `data/prlens/` (validator, manual, references) | `wm-taskmap/prlens/` |
-| `bundle-prlens.sh`, the PR Lens web bundle | `wm-taskmap/scripts/`, output in `wm-taskmap/web/` |
-| `MapView.swift` page logic | `wm-taskmap/web/map.html` + JS, a **main** view as on the branch (full width, diff beside it), using `wm.openDiff` for card clicks, `wm.panel(false)` for a click off the cards and Esc, `wm.on("repo")` for the repo chips, `wm.reveal` for Open log |
+| `data/prlens/` (validator, manual, references) | `prlens/` in the plugin repo |
+| `bundle-prlens.sh`, the PR Lens web bundle | `scripts/` in the plugin repo, output in `web/` in the plugin repo |
+| `MapView.swift` page logic | `web/map.html` in the plugin repo + JS, a **main** view as on the branch (full width, diff beside it), using `wm.openDiff` for card clicks, `wm.panel(false)` for a click off the cards and Esc, `wm.on("repo")` for the repo chips, `wm.reveal` for Open log |
 | toolbar toggle, View > Show Task Map (⌥⌘M) | the main-view picker, `shortcut = "opt+cmd+m"` |
 | `_maybe_draw` in hooks | `PostToolUse` handler |
 | `map`, `redraw_map` requests | `api.request("map")`, `api.request("redraw")` |
 | `wm map save` | `api.cli`, `command = "map"` |
 | "Task map" CLAUDE.md section | `api.claude_md` |
 | cancel on archive, doctor checks | `api.on_archive`, `api.doctor` |
-| tests | `wm-taskmap/tests/`, run against an installed wm |
+| tests | `tests/` in the plugin repo, run against an installed wm |
 
 Nothing task-map-specific lands in agents-manager.
 
@@ -333,7 +333,7 @@ plugin code.
   `sys.modules`).
 - App: builds in CI; the fixture plugin's views are checked with the existing debug control (load, SDK round trip,
   theme vars, `openDiff`).
-- Task map: its own tests in `wm-taskmap`, plus a run against a real workstream where a commit redraws the map and a
+- Task map: its own tests in the plugin repo, plus a run against a real workstream where a commit redraws the map and a
   card click opens the diff.
 
 ## Sequencing
