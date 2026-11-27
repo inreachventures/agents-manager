@@ -8,6 +8,10 @@ import SwiftUI
 ///   changes on|off · archived on|off · sheet new|add|rebase|archive · key return|escape
 ///   click X Y (from the top left) · type [TEXT] · create [TICKET] · resume · restore · restart · dump · size W H · offscreen
 ///   appearance dark|light · tour [STOP] · onscreen · right-click X Y · snap-menus NAME (while a menu is open)
+///   center ID · panel-tab ID · open-diff REPO PATH [LINE] · js PLUGIN/VIEW SCRIPT (result in out) · hit X Y
+///   keys TEXT (typed into the focused view) · shortcut MODS+KEY (through the main menu) · menu NAME [raw]
+///   frames (split views' frames in out) · redraw [front] · changes on|off now (no animation: it stalls while the
+///   display sleeps, and so does a page's painting unless WM_DEBUG_DIR is set, see PluginWebView)
 @MainActor
 enum DebugControl {
     private static var timer: Timer?
@@ -63,8 +67,10 @@ enum DebugControl {
             model.selection = rest[0]
         case "repo":
             model.pickRepo(rest.first == "all" ? nil : rest.first)
-        case "changes":
-            model.showChanges = rest.first == "on"
+        case "changes":  // on|off [now]: "now" without the panel's animation, which stalls while the display sleeps
+            var transaction = Transaction()
+            transaction.disablesAnimations = rest.contains("now")
+            withTransaction(transaction) { model.showChanges = rest.first == "on" }
         case "center":  // terminal | <plugin>/<view>
             model.center = rest.first ?? "terminal"
         case "panel-tab":  // changes | <plugin>/<view>
@@ -72,6 +78,93 @@ enum DebugControl {
         case "open-diff":  // REPO PATH [LINE]: as a page's wm.openDiff
             guard let key = model.selection, rest.count >= 2 else { return }
             try? model.openDiff(key: key, repo: rest[0], path: rest[1], line: rest.count > 2 ? Int(rest[2]) : nil)
+        case "js":  // PLUGIN/VIEW SCRIPT: a function body run in that page (the first live one); its result in out
+            guard let id = rest.first,
+                  let host = model.pluginHosts.allObjects.first(where: { $0.debugID == id }) else {
+                try? "no page \(rest.first ?? "")\n".write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+                return
+            }
+            host.debugEval(rest.dropFirst().joined(separator: " ")) { result in
+                try? (result + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+            }
+        case "hit":  // X Y (from the top left): the views a click there lands on, innermost first
+            guard let window, let content = window.contentView, let x = Double(rest[0]), let y = Double(rest[1]) else {
+                return
+            }
+            let point = content.convert(NSPoint(x: x, y: window.frame.height - y), from: nil)
+            var chain: [String] = []
+            var view = content.superview?.hitTest(point) ?? content.hitTest(point)
+            while let v = view, chain.count < 12 {
+                chain.append(String(describing: type(of: v)))
+                view = v.superview
+            }
+            try? (chain.joined(separator: " < ") + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+        case "frames":  // the window's split views and their panes' frames, in out
+            guard let window, let content = window.contentView else { return }
+            var lines: [String] = []
+            func walk(_ view: NSView, _ depth: Int) {
+                if let split = view as? NSSplitView {
+                    let panes = split.arrangedSubviews.map { "\($0.frame) hidden=\($0.isHidden)" }
+                    lines.append(String(repeating: " ", count: depth) + "split \(split.frame) in "
+                                 + "\(split.superview?.frame ?? .zero): " + panes.joined(separator: " | "))
+                }
+                if view is WMTerminalView || view is PluginContainerView {
+                    lines.append(String(repeating: " ", count: depth) + "\(type(of: view)) \(view.frame) "
+                                 + "win=\(view.convert(view.bounds, to: nil)) hidden=\(view.isHidden)")
+                }
+                for sub in view.subviews { walk(sub, depth + 1) }
+            }
+            walk(content.superview ?? content, 0)
+            try? (lines.joined(separator: "\n") + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+        case "redraw":  // lay out and draw the window now (a hidden one may lag); "front": in front first, unfocused
+            if rest.first == "front" { window?.orderFrontRegardless() }
+            let occlusion = window?.occlusionState.contains(.visible) == true ? "visible" : "occluded"
+            try? "\(occlusion) key=\(window?.isKeyWindow == true)\n".write(toFile: "\(dir)/out", atomically: true,
+                                                                             encoding: .utf8)
+            window?.contentView?.needsLayout = true
+            window?.contentView?.layoutSubtreeIfNeeded()
+            window?.display()
+        case "keys":  // TEXT: typed into whatever has the focus, as the keyboard would
+            guard let window else { return }
+            for char in rest.joined(separator: " ") + "\r" {
+                let chars = String(char)
+                for type in [NSEvent.EventType.keyDown, .keyUp] {
+                    if let event = NSEvent.keyEvent(with: type, location: .zero, modifierFlags: [],
+                                                    timestamp: ProcessInfo.processInfo.systemUptime,
+                                                    windowNumber: window.windowNumber, context: nil, characters: chars,
+                                                    charactersIgnoringModifiers: chars, isARepeat: false,
+                                                    keyCode: char == "\r" ? 36 : 0) {
+                        window.sendEvent(event)
+                    }
+                }
+            }
+        case "shortcut":  // MODS+KEY, e.g. opt+cmd+d: as pressed, through the main menu's key equivalents
+            guard let window, let text = rest.first, let key = text.split(separator: "+").last.map(String.init) else {
+                return
+            }
+            var flags: NSEvent.ModifierFlags = []
+            if text.contains("cmd") { flags.insert(.command) }
+            if text.contains("opt") { flags.insert(.option) }
+            if text.contains("ctrl") { flags.insert(.control) }
+            if text.contains("shift") { flags.insert(.shift) }
+            if let event = NSEvent.keyEvent(with: .keyDown, location: .zero, modifierFlags: flags,
+                                            timestamp: ProcessInfo.processInfo.systemUptime,
+                                            windowNumber: window.windowNumber, context: nil, characters: key,
+                                            charactersIgnoringModifiers: key, isARepeat: false, keyCode: 0) {
+                let handled = NSApp.mainMenu?.performKeyEquivalent(with: event) ?? false
+                try? "handled=\(handled)\n".write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
+            }
+        case "menu":  // NAME: that menu's items (title, shortcut, enabled) in out
+            guard let menu = NSApp.mainMenu?.items.first(where: { $0.title == rest.first })?.submenu
+            else { return }
+            // SwiftUI fills its menus when they open; "raw" lists the items as they are before that
+            if rest.last != "raw" { menu.delegate?.menuNeedsUpdate?(menu) }
+            menu.update()
+            let lines = menu.items.map { item in
+                item.isSeparatorItem ? "---" : "\(item.title) [\(item.keyEquivalentModifierMask.rawValue):"
+                    + "\(item.keyEquivalent)] enabled=\(item.isEnabled)"
+            }
+            try? (lines.joined(separator: "\n") + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
         case "archived":
             model.showArchived = rest.first == "on"
         case "sheet":
@@ -109,7 +202,11 @@ enum DebugControl {
                        "center=\(model.center) panelTab=\(model.panelTab) kept=\(model.keptViews.sorted())",
                        "plugins=\(model.plugins.map { "\($0.name):\($0.status)" })",
                        "contextRepo=\(model.contextRepo ?? "all")",
-                       "shortcuts=\(model.shortcutViews.map { "\($0.view.id):\($0.shortcut != nil)" })"]
+                       "shortcuts=\(model.shortcutViews.map { "\($0.view.id):\($0.shortcut != nil)" })",
+                       "responder=\(window?.firstResponder.map { String(describing: type(of: $0)) } ?? "nil")",
+                       "active=\(NSApp.isActive) key=\(window?.isKeyWindow == true)",
+                       "showChanges=\(model.showChanges) jump=\(model.jump.map { "\($0)" } ?? "nil")",
+                       "hosts=\(model.pluginHosts.allObjects.map(\.debugID).sorted())"]
                 .joined(separator: "\n")
             try? (out + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
         case "settings":  // renders Settings in a scratch window and snapshots it as NAME-settings.png

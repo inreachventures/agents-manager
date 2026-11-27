@@ -24,6 +24,14 @@ struct PluginWebView: NSViewRepresentable {
         config.userContentController.add(WeakScriptHandler(context.coordinator), name: "wm")
         let web = PluginWKWebView(frame: .zero, configuration: config)
         web.isInspectable = true  // Safari's Web Inspector, for plugin authors
+        #if DEBUG
+        // DebugControl snapshots a window that may be hidden (display asleep, off screen): keep the page painting
+        let occlusion = NSSelectorFromString("_setWindowOcclusionDetectionEnabled:")
+        if ProcessInfo.processInfo.environment["WM_DEBUG_DIR"] != nil, web.responds(to: occlusion) {
+            typealias Set = @convention(c) (AnyObject, Selector, Bool) -> Void
+            unsafeBitCast(web.method(for: occlusion), to: Set.self)(web, occlusion, false)
+        }
+        #endif
         let container = PluginContainerView(web: web)
         context.coordinator.attach(model: model, web: web, container: container)
         return container
@@ -463,3 +471,22 @@ private final class WeakScriptHandler: NSObject, WKScriptMessageHandler {
         target?.userContentController(controller, didReceive: message)
     }
 }
+
+#if DEBUG
+extension PluginWebView.Coordinator {
+    /// DebugControl's `js`: runs `script` (a function body; `return` a value) in the page, the result as JSON.
+    func debugEval(_ script: String, done: @escaping (String) -> Void) {
+        guard let web else { return done("no web view") }
+        web.callAsyncJavaScript("return JSON.stringify(await (async () => { \(script) })());", arguments: [:],
+                                in: nil, in: .page) { result in
+            switch result {
+            case .success(let value): done("\(value)")
+            case .failure(let error): done("error: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    var debugID: String { AppModel.viewID(plugin, view) }
+    var debugWeb: NSView? { web }
+}
+#endif
