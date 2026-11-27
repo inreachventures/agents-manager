@@ -16,7 +16,7 @@ extension Color {
     static func tone(_ name: String) -> Color {
         switch name {
         case "red": return .red
-        case "yellow": return .amber
+        case "yellow", "amber": return .amber
         case "blue": return .blue
         case "green": return .green
         case "cyan": return .teal

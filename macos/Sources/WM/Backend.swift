@@ -94,12 +94,6 @@ final class Backend {
         return try await Task.detached(priority: .userInitiated) { try Reader.decoder.decode(T.self, from: data) }.value
     }
 
-    /// The result as `JSONSerialization` reads it (a dictionary, an array, a string, a number or NSNull).
-    func requestJSON(_ method: String, _ params: [String: Any]) async throws -> Any {
-        let data = try await requestData(method, params)
-        return try JSONSerialization.jsonObject(with: data, options: .fragmentsAllowed)
-    }
-
     /// The result as the server sent it: JSON, which may be a bare string, number or null.
     func requestData(_ method: String, _ params: [String: Any]) async throws -> Data {
         guard let input, isRunning else { throw BackendError(message: "wm is not running", stopped: true) }

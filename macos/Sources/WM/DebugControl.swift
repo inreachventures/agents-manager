@@ -88,7 +88,8 @@ enum DebugControl {
                 try? (result + "\n").write(toFile: "\(dir)/out", atomically: true, encoding: .utf8)
             }
         case "hit":  // X Y (from the top left): the views a click there lands on, innermost first
-            guard let window, let content = window.contentView, let x = Double(rest[0]), let y = Double(rest[1]) else {
+            guard rest.count >= 2, let window, let content = window.contentView, let x = Double(rest[0]),
+                  let y = Double(rest[1]) else {
                 return
             }
             let point = content.convert(NSPoint(x: x, y: window.frame.height - y), from: nil)
