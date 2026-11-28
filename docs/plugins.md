@@ -89,7 +89,7 @@ shortcut = "opt+cmd+b"
 | `title` | yes | Display name, non-empty text. |
 | `version` | yes | Non-empty text; shown in `wm plugins` and Settings. |
 | `api` | yes | The integer `1`, the plugin API version this wm implements. |
-| `command` | no | The name of the `wm` subcommand the plugin adds (`wm <command> ...`). Needed for `api.cli`. A name that is already a core command is skipped. |
+| `command` | no | The name of the `wm` subcommand the plugin adds (`wm <command> ...`). Needed for `api.cli`. A name that is already a core command is not mounted, and when two plugins have the same command, only the first by name gets it. The plugin itself stays on; `wm plugins` and `wm doctor` say why its command is missing. |
 | `hooks` | no | The Claude Code hook events the plugin handles, from `SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `Notification`, `Stop`, `SessionEnd`. Default none. |
 | `protect` | no | `true` guards `.wm/<name>/` in each workstream (see [Protecting a plugin's files](#protecting-a-plugins-files)). Default `false`. |
 | `[[views]]` | no | Web pages, below. |

@@ -593,8 +593,40 @@ def test_broken_plugin_command_never_breaks_help(wm, pdir):
     (pdir / "notyper" / "plugin.py").write_text("def register(api):\n    api.cli(object())\n")
     r = wm("--help")
     assert r.returncode == 0, r.stderr
-    assert "demo" in r.stdout and "broken: skipped" in r.stderr and "notyper: skipped" in r.stderr
-    assert "broken: skipped" in wm("doctor").stdout
+    assert "demo" in r.stdout and "broken: not mounted" in r.stderr and "notyper: not mounted" in r.stderr
+    assert "broken: not mounted" in wm("doctor").stdout
     r = wm("broken", "x")
     assert (r.returncode, r.stderr.startswith("error: plugin broken")) == (1, True)
     assert "Traceback" not in r.stderr
+
+
+def make_cli_plugin(pdir, name, command, says):
+    make(pdir, name, f'name = "{name}"\ntitle = "T"\nversion = "1"\napi = 1\ncommand = "{command}"\n')
+    (pdir / name / "plugin.py").write_text(
+        "import typer\nt = typer.Typer()\n\n\n@t.command()\n"
+        f"def hi() -> None:\n    typer.echo({says!r})\n\n\n@t.command()\ndef bye() -> None:\n    pass\n\n\n"
+        "def register(api):\n    api.cli(t)\n")
+
+
+def test_two_plugins_with_one_command_mount_the_first_by_name(wm, pdir):
+    make_cli_plugin(pdir, "beta", "greet", "from beta")
+    make_cli_plugin(pdir, "alpha", "greet", "from alpha")
+    r = wm("greet", "hi")
+    assert (r.returncode, r.stdout.strip()) == (0, "from alpha"), r.stderr
+    r = wm("--help")
+    assert r.returncode == 0, r.stderr
+    assert "beta: not mounted: command 'greet' is also the alpha plugin's" in r.stderr
+    assert "beta: not mounted: command 'greet' is also the alpha plugin's" in wm("doctor").stdout
+
+
+def test_cli_plugins_shows_a_command_that_is_not_mounted(pdir):
+    make_cli_plugin(pdir, "alpha", "greet", "from alpha")
+    make_cli_plugin(pdir, "beta", "greet", "from beta")
+    make_cli_plugin(pdir, "core", "ls", "from core")
+    make(pdir, "notyper", 'name = "notyper"\ntitle = "N"\nversion = "1"\napi = 1\ncommand = "notyper"\n')
+    (pdir / "notyper" / "plugin.py").write_text("def register(api):\n    api.cli(object())\n")
+    out = CliRunner().invoke(app, ["plugins"]).output.splitlines()
+    assert out == ["alpha  on  1",
+                   "beta  on  1  not mounted: command 'greet' is also the alpha plugin's",
+                   "core  on  1  not mounted: command 'ls' is a core command",
+                   "notyper  on  1  not mounted: api.cli was given object, not a typer.Typer"]

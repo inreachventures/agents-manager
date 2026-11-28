@@ -336,12 +336,8 @@ def doctor() -> None:
     from . import plugins
 
     problems = plugins.doctor_problems()
-    core = _core_commands()
-    manifests, _ = plugins.discover()
-    problems += [f"{m.name}: skipped: command '{m.command}' is a core command" for m in manifests if m.command in core]
-    for lp in plugins.loaded():
-        if lp.api.registered.cli is not None and (why := _cli_problem(lp.api.registered.cli)):
-            problems.append(f"{lp.manifest.name}: skipped: {why}")
+    unmounted = _unmounted(plugins.discover()[0], plugins.loaded())
+    problems += [f"{name}: not mounted: {why}" for name, why in sorted(unmounted.items())]
     if problems:
         typer.echo("Plugins")
         for problem in problems:
@@ -436,14 +432,16 @@ def plugins_list(ctx: typer.Context) -> None:
         return
     from . import plugins
 
-    on = {lp.manifest.name for lp in plugins.loaded()}  # first, so that skipped() has the plugins that fail to load
+    lps = plugins.loaded()  # first, so that skipped() has the plugins that fail to load
+    on = {lp.manifest.name for lp in lps}
     failed = {s.name: s.reason for s in plugins.skipped()}
     manifests, skipped = plugins.discover()
-    rows = [(m.name, "on", m.version, "") if m.name in on else (m.name, "skipped", m.version, failed.get(m.name, ""))
-            for m in manifests]
+    unmounted = {name: f"not mounted: {why}" for name, why in _unmounted(manifests, lps).items()}
+    rows = [(m.name, "on", m.version, unmounted.get(m.name, "")) if m.name in on
+            else (m.name, "skipped", m.version, failed.get(m.name, "")) for m in manifests]
     rows += [(s.name, "off" if s.reason == "turned off" else "skipped", "", s.reason) for s in skipped]
     for name, status, version, reason in sorted(rows):
-        typer.echo("  ".join(part for part in (name, status, version, reason if status == "skipped" else "") if part))
+        typer.echo("  ".join(part for part in (name, status, version, reason if status != "off" else "") if part))
 
 
 def _set_plugin(name: str, on: bool) -> None:
@@ -504,34 +502,63 @@ def _cli_problem(cli: object) -> str | None:
     return None
 
 
+def _unmounted(manifests: list, lps: list) -> dict[str, str]:
+    """Why each of the loaded plugins `lps` has no `wm <command>`, by plugin name: its command is a core command's
+    name, a plugin earlier by name has the same command, or its command line can't be built."""
+    core = _core_commands()
+    names = {lp.manifest.name for lp in lps}
+    out: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    for m in manifests:  # in name order: the first plugin with a command has it
+        if not m.command:
+            continue
+        if m.command in core:
+            why = f"command '{m.command}' is a core command"
+        elif m.command in owner:
+            why = f"command '{m.command}' is also the {owner[m.command]} plugin's"
+        else:
+            owner[m.command] = m.name
+            continue
+        if m.name in names:
+            out[m.name] = why
+    for lp in lps:
+        cli = lp.api.registered.cli
+        if lp.manifest.name not in out and cli is not None and (why := _cli_problem(cli)):
+            out[lp.manifest.name] = why
+    return out
+
+
 def _mount_plugins(args: list[str]) -> None:
     """Mount plugin commands as `wm <command>`. Only what the invocation needs is imported: a core command (`ls`,
-    `hook`, ...) loads nothing; `wm <command>` loads that plugin; no command or --help loads all, to list them."""
+    `hook`, ...) loads nothing; `wm <command>` loads the plugin that has it (the first by name); no command or --help
+    loads all, to list them."""
     if args and args[0] == "hook":  # on every tool call: as fast as it was before plugins
         return
-    core = _core_commands()
-    if args and args[0] in core:
+    if args and args[0] in _core_commands():
         return
     from . import plugins
     from .plugin import PluginError
 
     listing = not args or args[0] in ("-h", "--help")
-    found = plugins.loaded() if listing else plugins.loaded(command=args[0])
-    if not listing and not found:
-        manifests, _ = plugins.discover()
-        if m := next((m for m in manifests if m.command == args[0]), None):
+    manifests, _ = plugins.discover()
+    if listing:
+        found = plugins.loaded()
+    else:
+        m = next((m for m in manifests if m.command == args[0]), None)
+        if m is None:
+            return  # not a command: the usual "No such command"
+        found = plugins.loaded(name=m.name)
+        if not found:
             reason = next((s.reason for s in plugins.skipped() if s.name == m.name), "it did not load")
             raise PluginError(f"plugin {m.name} is skipped: {reason}")
+    unmounted = _unmounted(manifests, found)
     for lp in found:
         command, cli = lp.manifest.command, lp.api.registered.cli
         if cli is None or not command:
             continue
-        if command in core:
-            plugins.log(f"{lp.manifest.name}: skipped: command '{command}' is a core command")
-            continue
-        if problem := _cli_problem(cli):
+        if problem := unmounted.get(lp.manifest.name):
             if listing:
-                plugins.log(f"{lp.manifest.name}: skipped: {problem}")
+                plugins.log(f"{lp.manifest.name}: not mounted: {problem}")
                 continue
             raise PluginError(f"plugin {lp.manifest.name}: {problem}")
         app.add_typer(cli, name=command, rich_help_panel="Plugins")
