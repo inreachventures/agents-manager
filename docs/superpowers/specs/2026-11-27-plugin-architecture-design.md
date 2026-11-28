@@ -204,7 +204,8 @@ author's call on naming when porting; the CLAUDE.md section tells Claude the com
 - `plugins` request: each plugin's name, title, version, status, views, and the skip reason if any; and the plugins
   folder (`dir`), for Settings to reveal.
 - `plugin_request {plugin, method, params}` calls the handler registered with `api.request`. Errors come back as
-  normal request errors (the app shows them in the view, not as a crash).
+  normal request errors (the app shows them in the view, not as a crash). Plugin requests run on threads of their own,
+  so a slow one never holds up core's requests or the app-server's exit; one taking over 2s is logged.
 - `state` gains `badges: [{plugin, text, tone, help}]` per workstream, from `api.badge`. Badge functions run on every
   state push (every 2s while the app is in front), so they must be cheap; one taking over 50ms is logged.
 - `api.watch(fn)`: the server checks the returned paths' mtimes with each state push and, when one changes, sends

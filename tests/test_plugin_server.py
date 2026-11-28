@@ -3,6 +3,7 @@
 import io
 import json
 import os
+import re
 import shutil
 import threading
 import time
@@ -279,3 +280,74 @@ def test_send_refuses_stopped(pdir, monkeypatch):
     assert ask(srv, "send", key=ws.key.lower(), text="hi")["result"] == {}
     assert sent == [(ws.key, "hi")]
     assert srv.wake.is_set()
+
+
+HANG = ("import time\nfrom pathlib import Path\n\n\ndef wait(until):\n    deadline = time.monotonic() + 30\n"
+        "    while not Path(until).exists() and time.monotonic() < deadline:\n        time.sleep(0.02)\n"
+        "    return {}\n\n\ndef register(api):\n    api.request('wait', wait)\n")
+
+
+def reply(srv, rid, timeout=5.0) -> dict | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        for line in srv.out.getvalue().splitlines():
+            msg = json.loads(line)
+            if msg.get("id") == rid:
+                return msg
+        time.sleep(0.02)
+    return None
+
+
+def test_plugin_requests_never_hold_up_core_requests(pdir, tmp_path, monkeypatch):
+    monkeypatch.setattr(server.Server, "push_state", lambda self: None)  # only the requests, no state loop
+    make_plugin(pdir, "hang", HANG)
+    release = tmp_path / "release"
+    srv = server.Server(io.StringIO())
+    r, w = os.pipe()
+    t = threading.Thread(target=srv.serve, args=(os.fdopen(r),), daemon=True)
+    t.start()
+    try:
+        for i in range(12):  # more than either pool has threads
+            os.write(w, (json.dumps({"id": i, "method": "plugin_request", "params": {
+                "plugin": "hang", "method": "wait", "params": {"until": str(release)}}}) + "\n").encode())
+        os.write(w, (json.dumps({"id": "core", "method": "plugins", "params": {}}) + "\n").encode())
+        got = reply(srv, "core")
+        assert got is not None and "result" in got
+    finally:
+        release.touch()
+        os.close(w)
+        t.join(10)
+    assert reply(srv, 11, timeout=10) == {"id": 11, "result": {}}
+
+
+def test_a_hung_plugin_request_does_not_keep_the_app_server_alive(pdir, tmp_path):
+    import subprocess
+    import sys
+
+    make_plugin(pdir, "hang", HANG)
+    exe = Path(sys.executable).parent / "wm"
+    proc = subprocess.Popen([str(exe), "app-server"], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.DEVNULL, text=True, env=os.environ.copy())
+    try:
+        proc.stdin.write(json.dumps({"id": 1, "method": "plugin_request", "params": {
+            "plugin": "hang", "method": "wait", "params": {"until": str(tmp_path / "never")}}}) + "\n")
+        proc.stdin.flush()
+        time.sleep(0.5)  # the request is running
+        proc.stdin.close()  # the app quits
+        assert proc.wait(timeout=10) == 0
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait()
+
+
+def test_slow_plugin_request_is_logged(pdir, monkeypatch):
+    lines: list[str] = []
+    plugins.set_logger(lines.append)
+    monkeypatch.setattr(server, "PLUGIN_REQUEST_SECONDS", 0.01)
+    ws = ws_mod.new(launch=False, name="x y")
+    (ws.path / ".wm" / "demo").mkdir(parents=True, exist_ok=True)
+    (ws.path / ".wm" / "demo" / "slow.txt").write_text("0.05")
+    srv = server.Server(io.StringIO())
+    assert ask(srv, "plugin_request", plugin="demo", method="notes", params={"key": ws.key})["result"] == []
+    assert len(lines) == 1 and re.fullmatch(r"plugin demo: request notes took \d+\.\d\ds", lines[0])

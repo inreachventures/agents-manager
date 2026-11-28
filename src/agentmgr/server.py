@@ -20,6 +20,7 @@ import dataclasses
 import hashlib
 import json
 import os
+import queue
 import shutil
 import sys
 import threading
@@ -43,6 +44,8 @@ PR_REFRESH_SECONDS = 60
 COLOR_WAIT_SECONDS = 10  # after typing /color, how long to show the picked colour while Claude's transcript lacks it
 FETCH_SECONDS = 30  # each repo is actually fetched at most every fetcher.DASHBOARD_MAX_AGE
 BADGE_SECONDS = 0.05  # a plugin's badge function runs on every state push; one taking longer is logged
+PLUGIN_REQUEST_SECONDS = 2.0  # a plugin request taking longer is logged: a view is waiting on it
+PLUGIN_WORKERS = 4  # threads for plugin requests, apart from core's
 EXPECTED = (workstream.WorkstreamError, NamingError, RepoMatchError, gitops.GitError, tmux.TmuxError, PluginError)
 # Requests that change nothing the dashboard shows, so no state push after them: the app asks for a diff every 3s,
 # and pushing the state after each one kept the state loop (git in every repo) running without a pause. Plugin
@@ -224,6 +227,41 @@ def setup() -> dict:
     }
 
 
+class Workers:
+    """A few daemon threads taking calls from a queue, started at the first call. For plugin requests: Python joins a
+    ThreadPoolExecutor's threads when it exits, so a plugin handler that never returns would keep an old app-server
+    alive after the app quit; daemon threads are left behind instead."""
+
+    def __init__(self, count: int, name: str):
+        self.count, self.name = count, name
+        self.calls: queue.SimpleQueue = queue.SimpleQueue()
+        self.started = False
+        self.lock = threading.Lock()
+
+    def submit(self, fn, *args) -> None:
+        with self.lock:
+            if not self.started:
+                self.started = True
+                for i in range(self.count):
+                    threading.Thread(target=self._work, daemon=True, name=f"{self.name}-{i}").start()
+        self.calls.put((fn, args))
+
+    def _work(self) -> None:
+        while True:
+            fn, args = self.calls.get()
+            try:
+                fn(*args)
+            except Exception:  # noqa: BLE001 — keep the thread for the next call
+                traceback.print_exc()
+
+
+def _method(line: str) -> str | None:
+    try:
+        return str(json.loads(line).get("method"))
+    except (ValueError, AttributeError):
+        return None
+
+
 class Server:
     def __init__(self, out: TextIO):
         self.out = out
@@ -231,6 +269,7 @@ class Server:
         self.wake = threading.Event()  # push the state now instead of at the next tick
         self.done = threading.Event()
         self.pool = ThreadPoolExecutor(max_workers=8, thread_name_prefix="wm-request")
+        self.plugin_workers = Workers(PLUGIN_WORKERS, "wm-plugin-request")  # a slow plugin never holds up core
         self.last_state: dict | None = None
         self.app_active = True  # the app is the frontmost app (rpc_focus)
         self.fresh = False  # the next state push reads every repo's git state again (rpc_refresh)
@@ -282,9 +321,9 @@ class Server:
         self.start_jobs()
         while line := stdin.readline():
             if line.strip():
-                self.pool.submit(self.call, line)
+                (self.plugin_workers if _method(line) == "plugin_request" else self.pool).submit(self.call, line)
         self.done.set()
-        self.pool.shutdown(wait=True)  # an archive or rebase in flight runs to the end
+        self.pool.shutdown(wait=True)  # an archive or rebase in flight runs to the end; a plugin request is left
         with self.typing:  # nor quit halfway through typing a /color, which would leave it in the prompt
             pass
         plugins.flush()
@@ -636,11 +675,15 @@ class Server:
                   None)
         if fn is None:
             raise PluginError(f"plugin {plugin} has no request {method!r}")
+        start = time.monotonic()
         try:
             return fn(**params)
         except SystemExit as e:  # would otherwise leave the request unanswered
             traceback.print_exc()
             raise PluginError(f"SystemExit: {e}") from e
+        finally:
+            if (secs := time.monotonic() - start) > PLUGIN_REQUEST_SECONDS:
+                plugins.log(f"plugin {plugin}: request {method} took {secs:.2f}s")
 
     def rpc_switch(self, key: str, pid: int) -> dict:
         """Point the app's running tmux client (process `pid`) at another workstream; False if there is none."""
