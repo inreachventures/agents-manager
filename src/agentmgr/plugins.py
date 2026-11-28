@@ -19,7 +19,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal
 
 from .config import Config, get_config
-from .plugin import API_VERSION, Api, RepoInfo, WorkstreamInfo
+from .plugin import API_VERSION, Api, PluginError, RepoInfo, WorkstreamInfo
 from .templates import HOOK_EVENTS
 
 if TYPE_CHECKING:
@@ -167,12 +167,18 @@ def discover(cfg: Config | None = None) -> tuple[list[Manifest], list[Skipped]]:
 
 
 def set_enabled(name: str, on: bool, cfg: Config | None = None) -> None:
-    """Record the choice as `[plugins] off = [...]` in config.toml, leaving the rest of the file as it is."""
+    """Record the choice as `[plugins] off = [...]` in config.toml, leaving the rest of the file as it is. Raises
+    PluginError, leaving the file alone, when it is written in a way this line editor can't change (a dotted
+    `plugins.off` key, an inline table, a list with a "]" in a comment, ...)."""
     cfg = cfg or get_config()
-    off = [n for n in _off(cfg) if n != name]
+    try:
+        off = [n for n in _off(cfg) if n != name]
+    except (OSError, ValueError) as e:
+        raise PluginError(f"cannot read {cfg.config_file}: {e}") from e
     if not on:
         off.append(name)
-    line = f"off = {json.dumps(sorted(off))}"
+    off = sorted(set(off))
+    line = f"off = {json.dumps(off)}"
     lines = cfg.config_file.read_text().splitlines() if cfg.config_file.exists() else []
     start = next((i for i, ln in enumerate(lines) if re.fullmatch(r"\s*\[plugins\]\s*(#.*)?", ln)), None)
     if start is None:
@@ -189,7 +195,15 @@ def set_enabled(name: str, on: bool, cfg: Config | None = None) -> None:
                     last += 1
             new = lines[:key] + [line] + lines[last + 1:]
     text = "\n".join(new) + "\n"
-    tomllib.loads(text)  # never write a file wm can't read back
+    try:  # never write a file wm can't read back, or that doesn't say what was asked
+        section = tomllib.loads(text).get("plugins")
+        written = section.get("off") if isinstance(section, dict) else None
+    except tomllib.TOMLDecodeError:
+        written = None
+    if written != off:
+        raise PluginError(f"cannot turn {name} {'on' if on else 'off'}: wm can't edit the [plugins] table in "
+                          f"{cfg.config_file}. Write it as a [plugins] section with an off = [...] list of the "
+                          "plugins to turn off, on one line or one name per line.")
     cfg.config_file.parent.mkdir(parents=True, exist_ok=True)
     cfg.config_file.write_text(text)
 

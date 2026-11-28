@@ -446,11 +446,15 @@ def plugins_list(ctx: typer.Context) -> None:
 
 def _set_plugin(name: str, on: bool) -> None:
     from . import plugins
+    from .plugin import PluginError
 
     manifests, skipped = plugins.discover()
     if name not in {m.name for m in manifests} | {s.name for s in skipped}:
         _fail(f"no plugin named '{name}'")
-    plugins.set_enabled(name, on)
+    try:
+        plugins.set_enabled(name, on)
+    except PluginError as e:
+        _fail(str(e))
 
 
 @plugins_app.command("on")

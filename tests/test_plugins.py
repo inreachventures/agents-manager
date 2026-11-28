@@ -630,3 +630,18 @@ def test_cli_plugins_shows_a_command_that_is_not_mounted(pdir):
                    "beta  on  1  not mounted: command 'greet' is also the alpha plugin's",
                    "core  on  1  not mounted: command 'ls' is a core command",
                    "notyper  on  1  not mounted: api.cli was given object, not a typer.Typer"]
+
+
+@pytest.mark.parametrize("text", ['plugins.off = ["x"]\n', 'plugins = { off = ["x"] }\n',
+                                  '[plugins]\noff = [\n  "x", # a ] in a comment\n  "y",\n]\n'])
+def test_off_in_a_config_wm_cannot_edit_is_a_plugin_error(pdir, text):
+    install_demo(pdir)
+    cfg = config.get_config()
+    cfg.config_file.parent.mkdir(parents=True, exist_ok=True)
+    cfg.config_file.write_text(text)
+    with pytest.raises(PluginError, match=re.escape(str(cfg.config_file))):
+        plugins.set_enabled("demo", False)
+    assert cfg.config_file.read_text() == text
+    out = CliRunner().invoke(app, ["plugins", "off", "demo"])
+    assert out.exit_code == 1 and out.output.startswith("error: ") and str(cfg.config_file) in out.output
+    assert cfg.config_file.read_text() == text
