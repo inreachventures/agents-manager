@@ -615,13 +615,19 @@ def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[s
 
 
 def allowed_tools(ws: db.Workstream, links: list[db.RepoLink]) -> list[str]:
-    """The tools plugins pre-approve for this workstream's session."""
+    """The tools plugins pre-approve for this workstream's session. They are passed joined by commas, so an entry with
+    a comma in it would split into others: it is left out and recorded as the plugin's error."""
     info = workstream_info(ws, links)
     out: list[str] = []
     for lp in loaded():
         if lp.api.registered.allowed_tools:
-            out += call_text_list(lp, "allowed_tools", lp.api.registered.allowed_tools, info,
-                                  budget=CLAUDE_MD_BUDGET)
+            tools = call_text_list(lp, "allowed_tools", lp.api.registered.allowed_tools, info,
+                                   budget=CLAUDE_MD_BUDGET)
+            if bad := [t for t in tools if "," in t]:
+                record_error(lp.manifest.name, "allowed_tools",
+                             f"{', '.join(map(repr, bad))} {'has a comma' if len(bad) == 1 else 'have commas'}, "
+                             "which --allowedTools can't pass on")
+            out += [t for t in tools if "," not in t]
     return out
 
 

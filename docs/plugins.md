@@ -281,7 +281,7 @@ A plugin can start its own Claude Code session in a workstream's folder, for exa
 
 If two plugins replace the same section, the first by name wins. The other's replacement is not called, and it is recorded as that plugin's error (`replace progress_rule: already replaced by <plugin>`), which `wm doctor` and the app show until the next time `CLAUDE.md` is written without the clash. A replacement that returns an empty string is ignored.
 
-`api.allowed_tools(fn)` is related: the tools it returns are passed to Claude Code when a session starts, so they run without a prompt. Keep them as narrow as the one command you mean, such as `Bash(wm notes add WS-7 *)`.
+`api.allowed_tools(fn)` is related: the tools it returns are passed to Claude Code when a session starts, so they run without a prompt. Keep them as narrow as the one command you mean, such as `Bash(wm notes add WS-7 *)`. They are passed joined by commas, so an entry that contains a comma is left out and recorded as the plugin's error.
 
 ## Protecting a plugin's files
 

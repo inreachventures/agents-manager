@@ -168,3 +168,19 @@ def test_wrong_return_type_is_an_error_not_a_crash(env, monkeypatch, register, w
     result = CliRunner().invoke(cli.app, ["doctor"])
     assert result.exception is None or isinstance(result.exception, SystemExit), result.exception
     assert f"bad: {what}: {reason}" in result.output
+
+
+def test_allowed_tool_with_a_comma_is_rejected(env, monkeypatch):
+    d = env.root / "plugins"
+    (d / "commas").mkdir(parents=True)
+    (d / "commas" / "plugin.toml").write_text('name = "commas"\ntitle = "C"\nversion = "1"\napi = 1\n')
+    (d / "commas" / "plugin.py").write_text(
+        "def register(api):\n    api.allowed_tools(lambda ws: ['Bash(a, b)', 'Bash(ok *)'])\n")
+    monkeypatch.setenv("AGENTMGR_PLUGINS_DIR", str(d))
+    config.get_config.cache_clear()
+    ws = ws_mod.new(launch=False, name="x y")
+    cmd = ws_mod.claude_command(db.get_workstream(db.connect(), ws.key), resume=False)
+    tools = cmd[cmd.index("--allowedTools") + 1].split(",")
+    assert "Bash(ok *)" in tools and not any(t.startswith("Bash(a") or t == " b)" for t in tools)
+    assert [(e.name, e.what, e.reason) for e in plugins.errors()] == [
+        ("commas", "allowed_tools", "'Bash(a, b)' has a comma, which --allowedTools can't pass on")]
