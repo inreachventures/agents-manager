@@ -381,7 +381,7 @@ def _read_errors_file() -> dict[tuple[str, str], HandlerError]:
     """The entries in the errors file. Missing, unreadable or not what wm writes: empty, never an exception."""
     try:
         raw = json.loads(_errors_path().read_text())
-    except (OSError, ValueError, UnicodeDecodeError):
+    except Exception:  # noqa: BLE001 - also RecursionError, from JSON nested deep enough
         return {}
     out: dict[tuple[str, str], HandlerError] = {}
     for e in raw if isinstance(raw, list) else []:
@@ -455,8 +455,18 @@ def flush() -> None:
         _persisted = entries
 
 
+REASON_MAX = 300  # characters of a reason kept and shown: a line in `wm doctor` and an app notice
+
+
+def _one_line(reason: str) -> str:
+    text = " ".join(reason.split())
+    return text if len(text) <= REASON_MAX else text[:REASON_MAX - 1] + "…"
+
+
 def record_error(name: str, what: str, reason: str) -> None:
-    """Log and keep a plugin's handler error, for `errors()`, `persisted_errors()`, `wm doctor` and the app."""
+    """Log and keep a plugin's handler error, for `errors()`, `persisted_errors()`, `wm doctor` and the app. The
+    reason is made one line of at most REASON_MAX characters."""
+    reason = _one_line(reason)
     log(f"plugin {name}: {what}: {reason}")
     with _lock:
         _errors[(name, what)] = HandlerError(name, what, reason, time.time())
@@ -526,9 +536,9 @@ def ago(at: float, now: float | None = None) -> str:
 def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None,
          convert: Callable[[Any], Any] | None = None) -> Any:
     """`fn(*args)`, isolated: an exception is recorded (`record_error`) and gives None. `convert(result)` checks the
-    result and gives what to use instead; when it raises (`WrongResult`, or TypeError / ValueError), that is recorded
-    the same way and gives None. A success clears the error recorded for the same (plugin, what). A call over `budget`
-    seconds is logged, never stopped."""
+    result and gives what to use instead; when it raises (`WrongResult` with what is wrong, or any other exception),
+    that is recorded the same way and gives None. A success clears the error recorded for the same (plugin, what).
+    A call over `budget` seconds is logged, never stopped."""
     name = lp.manifest.name
     start = time.monotonic()
     try:
@@ -546,7 +556,7 @@ def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: floa
         except WrongResult as e:
             record_error(name, what, str(e))
             return None
-        except (TypeError, ValueError) as e:
+        except Exception as e:  # noqa: BLE001 - checking the result runs plugin code too (a generator, a property)
             record_error(name, what, f"{type(e).__name__}: {e}")
             return None
     _succeeded(name, what)

@@ -152,6 +152,8 @@ def _stamp(paths: Any) -> tuple:
         raise TypeError(f"watch returned {type(paths).__name__}, not a list of paths")
     out = []
     for p in paths:
+        if not isinstance(p, str | bytes | os.PathLike):  # os.stat would take an int as a file descriptor
+            raise TypeError(f"watch returned a list with {type(p).__name__} in it, not a list of paths")
         try:
             st = os.stat(p)
             out.append((os.fspath(p), st.st_mtime_ns, st.st_size))

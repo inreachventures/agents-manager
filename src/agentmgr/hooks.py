@@ -390,7 +390,8 @@ def _children_off_stdout():
         yield
         return
     original = sys.stdout
-    sys.stdout = real = os.fdopen(saved, "w", encoding=original.encoding or "utf-8")
+    sys.stdout = real = os.fdopen(saved, "w", encoding=original.encoding or "utf-8",
+                                  errors=original.errors or "strict")
     try:
         yield
     finally:

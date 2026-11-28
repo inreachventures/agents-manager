@@ -233,3 +233,45 @@ def test_the_app_server_writes_once_per_state_push(pdir, monkeypatch):
         srv.push_state()
     assert len(writes) == 1
     assert on_file() == {("picky", "badge", "ZeroDivisionError: division by zero")}
+
+
+def test_a_watch_whose_paths_raise_is_recorded_and_other_watches_go_on(pdir, tmp_path):
+    make_plugin(pdir, "agen", "def paths():\n    yield 'x'\n    raise RuntimeError('mid-iteration')\n\n\n"
+                "def register(api):\n    api.watch(lambda ws: paths())\n")
+    ws = ws_mod.new(launch=False, name="x y")
+    srv = server.Server(io.StringIO())
+    srv.push_state()  # demo's watch is noted despite agen's
+    srv.out.seek(0)
+    srv.out.truncate()
+    plugins.call(demo(), "x", lambda: None)  # demo loaded in this process
+    (ws.path / ".wm" / "demo").mkdir(parents=True, exist_ok=True)
+    (ws.path / ".wm" / "demo" / "notes.json").write_text("[]")
+    srv.push_state()
+    changed = [json.loads(line)["data"] for line in srv.out.getvalue().splitlines()
+               if json.loads(line).get("event") == "plugin_changed"]
+    assert changed == [{"plugin": "demo", "key": ws.key}]
+    assert ("agen", "watch", "RuntimeError: mid-iteration") in {(e.name, e.what, e.reason)
+                                                                for e in plugins.persisted_errors()}
+
+
+@pytest.mark.parametrize("paths", [[3], [None], [1.5]])
+def test_a_watch_path_that_is_not_a_path_is_a_wrong_result(pdir, paths):
+    from agentmgr import server as srv_mod
+
+    with pytest.raises(TypeError, match="not a list of paths"):
+        srv_mod._stamp(paths)
+
+
+def test_reasons_are_one_short_line(pdir, logged):
+    lp = demo()
+    plugins.call(lp, "badge", lambda: (_ for _ in ()).throw(RuntimeError("first\nsecond\n\tthird " + "x" * 500)))
+    (e,) = plugins.persisted_errors()
+    assert "\n" not in e.reason and len(e.reason) <= 300 and e.reason.endswith("…")
+    assert e.reason.startswith("RuntimeError: first second third x")
+    assert on_file() == {("demo", "badge", e.reason)}
+
+
+def test_deeply_nested_errors_file_is_harmless(pdir):
+    errors_file().parent.mkdir(parents=True, exist_ok=True)
+    errors_file().write_text("[" * 100000 + "]" * 100000)
+    assert plugins.persisted_errors() == []
