@@ -6,6 +6,7 @@ import json
 import os
 import shlex
 import shutil
+import sys
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -89,7 +90,7 @@ def repoint_hooks() -> list[str]:
     """Regenerate the workstreams whose hooks call a wm that is gone (the Mac app was moved, say): a hook that can't
     run blocks nothing, so their guardrails would be off. From the Mac app, also those calling a copy of it that is
     about to vanish: one on its disk image, soon ejected, or translocated by macOS. Another installed copy (a test
-    build, an older install) keeps its hooks. Returns their keys."""
+    build, an older install) keeps its hooks. Returns their keys; one that fails is logged to stderr and left out."""
     here = tmux.wm_executable()
     conn = _conn()
     fixed = []
@@ -101,7 +102,11 @@ def repoint_hooks() -> list[str]:
             continue
         if not os.access(wm, os.X_OK) or (tmux.bundled() and wm != here and wm.endswith(APP_WM)
                                           and _about_to_vanish(wm)):
-            regenerate(conn, ws)
+            try:
+                regenerate(conn, ws)
+            except Exception as e:  # noqa: BLE001 - it runs plugin code; one workstream mustn't leave the rest broken
+                print(f"repoint hooks: {ws.key}: {type(e).__name__}: {e}", file=sys.stderr)
+                continue
             fixed.append(ws.key)
     return fixed
 
