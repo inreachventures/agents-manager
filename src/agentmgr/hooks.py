@@ -369,13 +369,48 @@ def dispatch(event: str, payload: dict) -> None:
     _output(event, result, text)
 
 
+@contextlib.contextmanager
+def _children_off_stdout():
+    """While the hook runs, file descriptor 1 points at stderr and `sys.stdout` at a copy of the real stdout (Claude
+    Code's pipe). Then a process a plugin starts writes to stderr rather than into the hook's output, and can't hold
+    that pipe open; core's output still goes to `sys.stdout`. When stdout is not a real file (tests capture it) there
+    is nothing to protect."""
+    try:
+        fd = sys.stdout.fileno()
+        err = sys.stderr.fileno()
+        sys.stdout.flush()
+        saved = os.dup(fd)
+    except (AttributeError, OSError, ValueError):
+        yield
+        return
+    try:
+        os.dup2(err, fd)
+    except OSError:
+        os.close(saved)
+        yield
+        return
+    original = sys.stdout
+    sys.stdout = real = os.fdopen(saved, "w", encoding=original.encoding or "utf-8")
+    try:
+        yield
+    finally:
+        sys.stdout = original
+        with contextlib.suppress(OSError, ValueError):  # Claude Code may have closed the pipe: nothing to do then
+            real.flush()
+        with contextlib.suppress(OSError, ValueError):
+            os.dup2(saved, fd)  # as it was: matters only when the hook runs in another program's process (tests)
+        with contextlib.suppress(OSError, ValueError):
+            real.close()
+
+
 def main(event: str) -> None:
     plugins.set_logger(_log)
-    try:
-        payload = json.loads(sys.stdin.read() or "{}")
-        dispatch(event, payload)
-    except Exception as e:  # noqa: BLE001
-        _log(f"{event}: {type(e).__name__}: {e}")
+    with _children_off_stdout():
+        try:
+            payload = json.loads(sys.stdin.read() or "{}")
+            dispatch(event, payload)
+        except Exception as e:  # noqa: BLE001
+            _log(f"{event}: {type(e).__name__}: {e}")
 
 
 def _log(line: str) -> None:

@@ -184,7 +184,10 @@ class Api:
         return d
 
     def aux_env(self) -> dict[str, str]:
-        """Environment marking a process this plugin starts as its auxiliary Claude session."""
+        """Environment marking a process this plugin starts as its auxiliary Claude session. Start that process (as
+        any background process) with stdin, stdout and stderr redirected (`subprocess.DEVNULL` or a log file) and
+        `start_new_session=True`: one started from a hook would otherwise write into, or hold open, the streams
+        Claude Code reads the hook's answer from."""
         return {"AGENTMGR_AUX": self.name}
 
     def workstream(self, key: str) -> WorkstreamInfo:

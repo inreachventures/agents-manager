@@ -213,7 +213,19 @@ All are plain frozen or simple dataclasses.
 
 A handler has a budget of 2 seconds. One that takes longer is logged, never killed, but every hook call blocks Claude until it returns, so stay well under it.
 
-A hook's standard output is what Claude Code reads, so in a hook process wm sends whatever plugin code prints (while importing, in `register`, in a handler or in a `CLAUDE.md` function) to standard error instead. Use `api.log` for anything you want to read later.
+A hook's standard output is what Claude Code reads, so in a hook process wm sends whatever plugin code prints (while importing, in `register`, in a handler or in a `CLAUDE.md` function) to standard error instead. A process the plugin starts gets standard error in place of standard output too. Use `api.log` for anything you want to read later.
+
+Heavy work belongs in a background process that the handler starts and does not wait for. Start it with its standard streams redirected (`subprocess.DEVNULL` or a log file) and in a session of its own, so that it neither writes into the hook's streams nor keeps them open after the hook returns, which can leave Claude Code waiting on the hook:
+
+```python
+import subprocess
+
+def post_tool_use(ctx):
+    log = open(api.data_dir(ctx.ws) / "redraw.log", "ab")
+    subprocess.Popen(["python3", "-m", "mytool.redraw", str(ctx.ws.folder)], stdin=subprocess.DEVNULL,
+                     stdout=log, stderr=log, start_new_session=True)
+    return None
+```
 
 The fields that each event can carry:
 
@@ -246,7 +258,7 @@ def on_stop(ctx: HookContext) -> HookResult | None:
 
 ## Auxiliary sessions
 
-A plugin can start its own Claude Code session in a workstream's folder, for example to run a review in the background. Start it with the environment from `api.aux_env()` (`AGENTMGR_AUX=<plugin name>`), and `wm` treats it as an auxiliary session of that plugin:
+A plugin can start its own Claude Code session in a workstream's folder, for example to run a review in the background. Start it with the environment from `api.aux_env()` (`AGENTMGR_AUX=<plugin name>`), and, like any background process (see [Hooks](#hooks)), with its standard streams redirected and `start_new_session=True`. `wm` treats it as an auxiliary session of that plugin:
 
 - Core still runs the guard (so the auxiliary session cannot edit your main checkouts or switch branches) and drift detection.
 - Core skips its status changes and notifications, so the session does not make the workstream look busy or waiting.

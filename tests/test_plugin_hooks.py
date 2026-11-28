@@ -309,3 +309,49 @@ def test_a_result_that_is_not_a_hook_result_is_an_error(ws, env, pdir, monkeypat
     assert run_hook(monkeypatch, capsys, "PostToolUse", {**base(ws), "tool_name": "Read"}) == ""
     assert "plugin odd: hook PostToolUse: returned 5, not a HookResult of text fields" in hook_log(env)
     assert [(e.name, e.what) for e in plugins.persisted_errors()] == [("odd", "hook PostToolUse")]
+
+
+def test_child_processes_of_plugins_never_reach_the_hook_output(ws, pdir):
+    """A hook's stdout is Claude Code's pipe. A child process a plugin starts inherits file descriptor 1, which
+    redirect_stdout doesn't cover: run as Claude Code does, in a process of its own."""
+    import os
+    import subprocess
+    import sys
+
+    (pdir / "noisy").mkdir()
+    (pdir / "noisy" / "plugin.toml").write_text(
+        'name = "noisy"\ntitle = "Noisy"\nversion = "1"\napi = 1\nhooks = ["PostToolUse"]\n')
+    (pdir / "noisy" / "plugin.py").write_text(
+        "import os\nimport subprocess\nfrom agentmgr.plugin import HookResult\n\n\n"
+        "def post(ctx):\n    subprocess.run(['echo', 'leak'])\n    os.system('echo leak2')\n"
+        "    return HookResult(context='from noisy')\n\n\n"
+        "def register(api):\n    api.hook('PostToolUse', post)\n")
+    exe = Path(sys.executable).parent / "wm"
+    r = subprocess.run([str(exe), "hook", "PostToolUse"], input=json.dumps({**base(ws), "tool_name": "Read"}),
+                       capture_output=True, text=True, env=os.environ.copy())
+    assert r.returncode == 0
+    assert r.stdout == json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse",
+                                                          "additionalContext": "from noisy"}})
+    assert "leak\n" in r.stderr and "leak2\n" in r.stderr
+
+
+def test_hook_output_without_plugins_is_unchanged_in_a_real_process(env, monkeypatch):
+    import os
+    import subprocess
+    import sys
+
+    monkeypatch.setattr("agentmgr.notify.notify", lambda *a: None)
+    ws = ws_mod.new(launch=False, name="x y", repo_queries=["web"])
+    exe = Path(sys.executable).parent / "wm"
+
+    def hook(event, payload):
+        r = subprocess.run([str(exe), "hook", event], input=json.dumps(payload), capture_output=True, text=True,
+                           env=os.environ.copy())
+        assert (r.returncode, r.stderr) == (0, "")
+        return r.stdout
+
+    out = hook("PreToolUse", {**base(ws), "tool_name": "Edit",
+                              "tool_input": {"file_path": str(env.code / "acme-web" / "README.md")}})
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
+    assert hook("PostToolUse", {**base(ws), "tool_name": "Read"}) == ""
+    assert "acme-web/: on ws-1-x-y" in hook("SessionStart", base(ws))
