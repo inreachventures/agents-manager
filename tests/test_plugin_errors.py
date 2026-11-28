@@ -275,3 +275,9 @@ def test_deeply_nested_errors_file_is_harmless(pdir):
     errors_file().parent.mkdir(parents=True, exist_ok=True)
     errors_file().write_text("[" * 100000 + "]" * 100000)
     assert plugins.persisted_errors() == []
+
+
+def test_errors_file_with_a_timestamp_too_big_for_a_float_is_harmless(pdir):
+    errors_file().parent.mkdir(parents=True, exist_ok=True)
+    errors_file().write_text('[{"plugin": "demo", "what": "badge", "reason": "x", "at": 1' + "0" * 400 + "}]")
+    assert plugins.persisted_errors() == []

@@ -7,6 +7,7 @@ import importlib
 import importlib.machinery
 import importlib.util
 import json
+import math
 import os
 import re
 import sys
@@ -390,7 +391,12 @@ def _read_errors_file() -> dict[tuple[str, str], HandlerError]:
         name, what, reason, at = e.get("plugin"), e.get("what"), e.get("reason"), e.get("at")
         if (all(isinstance(v, str) for v in (name, what, reason))
                 and isinstance(at, int | float) and not isinstance(at, bool)):
-            out[(name, what)] = HandlerError(name, what, reason, float(at))
+            try:
+                stamp = float(at)
+            except OverflowError:  # an int too big for a float
+                continue
+            if math.isfinite(stamp):
+                out[(name, what)] = HandlerError(name, what, reason, stamp)
     return out
 
 
