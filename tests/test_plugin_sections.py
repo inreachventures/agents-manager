@@ -184,3 +184,27 @@ def test_allowed_tool_with_a_comma_is_rejected(env, monkeypatch):
     assert "Bash(ok *)" in tools and not any(t.startswith("Bash(a") or t == " b)" for t in tools)
     assert [(e.name, e.what, e.reason) for e in plugins.errors()] == [
         ("commas", "allowed_tools", "'Bash(a, b)' has a comma, which --allowedTools can't pass on")]
+
+
+def test_slow_claude_md_handlers_are_logged(env, monkeypatch):
+    import re
+
+    lines: list[str] = []
+    plugins.set_logger(lines.append)
+    monkeypatch.setattr(plugins, "CLAUDE_MD_BUDGET", 0.01)
+    d = env.root / "plugins"
+    (d / "slow").mkdir(parents=True)
+    (d / "slow" / "plugin.toml").write_text('name = "slow"\ntitle = "S"\nversion = "1"\napi = 1\n')
+    (d / "slow" / "plugin.py").write_text(
+        "import time\n\n\ndef register(api):\n    api.claude_md(lambda ws: time.sleep(0.03) or '## Slow')\n"
+        "    api.replace_claude_md('intake_summary', lambda ws: time.sleep(0.03) or '4. Sum up')\n"
+        "    api.allowed_tools(lambda ws: time.sleep(0.03) or [])\n")
+    monkeypatch.setenv("AGENTMGR_PLUGINS_DIR", str(d))
+    config.get_config.cache_clear()
+    try:
+        ws = ws_mod.new(launch=False, name="x y")
+        ws_mod.claude_command(db.get_workstream(db.connect(), ws.key), resume=False)
+    finally:
+        plugins.set_logger(plugins.stderr_logger)
+    whats = {m.group(1) for line in lines if (m := re.fullmatch(r"plugin slow: (.+) took \d+\.\d\ds", line))}
+    assert whats == {"claude_md", "replace intake_summary", "allowed_tools"}

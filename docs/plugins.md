@@ -283,6 +283,8 @@ If two plugins replace the same section, the first by name wins. The other's rep
 
 `api.allowed_tools(fn)` is related: the tools it returns are passed to Claude Code when a session starts, so they run without a prompt. Keep them as narrow as the one command you mean, such as `Bash(wm notes add WS-7 *)`. They are passed joined by commas, so an entry that contains a comma is left out and recorded as the plugin's error.
 
+These functions run whenever `CLAUDE.md` is written or a session starts, including inside the `SessionStart` hook after a compaction, so keep them quick: one that takes over half a second is logged.
+
 ## Protecting a plugin's files
 
 A plugin that keeps state in `.wm/<plugin>/` may not want Claude editing it by hand. Set `protect = true` in the manifest. Then, in the workstream's main session, the guard refuses `Edit`, `Write`, `MultiEdit` and `NotebookEdit` on anything under `.wm/<plugin>/`, with the message that the file belongs to the plugin and should be changed with its `wm` commands. Give Claude a command (`api.cli`) and pre-approve it with `api.allowed_tools`, so that the plugin's data changes go through code that validates them.
