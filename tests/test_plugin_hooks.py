@@ -298,3 +298,14 @@ def test_plugin_prints_never_reach_the_hook_output(ws, pdir, monkeypatch, capsys
     captured = capsys.readouterr()
     assert "loud:" not in captured.out and "acme-web/: on ws-1-x-y" in captured.out
     assert "loud: imported" in captured.err and "loud: section" in captured.err
+
+
+def test_a_result_that_is_not_a_hook_result_is_an_error(ws, env, pdir, monkeypatch, capsys):
+    (pdir / "odd").mkdir()
+    (pdir / "odd" / "plugin.toml").write_text(
+        'name = "odd"\ntitle = "Odd"\nversion = "1"\napi = 1\nhooks = ["PostToolUse"]\n')
+    (pdir / "odd" / "plugin.py").write_text("def register(api):\n    api.hook('PostToolUse', lambda ctx: 5)\n")
+    plugins.reset()
+    assert run_hook(monkeypatch, capsys, "PostToolUse", {**base(ws), "tool_name": "Read"}) == ""
+    assert "plugin odd: hook PostToolUse: returned 5, not a HookResult of text fields" in hook_log(env)
+    assert [(e.name, e.what) for e in plugins.persisted_errors()] == [("odd", "hook PostToolUse")]

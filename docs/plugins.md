@@ -207,7 +207,7 @@ All are plain frozen or simple dataclasses.
 `wm` registers one command for every Claude Code hook event in each workstream. For an event, it runs in this order:
 
 1. Core's own checks: the guard on `PreToolUse`, drift detection after `Bash` on `PostToolUse`. If core refuses, that is the answer and plugins are not called.
-2. The plugins that list the event in `hooks`, in name order. Handlers are isolated: a handler that raises, returns something that is not a `HookResult` of text fields, or is slow is logged and left out.
+2. The plugins that list the event in `hooks`, in name order. Handlers are isolated: a handler that raises or returns something that is not a `HookResult` of text fields is logged, recorded as its error and left out; one that is slow is logged.
 3. Core's status change (working, your turn, ...), which looks at the merged result.
 4. One combined output to Claude Code.
 
@@ -267,7 +267,7 @@ A plugin can start its own Claude Code session in a workstream's folder, for exa
 | `intake_summary` | Intake step 4, the line that says what to summarise back to the user. |
 | `progress_rule` | Two places: the Rules bullet that says to append to "Decisions & progress" at milestones, and, in the Memory section, the bullet that says task facts go under "Decisions & progress". Your text takes the place of the first and the second is dropped. |
 
-If two plugins replace the same section, the first by name wins; the other is recorded as an error that `wm doctor` shows. A replacement that returns an empty string is ignored.
+If two plugins replace the same section, the first by name wins. The other's replacement is not called, and it is recorded as that plugin's error (`replace progress_rule: already replaced by <plugin>`), which `wm doctor` and the app show until the next time `CLAUDE.md` is written without the clash. A replacement that returns an empty string is ignored.
 
 `api.allowed_tools(fn)` is related: the tools it returns are passed to Claude Code when a session starts, so they run without a prompt. Keep them as narrow as the one command you mean, such as `Bash(wm notes add WS-7 *)`.
 
@@ -294,7 +294,7 @@ The macOS app runs `wm app-server`, one long-lived Python process. A plugin's re
 
 **Jobs.** `api.every(seconds, fn)` runs `fn()` every `seconds` on a thread of its own, so a slow or failing job holds up nothing else. An exception is logged and the job runs again at the next tick. Jobs run only while the app (and so the app-server) runs.
 
-**Notices.** When a plugin is skipped, the app shows a warning notice once per app-server run, in the form `<title> plugin skipped: <reason>`.
+**Notices.** When a plugin is skipped, the app shows a warning notice once per app-server run, in the form `<title> plugin skipped: <reason>`. Each handler error (see [When something goes wrong](#when-something-goes-wrong)) gets one notice per app-server run too, in the form `<title> plugin: <handler>: <reason>`, whichever process ran into it: a hook, a `wm` command or the app-server itself.
 
 **Archive and doctor.** `api.on_archive` runs when a workstream is archived (from the app or `wm archive`), before the worktrees are removed. `api.doctor` is described under [When something goes wrong](#when-something-goes-wrong).
 
@@ -516,6 +516,7 @@ The `tests/fixtures/plugins/demo` folder in wm's own repository is a larger work
 A plugin's failure never reaches Claude or the dashboard: it is contained to that plugin and its handler.
 
 - **Log.** Hooks log to `hooks.log` in the wm home (`~/.agents-manager/hooks.log`, or under `AGENTMGR_HOME`). It records handler exceptions (`plugin <name>: hook PostToolUse: RuntimeError: boom`), handlers that ran over budget (`plugin <name>: hook Stop took 2.31s`), invalid return values, and skipped plugins. `api.log` writes there too. The app-server logs the same lines to its own standard error instead.
-- **`wm doctor`.** Has a Plugins section that lists, per plugin: why it was skipped; the latest error of each handler that raised or returned the wrong type (`returned int, not text`, `returned str, not a list of text`), until that handler next succeeds; a command that clashes with a core command or a CLI that cannot be built; and whatever the plugin's own `api.doctor` function returns. A plugin that is loaded but has a broken handler stays loaded: only that handler is affected.
-- **The app.** Settings → Plugins shows each plugin's state and the reason it was skipped, and a notice appears once when a plugin is skipped. A page that cannot load shows a placeholder with a Reload button; a page whose web process dies is reloaded once, and a second death within a minute shows the placeholder.
+- **Handler errors.** Hooks, `wm` commands and the app-server each run in their own process, so wm keeps each handler's latest error in `plugin-errors.json` in the wm home, one entry per plugin and handler (`hook Stop`, `badge`, `watch`, `claude_md`, `replace progress_rule`, `every 60s`, ...) with the reason and when it happened. An error is an exception, a wrong return value (`returned int, not text`, `returned str, not a list of text`, `returned 5, not a HookResult of text fields`) or a `CLAUDE.md` replacement that clashes with another plugin's. The entry is removed the next time that handler succeeds, in any process. A handler that keeps failing the same way updates the entry's time at most once a minute. Entries of plugins you have removed are dropped; those of a plugin turned off are kept but not shown. The file is wm's, not yours to edit, though deleting it is harmless.
+- **`wm doctor`.** Has a Plugins section that lists, per plugin: why it was skipped; each handler error from any process, with how long ago it last happened (`demo: hook Stop: RuntimeError: boom (5m ago)`); a command that clashes with a core command or with another plugin's, or a CLI that cannot be built; and whatever the plugin's own `api.doctor` function returns. A plugin that is loaded but has a broken handler stays loaded: only that handler is affected.
+- **The app.** Settings → Plugins shows each plugin's state and the reason it was skipped. A notice appears once per app-server run for each skipped plugin and for each handler error. A page that cannot load shows a placeholder with a Reload button; a page whose web process dies is reloaded once, and a second death within a minute shows the placeholder.
 - **A page misbehaves.** Attach Safari's Web Inspector (Develop menu, then the app's name) to read its console.

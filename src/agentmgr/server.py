@@ -125,14 +125,22 @@ def _badges(rows: list[view.Row]) -> dict[str, list[dict]]:
         marks = out.setdefault(r.ws.key, [])
         for lp in lps:
             name = lp.manifest.name
-            badge = plugins.call(lp, "badge", lp.api.registered.badge, info, budget=BADGE_SECONDS)
-            if isinstance(badge, Badge):
+            badge = plugins.call(lp, "badge", lp.api.registered.badge, info, budget=BADGE_SECONDS, convert=_badge)
+            if badge is not None:
                 # str(): whatever the plugin put there, the state must stay JSON
                 marks.append({"plugin": name, "text": str(badge.text), "tone": str(badge.tone),
                               "help": str(badge.help)})
-            elif badge is not None:
-                plugins.record_error(name, "badge", f"returned {type(badge).__name__}, not a Badge")
     return out
+
+
+def _badge(result: Any) -> Badge | None:
+    if result is not None and not isinstance(result, Badge):
+        raise plugins.WrongResult(f"returned {type(result).__name__}, not a Badge")
+    return result
+
+
+def _watch_stamp(paths: Any) -> tuple | None:
+    return None if paths is None else _stamp(paths)
 
 
 def _stamp(paths: Any) -> tuple:
@@ -237,6 +245,7 @@ class Server:
         # state loop's thread runs push_state, so they need no lock.
         self.plugins_seen: str | None = None  # plugins.fingerprint() as this server started with it
         self.noticed: set[str] = set()  # plugins whose skip was announced, once per server run
+        self.noticed_errors: set[tuple[str, str]] = set()  # (plugin, what) handler errors announced, likewise
         self.watched: dict[tuple[str, str], tuple] = {}  # (plugin, workstream key) -> _stamp of its watched paths
 
     def send(self, msg: dict) -> None:
@@ -278,6 +287,7 @@ class Server:
         self.pool.shutdown(wait=True)  # an archive or rebase in flight runs to the end
         with self.typing:  # nor quit halfway through typing a /color, which would leave it in the prompt
             pass
+        plugins.flush()
 
     def _every(self, fn, seconds: float | None) -> None:
         while not self.done.is_set():
@@ -322,11 +332,13 @@ class Server:
             self.check_watched()
         except Exception:  # noqa: BLE001
             traceback.print_exc()
+        plugins.flush()  # the handler errors of this push (badges, watches), in one write
 
     def check_plugins(self) -> None:
         """When the plugins folder changed since the server started (a plugin added, removed, edited or turned on or
         off), rewrite each workstream's CLAUDE.md and settings and send `plugins_changed`: the app then restarts the
-        server, which can't unload the old code. And announce each skipped plugin once per server run."""
+        server, which can't unload the old code. And announce each skipped plugin, and each (plugin, handler) with an
+        error recorded by any wm process, once per server run."""
         now = plugins.fingerprint()
         if self.plugins_seen is None:
             self.plugins_seen = now
@@ -346,6 +358,10 @@ class Server:
             if s.name not in self.noticed:
                 self.noticed.add(s.name)
                 self.notice(f"{titles.get(s.name, s.name)} plugin skipped: {s.reason}", "warning")
+        for e in plugins.persisted_errors():  # this process's and those hooks and commands recorded
+            if (e.name, e.what) not in self.noticed_errors:
+                self.noticed_errors.add((e.name, e.what))
+                self.notice(f"{titles.get(e.name, e.name)} plugin: {e.what}: {e.reason}", "warning")
 
     def check_watched(self) -> None:
         """Send `plugin_changed` for each (plugin, workstream) whose watched paths changed since the last state push.
@@ -357,12 +373,10 @@ class Server:
             info = plugins.workstream_info(ws, db.list_repos(conn, ws.key))
             for lp in lps:
                 name, at = lp.manifest.name, (lp.manifest.name, ws.key)
-                paths = plugins.call(lp, "watch", lp.api.registered.watch, info)
-                try:
-                    # None: the function raised (or returned nothing); then nothing is known to have changed
-                    stamp = self.watched.get(at) if paths is None else _stamp(paths)
-                except (TypeError, ValueError) as e:  # not a list of paths
-                    plugins.record_error(name, "watch", f"{type(e).__name__}: {e}")
+                # None: the function raised, returned nothing or not a list of paths; then nothing is known to have
+                # changed
+                stamp = plugins.call(lp, "watch", lp.api.registered.watch, info, convert=_watch_stamp)
+                if stamp is None:
                     stamp = self.watched.get(at)
                 if stamp is None:
                     continue
@@ -641,4 +655,5 @@ class Server:
 def main() -> None:
     out = os.fdopen(os.dup(sys.stdout.fileno()), "w", encoding="utf-8")
     os.dup2(sys.stderr.fileno(), sys.stdout.fileno())  # stray prints and child processes never reach the protocol
+    plugins.batch_errors()  # badges and watches run for every workstream every few seconds: write once per push
     Server(out).serve(sys.stdin)

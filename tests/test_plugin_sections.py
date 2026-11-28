@@ -90,7 +90,7 @@ def test_replacement_conflict_first_wins(pdir, ws, monkeypatch):
     text = regenerated(ws)
     assert "- Keep notes with `wm demo add`" in text and "zzz rule" not in text
     assert [(e.name, e.what, e.reason) for e in plugins.errors()] == [
-        ("zzz", "replaces progress_rule", "already replaced by demo")]
+        ("zzz", "replace progress_rule", "already replaced by demo")]
 
 
 def test_replace_intake_and_task_format(pdir, env):

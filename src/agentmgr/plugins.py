@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import contextlib
 import importlib
 import importlib.machinery
 import importlib.util
 import json
+import os
 import re
 import sys
 import threading
@@ -238,17 +240,29 @@ class Loaded:
 
 @dataclass(frozen=True)
 class HandlerError:
-    """A loaded plugin's handler raised. The plugin stays loaded; this is not a skip."""
+    """A loaded plugin's handler raised or returned something wm can't use. The plugin stays loaded; this is not a
+    skip."""
 
     name: str
     what: str  # e.g. "hook PostToolUse", "badge"
-    reason: str  # "<Type>: <message>"
+    reason: str  # "<Type>: <message>", or what was wrong with the result
+    at: float  # time.time() when it was recorded
+
+
+class WrongResult(Exception):
+    """Raised by a `convert` given to `call()`: the handler returned something wm can't use. The message says what."""
 
 
 MODULE_PREFIX = "wm_plugin_"
+ERRORS_FILE = "plugin-errors.json"  # in the wm home, not the plugins folder: the app-server restarts when that changes
+REWRITE_SECONDS = 60.0  # the same error again rewrites its entry's time at most this often
 
 _cache: dict[Path, Loaded | Skipped] = {}  # by plugin folder: loaded once per process
-_errors: dict[tuple[str, str], HandlerError] = {}  # by (plugin, what): the latest, until it next succeeds
+_errors: dict[tuple[str, str], HandlerError] = {}  # by (plugin, what): this process's, until that call next succeeds
+_persisted: dict[tuple[str, str], HandlerError] | None = None  # the errors file as this process last read or wrote it
+_dirty: set[tuple[str, str]] = set()  # (plugin, what) whose error changed here since the last flush()
+_fresh: set[tuple[str, str]] = set()  # (plugin, what) that failed since the last flush(): a success doesn't clear them
+_batched = False  # batch_errors(): written by flush() only
 _lock = threading.RLock()  # the app-server loads and calls plugins from several threads
 
 
@@ -315,42 +329,212 @@ def skipped() -> list[Skipped]:
 
 
 def errors() -> list[HandlerError]:
-    """Handlers of loaded plugins that raised: the latest error per (plugin, what), dropped once that same call next
-    succeeds. In the order first seen."""
+    """This process's handler errors: the latest per (plugin, what), dropped once that same call next succeeds. In the
+    order first seen. `persisted_errors()` has those of every wm process."""
     with _lock:
         return list(_errors.values())
 
 
 def reset() -> None:
-    """Forget loaded plugins, load skips and handler errors, so the next `loaded()` imports them afresh."""
+    """Forget loaded plugins, load skips and this process's handler errors (not the errors file), so the next
+    `loaded()` imports them afresh."""
+    global _persisted
     with _lock:
         for result in _cache.values():
             _forget_modules(module_name(result.manifest.name if isinstance(result, Loaded) else result.name))
         _cache.clear()
         _errors.clear()
+        _dirty.clear()
+        _fresh.clear()
+        _persisted = None
 
 
-def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None) -> Any:
-    """`fn(*args)`, isolated: an exception is logged, recorded in `errors()` and gives None; a success clears the
-    error recorded for the same (plugin, what). A call over `budget` seconds is logged, never stopped."""
+# Handler errors, kept in <wm home>/plugin-errors.json: hooks, the app-server and `wm` commands each run in their own
+# process, and `wm doctor` and the app must see what the others ran into. Hooks run on every tool call, so a handler
+# that succeeds costs no file access unless this process has reason to think an entry exists: it reads the file at
+# most once, the first time it needs to know. Writes replace the file atomically; two processes writing at once may
+# lose one's change (the last writer wins), which only delays an entry until that handler next runs. The app-server
+# calls badges and watches for every workstream every few seconds, so it batches: its changes are written once per
+# state push (`flush()`), not on every call.
+
+def _errors_path() -> Path:
+    return get_config().home / ERRORS_FILE
+
+
+def _read_errors_file() -> dict[tuple[str, str], HandlerError]:
+    """The entries in the errors file. Missing, unreadable or not what wm writes: empty, never an exception."""
+    try:
+        raw = json.loads(_errors_path().read_text())
+    except (OSError, ValueError, UnicodeDecodeError):
+        return {}
+    out: dict[tuple[str, str], HandlerError] = {}
+    for e in raw if isinstance(raw, list) else []:
+        if not isinstance(e, dict):
+            continue
+        name, what, reason, at = e.get("plugin"), e.get("what"), e.get("reason"), e.get("at")
+        if (all(isinstance(v, str) for v in (name, what, reason))
+                and isinstance(at, int | float) and not isinstance(at, bool)):
+            out[(name, what)] = HandlerError(name, what, reason, float(at))
+    return out
+
+
+def _write_errors_file(entries: dict[tuple[str, str], HandlerError]) -> None:
+    """Replace the errors file with `entries`, atomically. A failure is logged, never raised."""
+    import tempfile  # here: only an error path writes, and hooks import this module on every tool call
+
+    path = _errors_path()
+    tmp: str | None = None
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=f".{ERRORS_FILE}.", suffix=".tmp")
+        with os.fdopen(fd, "w") as f:
+            json.dump([{"plugin": e.name, "what": e.what, "reason": e.reason, "at": e.at} for e in entries.values()],
+                      f, indent=1)
+        os.replace(tmp, path)
+    except Exception as e:  # noqa: BLE001 - a plugin's error must never become core's
+        log(f"plugins: cannot write {path}: {type(e).__name__}: {e}")
+        if tmp is not None:
+            with contextlib.suppress(OSError):
+                os.unlink(tmp)
+
+
+def batch_errors() -> None:
+    """From now on, write this process's error changes only when `flush()` is called (the app-server, per state
+    push)."""
+    global _batched
+    _batched = True
+
+
+def flush() -> None:
+    """Write this process's error changes since the last flush to the errors file: re-read first, so that what other
+    processes wrote since is kept, and written only if something changed. An error that is still the same is written
+    again only when its time is REWRITE_SECONDS old, as a badge or job can fail every few seconds."""
+    global _persisted
+    with _lock:
+        if not _dirty:
+            return
+        if _persisted is None:
+            _persisted = _read_errors_file()
+        changes: dict[tuple[str, str], HandlerError | None] = {}
+        for key in _dirty:
+            mem, old = _errors.get(key), _persisted.get(key)
+            if mem is None:
+                if old is not None:
+                    changes[key] = None
+            elif old is None or old.reason != mem.reason or mem.at - old.at >= REWRITE_SECONDS:
+                changes[key] = mem
+        _dirty.clear()
+        _fresh.clear()
+        if not changes:
+            return
+        entries = _read_errors_file()
+        before = dict(entries)
+        for key, entry in changes.items():
+            if entry is None:
+                entries.pop(key, None)
+            else:
+                entries[key] = entry
+        if entries != before:
+            _write_errors_file(entries)
+        _persisted = entries
+
+
+def record_error(name: str, what: str, reason: str) -> None:
+    """Log and keep a plugin's handler error, for `errors()`, `persisted_errors()`, `wm doctor` and the app."""
+    log(f"plugin {name}: {what}: {reason}")
+    with _lock:
+        _errors[(name, what)] = HandlerError(name, what, reason, time.time())
+        _dirty.add((name, what))
+        _fresh.add((name, what))
+        if not _batched:
+            flush()
+
+
+def _succeeded(name: str, what: str) -> None:
+    """Clear the error of (plugin, what), if this process recorded one or the errors file has one. Batched, an error
+    recorded since the last flush stays: a badge that fails for one workstream and works for the next has an error."""
+    global _persisted
+    key = (name, what)
+    with _lock:
+        if key in _fresh:
+            return
+        if _errors.pop(key, None) is None:
+            if _persisted is None:
+                _persisted = _read_errors_file()
+            if key not in _persisted:
+                return
+        _dirty.add(key)
+        if not _batched:
+            flush()
+
+
+def _installed_names(cfg: Config) -> tuple[set[str], set[str]]:
+    """The plugins in the plugins folder, and those of them turned off."""
+    names = {f.name for f in _folders(cfg)}
+    try:
+        off = set(_off(cfg))
+    except (OSError, ValueError):  # config.toml unreadable: nothing is known to be off
+        off = set()
+    return names, off & names
+
+
+def persisted_errors() -> list[HandlerError]:
+    """The handler errors of every wm process that have not been cleared since, this process's own included, by
+    plugin name. Entries of plugins no longer installed are dropped from the file; those of plugins turned off are
+    left out but kept."""
+    global _persisted
+    cfg = get_config()
+    installed, off = _installed_names(cfg)
+    with _lock:
+        flush()
+        entries = _read_errors_file()
+        if gone := [k for k in entries if k[0] not in installed]:
+            for k in gone:
+                del entries[k]
+            _write_errors_file(entries)
+        _persisted = dict(entries)
+        entries.update(_errors)  # this process's: newer, and kept even if the file can't be written
+    return sorted((e for e in entries.values() if e.name in installed and e.name not in off),
+                  key=lambda e: (e.name, e.what))
+
+
+def ago(at: float, now: float | None = None) -> str:
+    """How long ago `at` was, roughly: "just now", "5m ago", "3h ago", "2d ago"."""
+    secs = max(0.0, (time.time() if now is None else now) - at)
+    for unit, size in (("d", 86400), ("h", 3600), ("m", 60)):
+        if secs >= size:
+            return f"{int(secs // size)}{unit} ago"
+    return "just now"
+
+
+def call(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None,
+         convert: Callable[[Any], Any] | None = None) -> Any:
+    """`fn(*args)`, isolated: an exception is recorded (`record_error`) and gives None. `convert(result)` checks the
+    result and gives what to use instead; when it raises (`WrongResult`, or TypeError / ValueError), that is recorded
+    the same way and gives None. A success clears the error recorded for the same (plugin, what). A call over `budget`
+    seconds is logged, never stopped."""
     name = lp.manifest.name
     start = time.monotonic()
     try:
         result = fn(*args)
     except (Exception, SystemExit) as e:
-        reason = f"{type(e).__name__}: {e}"
-        log(f"plugin {name}: {what}: {reason}")
-        with _lock:
-            _errors[(name, what)] = HandlerError(name, what, reason)
+        record_error(name, what, f"{type(e).__name__}: {e}")
         return None
-    else:
-        with _lock:
-            _errors.pop((name, what), None)
-        return result
     finally:
         secs = time.monotonic() - start
         if budget is not None and secs > budget:
             log(f"plugin {name}: {what} took {secs:.2f}s")
+    if convert is not None:
+        try:
+            result = convert(result)
+        except WrongResult as e:
+            record_error(name, what, str(e))
+            return None
+        except (TypeError, ValueError) as e:
+            record_error(name, what, f"{type(e).__name__}: {e}")
+            return None
+    _succeeded(name, what)
+    return result
 
 
 def workstream_info(ws: db.Workstream, links: list[db.RepoLink]) -> WorkstreamInfo:
@@ -362,37 +546,39 @@ def workstream_info(ws: db.Workstream, links: list[db.RepoLink]) -> WorkstreamIn
 
 # What plugins add to a workstream's generated files and lifecycle
 
-def record_error(name: str, what: str, reason: str) -> None:
-    """Note a plugin problem that is not an exception, so `errors()` (and `wm doctor`) show it."""
-    log(f"plugin {name}: {what}: {reason}")
-    with _lock:
-        _errors[(name, what)] = HandlerError(name, what, reason)
+CLAUDE_MD_BUDGET = 0.5  # seconds a CLAUDE.md or allowed-tools handler may take before it is logged: it runs in hooks
 
 
-def call_text(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any) -> str | None:
-    """`call()` for a handler that returns text or None: anything else is recorded in `errors()` and dropped, as is
-    an empty string."""
-    result = call(lp, what, fn, *args)
+def _text(result: Any) -> str | None:
     if result is not None and not isinstance(result, str):
-        record_error(lp.manifest.name, what, f"returned {type(result).__name__}, not text")
-        return None
+        raise WrongResult(f"returned {type(result).__name__}, not text")
     return result or None
 
 
-def call_text_list(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any) -> list[str]:
-    """`call()` for a handler that returns a list of text: anything else is recorded in `errors()` and dropped."""
-    result = call(lp, what, fn, *args)
+def _text_list(result: Any) -> list[str]:
     if result is None:
         return []
     if not isinstance(result, list) or not all(isinstance(x, str) for x in result):
-        record_error(lp.manifest.name, what, f"returned {type(result).__name__}, not a list of text")
-        return []
+        raise WrongResult(f"returned {type(result).__name__}, not a list of text")
     return result
+
+
+def call_text(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any, budget: float | None = None) -> str | None:
+    """`call()` for a handler that returns text or None: anything else is recorded as its error and dropped, as is an
+    empty string."""
+    return call(lp, what, fn, *args, budget=budget, convert=_text)
+
+
+def call_text_list(lp: Loaded, what: str, fn: Callable[..., Any], *args: Any,
+                   budget: float | None = None) -> list[str]:
+    """`call()` for a handler that returns a list of text: anything else is recorded as its error and dropped."""
+    return call(lp, what, fn, *args, budget=budget, convert=_text_list) or []
 
 
 def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[str], dict[str, str]]:
     """The plugin sections to append to CLAUDE.md, in plugin name order, and the named core sections plugins replace.
-    Two plugins replacing the same section: the first by name wins, the other is recorded in `errors()`."""
+    Two plugins replacing the same section: the first by name wins, the other is recorded as its error until it no
+    longer clashes."""
     info = workstream_info(ws, links)
     sections: list[str] = []
     replacements: dict[str, str] = {}
@@ -400,12 +586,13 @@ def claude_md_parts(ws: db.Workstream, links: list[db.RepoLink]) -> tuple[list[s
     for lp in loaded():
         name = lp.manifest.name
         reg = lp.api.registered
-        if reg.claude_md and (text := call_text(lp, "claude_md", reg.claude_md, info)):
+        if reg.claude_md and (text := call_text(lp, "claude_md", reg.claude_md, info, budget=CLAUDE_MD_BUDGET)):
             sections.append(text)
         for section, fn in reg.replace.items():
+            what = f"replace {section}"
             if section in owner:
-                record_error(name, f"replaces {section}", f"already replaced by {owner[section]}")
-            elif text := call_text(lp, f"replace {section}", fn, info):
+                record_error(name, what, f"already replaced by {owner[section]}")
+            elif text := call_text(lp, what, fn, info, budget=CLAUDE_MD_BUDGET):
                 replacements[section] = text
                 owner[section] = name
     return sections, replacements
@@ -417,7 +604,8 @@ def allowed_tools(ws: db.Workstream, links: list[db.RepoLink]) -> list[str]:
     out: list[str] = []
     for lp in loaded():
         if lp.api.registered.allowed_tools:
-            out += call_text_list(lp, "allowed_tools", lp.api.registered.allowed_tools, info)
+            out += call_text_list(lp, "allowed_tools", lp.api.registered.allowed_tools, info,
+                                  budget=CLAUDE_MD_BUDGET)
     return out
 
 
@@ -430,11 +618,12 @@ def on_archive(ws: db.Workstream, links: list[db.RepoLink]) -> None:
 
 
 def doctor_problems() -> list[str]:
-    """Problems plugins report for `wm doctor`: failed loads, handler errors and each plugin's own checks."""
+    """Problems plugins report for `wm doctor`: failed loads, handler errors of any wm process (with how long ago) and
+    each plugin's own checks."""
     out: list[str] = []
     for lp in loaded():  # first, so that skipped() includes plugins that fail to load
         if lp.api.registered.doctor:
             out += call_text_list(lp, "doctor", lp.api.registered.doctor)
     out = [f"{s.name}: skipped: {s.reason}" for s in skipped()] + out
-    out += [f"{e.name}: {e.what}: {e.reason}" for e in errors()]
+    out += [f"{e.name}: {e.what}: {e.reason} ({ago(e.at)})" for e in persisted_errors()]
     return out

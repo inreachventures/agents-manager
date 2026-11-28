@@ -256,9 +256,12 @@ def merge(results: list[HookResult]) -> HookResult:
                       waiting_on=first("waiting_on"))
 
 
-def _valid(result: object) -> bool:
-    return isinstance(result, HookResult) and all(
-        v is None or isinstance(v, str) for v in (result.context, result.deny, result.block, result.waiting_on))
+def _hook_result(result: object) -> HookResult | None:
+    """A handler's result, checked for `plugins.call`: None, or a HookResult whose fields are text or None."""
+    if result is None or (isinstance(result, HookResult) and all(
+            v is None or isinstance(v, str) for v in (result.context, result.deny, result.block, result.waiting_on))):
+        return result
+    raise plugins.WrongResult(f"returned {result!r}, not a HookResult of text fields")
 
 
 def _plugin_output() -> contextlib.AbstractContextManager:
@@ -289,13 +292,10 @@ def run_plugins(conn, ws: db.Workstream, event: str, payload: dict, aux: str | N
         what = f"hook {event}"
         with _plugin_output():
             result = plugins.call(lp, what, fn, HookContext(ws=info, event=event, payload=payload,
-                                                            aux=aux is not None), budget=PLUGIN_BUDGET)
-        if result is None:
-            continue
-        if not _valid(result):
-            plugins.log(f"plugin {lp.manifest.name}: {what}: returned {result!r}, not a HookResult of text fields")
-            continue
-        results.append(result)
+                                                            aux=aux is not None), budget=PLUGIN_BUDGET,
+                                  convert=_hook_result)
+        if result is not None:
+            results.append(result)
     return results
 
 

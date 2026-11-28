@@ -319,7 +319,8 @@ def test_call_isolates_and_logs(pdir, monkeypatch, logged, tmp_path):
     ctx = HookContext(ws=fake_ws(tmp_path), event="PostToolUse", payload={}, aux=False)
     assert plugins.call(lp, "hook PostToolUse", lp.api.registered.hooks["PostToolUse"], ctx, budget=2.0) is None
     assert logged == ["plugin demo: hook PostToolUse: RuntimeError: boom"]
-    assert plugins.errors() == [plugins.HandlerError("demo", "hook PostToolUse", "RuntimeError: boom")]
+    assert [(e.name, e.what, e.reason) for e in plugins.errors()] == [
+        ("demo", "hook PostToolUse", "RuntimeError: boom")]
     assert plugins.skipped() == []
     assert plugins.loaded() == [lp]
 

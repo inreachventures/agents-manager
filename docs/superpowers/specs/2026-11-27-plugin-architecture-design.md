@@ -112,7 +112,9 @@ toggled plugin is live within a few seconds without restarting the app. Running 
 **Failure isolation.** Every call into a plugin (import, `register`, each handler) is wrapped. On error the plugin is
 marked failed for that process, the traceback goes to wm's hook log (hooks) or stderr (app-server), and the app shows
 one notice per plugin per app-server run: "Notes plugin skipped: <one line>". Core's own behaviour continues as if
-the plugin were absent.
+the plugin were absent. A handler that raises or returns the wrong type leaves its plugin loaded; its latest error is
+kept per (plugin, handler) in `plugin-errors.json` in the wm home (never the plugins folder) until that handler next
+succeeds, so `wm doctor` and the app (one notice per (plugin, handler) per app-server run) see errors from any process.
 
 ### 2. Python API: `agentmgr.plugin`
 
