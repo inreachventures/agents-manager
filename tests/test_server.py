@@ -84,6 +84,17 @@ def test_serve_answers_each_line_and_pushes_state(env):
     assert [w["key"] for w in replies[1]["result"]["workstreams"]] == ["WS-1"]
 
 
+def test_serve_starts_when_repointing_hooks_raises(env, monkeypatch, capsys):
+    def boom():
+        raise AttributeError("a plugin returned the wrong thing")
+
+    monkeypatch.setattr(ws_mod, "repoint_hooks", boom)
+    out = io.StringIO()
+    server.Server(out).serve(io.StringIO('{"id": 1, "method": "repos"}\n'))
+    assert [json.loads(line)["id"] for line in out.getvalue().splitlines() if '"id"' in line] == [1]
+    assert "AttributeError: a plugin returned the wrong thing" in capsys.readouterr().err
+
+
 @pytest.mark.skipif(not tmux.available(), reason="needs tmux")
 def test_app_views_share_the_session_and_go_with_it(env):
     try:
@@ -209,7 +220,7 @@ def test_ready_to_archive_once_merged_with_green_or_no_ci_on_base():
     def ready(base_ci, merged=True):
         row = view.Row(ws, db.YOUR_TURN, "your turn", False, [view.RepoRow(link, "✓ merged", "PR #1 merged", None,
                                                                           merged, base_ci)])
-        return server._row(row, False, None)["ready_to_archive"]
+        return server._row(row, False, None, [])["ready_to_archive"]
 
     assert ready("pass") and ready(None)
     assert not ready("fail") and not ready("pending") and not ready("n/a") and not ready("pass", merged=False)

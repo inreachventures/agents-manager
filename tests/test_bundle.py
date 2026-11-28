@@ -72,3 +72,23 @@ def test_hooks_calling_a_translocated_copy_are_repointed(env, monkeypatch, tmp_p
     monkeypatch.setenv(tmux.WM_ENV, str(here))
     assert ws_mod.repoint_hooks() == [ws.key]
     assert hook_wm(ws) == {str(here)}
+
+
+def test_one_workstream_that_fails_to_regenerate_does_not_stop_the_others(env, monkeypatch, tmp_path, capsys):
+    gone = fake_wm(tmp_path / "old-checkout" / ".venv" / "bin" / "wm")
+    first = made_by(monkeypatch, gone, "first work")
+    second = made_by(monkeypatch, gone, "second work")
+    gone.unlink()
+    here = app_wm(tmp_path / "Applications")
+    monkeypatch.setenv(tmux.WM_ENV, str(here))
+    real = ws_mod.regenerate
+
+    def regenerate(conn, ws, *a, **kw):
+        if ws.key == first.key:
+            raise RuntimeError("a plugin's CLAUDE.md section broke")
+        return real(conn, ws, *a, **kw)
+
+    monkeypatch.setattr(ws_mod, "regenerate", regenerate)
+    assert ws_mod.repoint_hooks() == [second.key]
+    assert hook_wm(second) == {str(here)}
+    assert f"repoint hooks: {first.key}: RuntimeError: a plugin's CLAUDE.md section broke" in capsys.readouterr().err

@@ -60,6 +60,16 @@ struct DetailView: View {
                 if let ws = model.selected, ws.status != .archived {
                     ToolbarItem(placement: .automatic) { RepoChips(ws: ws) }
                 }
+                if let ws = model.selected, ws.status != .archived, !model.mainViews.isEmpty {
+                    ToolbarItem(placement: .automatic) {
+                        Picker("View", selection: $model.center) {
+                            Text("Terminal").tag("terminal")
+                            ForEach(model.mainViews) { Text($0.view.title).tag($0.id) }
+                        }
+                        .pickerStyle(.segmented)
+                        .help("The Claude session, or a plugin's view of the workstream")
+                    }
+                }
                 ToolbarItemGroup(placement: .primaryAction) {
                     if model.refreshing {
                         ProgressView().controlSize(.small)
@@ -83,7 +93,7 @@ struct DetailView: View {
                 }
             }
             .inspector(isPresented: $model.showChanges) {
-                ChangesPanel()
+                SidePanel()
                     .inspectorColumnWidth(min: 320, ideal: 520, max: 1100)
             }
     }
@@ -109,21 +119,17 @@ struct DetailView: View {
                         Button("Restore") { Task { await model.restore(ws.key) } }
                             .buttonStyle(.borderedProminent)
                     }
-                } else if model.terminalFailed == ws.key {
-                    Placeholder(symbol: "exclamationmark.triangle", title: "Couldn't show the session",
-                                text: "The terminal closed as soon as it attached.") {
-                        Button("Try Again") { model.retryTerminal() }
-                    }
-                } else if ws.status.isRunning {
-                    TerminalHost(controller: model.terminal)
-                        .background(Color(nsColor: WMTerminalView.background))
                 } else {
-                    Placeholder(symbol: "pause.circle", title: "Session stopped",
-                                text: model.setup?.claudeMissing == true ? SetupInfo.claudeHint
-                                    : "Resume picks up the same Claude conversation, with fresh git and PR state.") {
-                        Button("Resume") { Task { await model.resume(ws.key) } }
-                            .buttonStyle(.borderedProminent)
-                            .keyboardShortcut(.defaultAction)
+                    // the terminal stays attached under a plugin's main view, so switching back is instant and wm's
+                    // "is anyone looking at this session" check keeps working
+                    ZStack {
+                        session(ws)
+                        ForEach(model.mainViews) { placed in
+                            if model.center == placed.id || model.keptViews.contains(placed.id) {
+                                PluginPage(placed: placed, key: ws.key, visible: model.center == placed.id,
+                                           takesFocus: true)
+                            }
+                        }
                     }
                 }
             } else if model.state.workstreams.isEmpty && !model.showArchived {
@@ -135,6 +141,85 @@ struct DetailView: View {
             } else {
                 Placeholder(symbol: "sidebar.leading", title: "Select a workstream", text: nil) { EmptyView() }
             }
+        }
+    }
+
+    /// The terminal, or why there is none. Under a plugin's main view only the terminal stays: a placeholder's
+    /// Return-key button mustn't act from under a page.
+    @ViewBuilder private func session(_ ws: Workstream) -> some View {
+        if model.terminalFailed == ws.key {
+            if model.center == "terminal" {
+                Placeholder(symbol: "exclamationmark.triangle", title: "Couldn't show the session",
+                            text: "The terminal closed as soon as it attached.") {
+                    Button("Try Again") { model.retryTerminal() }
+                }
+            }
+        } else if ws.status.isRunning {
+            TerminalHost(controller: model.terminal)
+                .background(Color(nsColor: WMTerminalView.background))
+        } else if model.center == "terminal" {
+            Placeholder(symbol: "pause.circle", title: "Session stopped",
+                        text: model.setup?.claudeMissing == true ? SetupInfo.claudeHint
+                            : "Resume picks up the same Claude conversation, with fresh git and PR state.") {
+                Button("Resume") { Task { await model.resume(ws.key) } }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+    }
+}
+
+/// A plugin's page for workstream `key`, one per (plugin, view, workstream). Hidden, it stays loaded and out of the
+/// way of clicks.
+struct PluginPage: View {
+    let placed: PlacedView
+    let key: String
+    let visible: Bool
+    let takesFocus: Bool
+
+    var body: some View {
+        PluginWebView(plugin: placed.plugin, view: placed.view, visible: visible, takesFocus: takesFocus)
+            .id("\(placed.id)/\(key)")
+            .background(visible ? Color(nsColor: .textBackgroundColor) : Color.clear)
+            .opacity(visible ? 1 : 0)
+            .allowsHitTesting(visible)
+            .accessibilityHidden(!visible)
+    }
+}
+
+/// The side panel: Changes, with a picker for plugins' panel views when there are any.
+struct SidePanel: View {
+    @Environment(AppModel.self) private var model
+
+    var body: some View {
+        @Bindable var model = model
+        if let ws = model.selected, ws.status != .archived, !model.panelViews.isEmpty {
+            VStack(spacing: 0) {
+                Picker("Panel", selection: $model.panelTab) {
+                    Text("Changes").tag("changes")
+                    ForEach(model.panelViews) { Text($0.view.title).tag($0.id) }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .padding(.horizontal, 12)
+                .padding(.vertical, 8)
+                Divider()
+                ZStack {
+                    let changes = model.panelTab == "changes"
+                    ChangesPanel()  // kept, so its open and closed files stay as they were
+                        .opacity(changes ? 1 : 0)
+                        .allowsHitTesting(changes)
+                        .accessibilityHidden(!changes)
+                    ForEach(model.panelViews) { placed in
+                        if model.panelTab == placed.id || model.keptViews.contains(placed.id) {
+                            PluginPage(placed: placed, key: ws.key, visible: model.panelTab == placed.id,
+                                       takesFocus: false)
+                        }
+                    }
+                }
+            }
+        } else {
+            ChangesPanel()
         }
     }
 }
@@ -251,8 +336,15 @@ struct RepoChips: View {
     }
 
     private func chip(_ repo: RepoState, index: Int) -> some View {
-        let on = model.showChanges && model.soloRepo == repo.repo
-        let action = on ? "Click to show every repo's changes" : "Click to show only its changes"
+        let on: Bool, action: String
+        if model.pluginCentred {  // the chips are about the plugin's view, not the changes panel
+            let title = model.pluginView(model.center, place: "main")?.view.title ?? "the view"
+            on = model.contextRepo == repo.repo
+            action = on ? "Click to show every repo in \(title)" : "Click to show only it in \(title)"
+        } else {
+            on = model.showChanges && model.soloRepo == repo.repo
+            action = on ? "Click to show every repo's changes" : "Click to show only its changes"
+        }
         return Button {
             withAnimation(.snappy(duration: 0.2)) { model.pickRepo(repo.repo) }
         } label: {

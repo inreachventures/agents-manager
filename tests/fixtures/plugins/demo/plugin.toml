@@ -1,0 +1,20 @@
+name = "demo"
+title = "Demo"
+version = "0.1.0"
+api = 1
+command = "demo"
+hooks = ["PostToolUse", "Stop"]
+protect = true
+
+[[views]]
+id = "notes"
+title = "Notes"
+place = "panel"
+page = "web/notes.html"
+
+[[views]]
+id = "board"
+title = "Board"
+place = "main"
+page = "web/board.html"
+shortcut = "opt+cmd+d"

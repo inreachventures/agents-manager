@@ -2,6 +2,7 @@ import Foundation
 
 struct BackendError: LocalizedError {
     var message: String
+    var stopped = false  // the server went away (or isn't there) before answering: worth trying again
     var errorDescription: String? { message }
 }
 
@@ -11,7 +12,11 @@ struct BackendError: LocalizedError {
 final class Backend {
     var onState: ((DashboardState) -> Void)?
     var onNotice: ((Notice) -> Void)?
+    var onEvent: ((String, Data) -> Void)?  // any other event: its name and its data as JSON
     var onExit: ((String) -> Void)?
+
+    /// Each workstream's row from the latest state push, as the server sent it (JSON), for plugin pages.
+    private(set) var rows: [String: Data] = [:]
 
     private var process: Process?
     private var input: FileHandle?
@@ -79,21 +84,27 @@ final class Backend {
         if let proc = process {  // nothing more to wait for: report the exit now, so a restart can follow at once
             proc.terminationHandler = nil
             process = nil
-            for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
+            for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped", stopped: true)) }
             pending.removeAll()
         }
     }
 
     func call<T: Decodable>(_ method: String, _ params: [String: Any] = [:]) async throws -> T {
-        let data = try await send(method, params)
+        let data = try await requestData(method, params)
         return try await Task.detached(priority: .userInitiated) { try Reader.decoder.decode(T.self, from: data) }.value
     }
 
-    private func send(_ method: String, _ params: [String: Any]) async throws -> Data {
-        guard let input, isRunning else { throw BackendError(message: "wm is not running") }
+    /// The result as the server sent it: JSON, which may be a bare string, number or null.
+    func requestData(_ method: String, _ params: [String: Any]) async throws -> Data {
+        guard let input, isRunning else { throw BackendError(message: "wm is not running", stopped: true) }
+        let message: [String: Any] = ["id": nextID, "method": method, "params": params]
+        // JSONSerialization raises (and the app crashes) on anything that isn't JSON: refuse it instead
+        guard JSONSerialization.isValidJSONObject(message) else {
+            throw BackendError(message: "\(method): the parameters aren't JSON")
+        }
         let id = nextID
         nextID += 1
-        var line = try JSONSerialization.data(withJSONObject: ["id": id, "method": method, "params": params])
+        var line = try JSONSerialization.data(withJSONObject: message)
         line.append(0x0A)
         return try await withCheckedThrowingContinuation { cont in
             pending[id] = cont
@@ -110,8 +121,11 @@ final class Backend {
         guard proc === process else { return }  // the tail of a server already replaced
         for message in messages {
             switch message {
-            case .state(let state): onState?(state)
+            case .state(let state, let rows):
+                self.rows = rows
+                onState?(state)
             case .notice(let notice): onNotice?(notice)
+            case .event(let name, let data): onEvent?(name, data)
             case .reply(let id, let result):
                 switch result {
                 case .success(let data): pending.removeValue(forKey: id)?.resume(returning: data)
@@ -125,7 +139,7 @@ final class Backend {
         guard proc === process else { return }  // an earlier server, already replaced
         process = nil  // its reader goes with it, and so does any line the crash cut short
         input = nil
-        for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped")) }
+        for (_, cont) in pending { cont.resume(throwing: BackendError(message: "wm stopped", stopped: true)) }
         pending.removeAll()
         let tail = stderrTail.split(separator: "\n").suffix(3).joined(separator: "\n")
         onExit?(tail.isEmpty ? "wm app-server exited (status \(status))" : tail)
@@ -135,8 +149,9 @@ final class Backend {
 /// Splits one server's output into lines and decodes them. Only used on its `queue`.
 private final class Reader: @unchecked Sendable {
     enum Message {
-        case state(DashboardState)
+        case state(DashboardState, rows: [String: Data])  // rows: each workstream's, as sent, by key
         case notice(Notice)
+        case event(String, Data)
         case reply(id: Int, result: Result<Data, Error>)  // the result as JSON, decoded by the caller
     }
 
@@ -159,21 +174,43 @@ private final class Reader: @unchecked Sendable {
                   let obj = (try? JSONSerialization.jsonObject(with: line)) as? [String: Any] else { continue }
             if let event = obj["event"] as? String {
                 guard let payload = try? JSONSerialization.data(withJSONObject: obj["data"] ?? [:]) else { continue }
-                if event == "state", let state = try? Self.decoder.decode(DashboardState.self, from: payload) {
-                    messages.append(.state(state))
-                } else if event == "notice", let notice = try? Self.decoder.decode(Notice.self, from: payload) {
-                    messages.append(.notice(notice))
+                if event == "state" {
+                    if let state = try? Self.decoder.decode(DashboardState.self, from: payload) {
+                        messages.append(.state(state, rows: Self.rows(obj["data"])))
+                    }
+                } else if event == "notice" {
+                    if let notice = try? Self.decoder.decode(Notice.self, from: payload) {
+                        messages.append(.notice(notice))
+                    }
+                } else {
+                    messages.append(.event(event, payload))
                 }
             } else if let id = obj["id"] as? Int {
                 if let error = obj["error"] as? String {
                     messages.append(.reply(id: id, result: .failure(BackendError(message: error))))
                 } else {
-                    let result = Result { try JSONSerialization.data(withJSONObject: obj["result"] ?? [:]) }
+                    // a plugin's request can answer with a bare string, number or null
+                    let result = Result {
+                        try JSONSerialization.data(withJSONObject: obj["result"] ?? [:], options: .fragmentsAllowed)
+                    }
                     messages.append(.reply(id: id, result: result))
                 }
             }
         }
         return messages
+    }
+
+    private static func rows(_ data: Any?) -> [String: Data] {
+        guard let data = data as? [String: Any] else { return [:] }
+        var rows: [String: Data] = [:]
+        for list in ["workstreams", "archived"] {
+            for row in data[list] as? [[String: Any]] ?? [] {
+                if let key = row["key"] as? String, let json = try? JSONSerialization.data(withJSONObject: row) {
+                    rows[key] = json
+                }
+            }
+        }
+        return rows
     }
 }
 

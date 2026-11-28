@@ -43,7 +43,8 @@ final class AppModel {
             if showChanges { Task { await loadDiff() } }
         }
     }
-    var soloRepos: [String: String] = [:]  // per workstream: the one repo the changes panel shows (none: all)
+    // per workstream: the one repo the changes panel shows (none: all)
+    var soloRepos: [String: String] = [:] { didSet { if oldValue != soloRepos { syncPluginViews() } } }
     var diff: DiffResult?
     var busy: String?
     var refreshing = false
@@ -52,6 +53,18 @@ final class AppModel {
     var terminalFailed: String?  // key whose tmux client exited right after attaching
     var tourStop: TourStop?  // the tour box on screen, if any
     var setup: SetupInfo?  // where repos come from, and the tools wm needs
+
+    // Plugins (Plugins.swift)
+    var plugins: [PluginInfo] = []
+    var centerChoice = UserDefaults.standard.string(forKey: "center") ?? "terminal"  // `center` when it still exists
+    var panelTabChoice = UserDefaults.standard.string(forKey: "panelTab") ?? "changes"  // `panelTab`, the same way
+    var jump: DiffJump?  // a file for the changes panel to scroll to (wm.openDiff); the panel clears it once there
+    var keptViews: Set<String> = []  // "<plugin>/<view>" pages shown for the selected workstream: kept loaded
+    var pluginsDir: String?  // where plugins go, as wm has it (nil: a wm without plugins)
+    // per workstream: the repo the top bar's chips pick for a plugin's main view (`wm.context.repo`; none: all)
+    var pluginRepo: [String: String] = [:] { didSet { if oldValue != pluginRepo { syncPluginViews() } } }
+    @ObservationIgnored var reloadPages = false  // plugins changed: load the pages again once they are listed
+    @ObservationIgnored let pluginHosts = NSHashTable<PluginWebView.Coordinator>.weakObjects()  // the live plugin pages
 
     @ObservationIgnored let backend = Backend()
     @ObservationIgnored let terminal = TerminalController()
@@ -81,9 +94,14 @@ final class AppModel {
         return repo
     }
 
-    /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is.
+    /// A repo chip in the top bar: show that repo's changes alone, or all of them again if it already is. With a
+    /// plugin's main view centred, the chip is about that view (`wm.context.repo`): the changes panel stays as it is.
     func pickRepo(_ repo: String?) {
         guard let key = selection else { return }
+        if pluginCentred {
+            pluginRepo[key] = repo == nil || contextRepo == repo ? nil : repo
+            return
+        }
         if repo == nil || (showChanges && soloRepo == repo) {
             soloRepos[key] = nil
         } else {
@@ -95,14 +113,26 @@ final class AppModel {
     /// ⌘1…⌘9: the selected workstream's Nth repo.
     func pickRepo(at index: Int) {
         guard let key = selection, let repos = selected?.repos, repos.indices.contains(index) else { return }
+        if pluginCentred {
+            pluginRepo[key] = repos[index].repo
+            return
+        }
         soloRepos[key] = repos[index].repo
         if !showChanges { showChanges = true }
+    }
+
+    /// The panel's own repo controls ("All repos", a repo's header): which repo the changes panel shows.
+    func pickPanelRepo(_ repo: String?) {
+        guard let key = selection else { return }
+        soloRepos[key] = repo
     }
 
     // MARK: - Lifecycle
 
     func start() async {
-        phase = .starting
+        // a restart (plugins changed, say) keeps the window as it is until the new server's first state
+        let restarting = phase == .ready
+        if !restarting { phase = .starting }
         if env.isEmpty { env = await ShellEnvironment.load() }
         guard let wm = ShellEnvironment.findWM(in: env) else {
             phase = .failed("Can't find `wm` on your PATH. Install it (see the README), or set its path in Settings.")
@@ -117,8 +147,12 @@ final class AppModel {
         terminal.environment = termEnv.map { "\($0.key)=\($0.value)" }
         terminal.onDetached = { [weak self] key in self?.terminalDetached(key) }
 
-        backend.onState = { [weak self] in self?.apply($0) }
+        backend.onState = { [weak self] in
+            self?.apply($0)
+            self?.pluginStatePushed()
+        }
         backend.onNotice = { [weak self] in self?.toast($0.message, $0.level == "warning" ? .warning : .info) }
+        backend.onEvent = { [weak self] in self?.pluginEvent($0, $1) }
         backend.onExit = { [weak self] in self?.backendExited($0) }
         do {
             try backend.start(wm: wm, environment: env)
@@ -127,6 +161,8 @@ final class AppModel {
             return
         }
         observeFocus()
+        Task { await loadPlugins() }
+        if restarting { Task { await loadSetup() } }  // the first state of a restart doesn't load it
         diffLoop?.cancel()
         diffLoop = Task { [weak self] in
             while !Task.isCancelled {
@@ -218,9 +254,12 @@ final class AppModel {
     private func selectionChanged() {
         if let selection { UserDefaults.standard.set(selection, forKey: "selected") }
         diff = nil
+        jump = nil
+        keptViews = []  // pages belong to their workstream
         terminalFailed = nil
         Task { await loadDiff() }
         syncTerminal()
+        syncPluginViews()
     }
 
     /// Keep the terminal on the selected workstream while its session runs; let go of it otherwise.
@@ -236,7 +275,7 @@ final class AppModel {
         Task {
             do {
                 try await terminal.show(key, backend: backend)
-                terminal.focus()
+                if center == "terminal" { terminal.focus() }  // not under a plugin's page
             } catch {
                 toast(error.localizedDescription, .error)
                 terminalFailed = key
@@ -308,7 +347,10 @@ final class AppModel {
 
     func nextTourStop() {
         guard let stop = tourStop, let next = TourStop(rawValue: stop.rawValue + 1) else { endTour(); return }
-        if next == .changes && !showChanges { showChanges = true }
+        if next == .changes {
+            if !showChanges { showChanges = true }
+            panelTab = "changes"
+        }
         tourStop = nil  // one popover closes before the next opens
         Task {
             try? await Task.sleep(for: .milliseconds(150))

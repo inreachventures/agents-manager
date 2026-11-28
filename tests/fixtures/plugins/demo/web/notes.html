@@ -1,0 +1,43 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>Notes</title>
+<style>
+  body { margin: 0; padding: 12px 16px; background: var(--wm-bg); color: var(--wm-fg); font: 13px var(--wm-font); }
+  ul { padding-left: 18px; }
+  #error { color: var(--wm-red); }
+  input { font: inherit; }
+</style>
+</head>
+<body>
+<ul id="notes"></ul>
+<form id="add"><input id="text" placeholder="Add a note"><button>Add</button></form>
+<p id="error"></p>
+<script>
+async function show() {
+  const key = wm.context.key;
+  const notes = await wm.request("notes", {key});
+  document.getElementById("notes").replaceChildren(...notes.map(n => {
+    const li = document.createElement("li");
+    li.textContent = n;
+    return li;
+  }));
+}
+document.getElementById("add").addEventListener("submit", async e => {
+  e.preventDefault();
+  const input = document.getElementById("text");
+  try {
+    await wm.request("add_note", {key: wm.context.key, text: input.value});
+    input.value = "";
+    document.getElementById("error").textContent = "";
+  } catch (err) {
+    document.getElementById("error").textContent = err.message;
+  }
+});
+wm.on("workstream", show);
+wm.on("changed", show);
+show();
+</script>
+</body>
+</html>
