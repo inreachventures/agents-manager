@@ -298,15 +298,17 @@ def load(m: Manifest) -> Loaded | Skipped:
     return Loaded(m, api)
 
 
-def loaded(*, event: str | None = None, command: str | None = None) -> list[Loaded]:
-    """The plugins that load, in name order, imported only if they declare `event` / `command` when given. Each is
-    loaded once per process; those that fail to load are in `skipped()`."""
+def loaded(*, event: str | None = None, command: str | None = None, name: str | None = None) -> list[Loaded]:
+    """The plugins that load, in name order, imported only if they declare `event` / `command` and are called `name`,
+    when given. Each is loaded once per process; those that fail to load are in `skipped()`."""
     manifests, _ = discover()
     out: list[Loaded] = []
     for m in manifests:
         if event is not None and event not in m.hooks:
             continue
         if command is not None and m.command != command:
+            continue
+        if name is not None and m.name != name:
             continue
         with _lock:
             if m.path not in _cache:

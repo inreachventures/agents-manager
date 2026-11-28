@@ -278,7 +278,7 @@ def run_plugins(conn, ws: db.Workstream, event: str, payload: dict, aux: str | N
     if not declared:
         return []  # nothing imported
     with _plugin_output():  # importing a plugin runs its code
-        lps = [lp for lp in plugins.loaded(event=event) if lp.manifest.name in declared]
+        lps = [lp for lp in plugins.loaded(event=event, name=aux) if lp.manifest.name in declared]
     if missing := declared - {lp.manifest.name for lp in lps}:
         for s in plugins.skipped():
             if s.name in missing:

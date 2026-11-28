@@ -355,3 +355,14 @@ def test_hook_output_without_plugins_is_unchanged_in_a_real_process(env, monkeyp
     assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == "deny"
     assert hook("PostToolUse", {**base(ws), "tool_name": "Read"}) == ""
     assert "acme-web/: on ws-1-x-y" in hook("SessionStart", base(ws))
+
+
+def test_aux_session_imports_only_its_own_plugin(ws, pdir, monkeypatch, capsys):
+    import sys
+
+    install_demo2(pdir)  # also declares Stop
+    plugins.reset()  # a hook process starts fresh
+    monkeypatch.setenv("AGENTMGR_AUX", "demo")
+    run_hook(monkeypatch, capsys, "Stop", {"session_id": "aux-session", "cwd": ws.folder})
+    assert plugins.module_name("demo") in sys.modules
+    assert plugins.module_name("demo2") not in sys.modules
